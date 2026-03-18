@@ -68,8 +68,8 @@ Deployment and env (e.g. `DATABASE_URL`, `INGEST_API_KEY`, `ANALYTICS_API_KEY`) 
 
 - **Repos:** All six repos created under Zack-Grogan; `main` pushed: G-Trade, es-hotzone-trader, g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web.
 - **Naming:** Repo names as above; Railway service names g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web.
-- **Linear:** Project G-Trade (team GDG); branch prefix GDG for issues.
-- **Railway:** Project G-Trade; four services deployed from the four g-trade-* repos.
+- **Linear:** Project G-Trade (team GDG); branch prefix GDG for issues. **Next work:** GDG-215 (E2E validation) is In Progress; pick it for back-to-dev flow (see OPERATOR.md).
+- **Railway:** G-Trade project created from zero: Postgres + four services (g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web) exist; Postgres is deployed; `DATABASE_URL` is set on all four app services. Connect each app service to its GitHub repo in Railway dashboard (Settings → Source) and set INGEST_API_KEY/ANALYTICS_API_KEY; see OPERATOR.md.
 - **Cursor:** .cursor and MCP (Linear, GitHub, Railway, OpenViking, etc.) aligned; “repo root” for workspace scripts = G-Trade repo root.
 
 ---

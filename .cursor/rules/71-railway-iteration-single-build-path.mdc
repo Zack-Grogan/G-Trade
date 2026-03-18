@@ -1,0 +1,18 @@
+---
+description: When fixing Railway deploy/build issues, use one build path; iterate with CLI and logs; do not push to GitHub until the fix is verified.
+globs: railway/**/*
+alwaysApply: false
+---
+
+# Railway iteration: single build path
+
+**When this applies:** Fixing a failing or flaky Railway service (build, start, runtime).
+
+**Rule:** Use one build path. Pushing to GitHub triggers a build. Using the Railway CLI (`railway up`) also triggers a build. Doing both causes conflicting deployments and makes it unclear which code is running.
+
+**Do this:**
+- **While iterating:** Deploy only via Railway CLI from the relevant directory (`railway up --service <service> -m "<summary>"`). Use `railway logs --service <service>` and `railway service status --all --json` to verify. Do **not** push to the service’s GitHub repo until the fix is confirmed (e.g. status SUCCESS, logs show expected behavior).
+- **After the fix is verified:** Push to GitHub, then use Linear and docs (e.g. OPERATOR.md, Current-State.md, tasks) to document what was fixed and how.
+
+**Wrong:** Pushing to GitHub to “get the fix live” while also running `railway up` during the same debugging session.  
+**Right:** CLI-only deploys and logs until the fix is confirmed; then one push and document.

@@ -12,6 +12,7 @@ alwaysApply: true
 - Do not redesign product architecture or rewrite business logic unless explicitly required.
 - Preserve existing conventions unless there is a documented reason to evolve them.
 - When uncertain, create neutral scaffolding or TODO markers rather than risky assumptions.
+- **Never trust training data** for third-party APIs, SDKs, or versions. Always verify against current official docs or latest/latest LTS releases (e.g. March 2026). Use web search or doc fetch before implementing integrations.
 
 **Approval required:** Plan file (e.g. tui_sunset_and_railway), broad refactors, compliance/safety-critical paths — see AGENTS.md "What requires approval before editing."
 

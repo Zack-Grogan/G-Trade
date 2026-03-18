@@ -8,9 +8,9 @@ Concise audit of the G-Trade workspace and classification of what belongs in the
 |------|--------|
 | **Workspace shape** | Composite: root not a git repo; git history in `es-hotzone-trader/` only. |
 | **Stacks** | Python 3.11 (es-hotzone-trader, railway/ingest, analytics, mcp); Next.js (railway/web). |
-| **Package managers** | pip/setuptools (pyproject.toml); npm (railway/web). |
+| **Package managers** | pip/setuptools (pyproject.toml); bun (railway/web). |
 | **Entry points** | CLI: `es-trade` → `src.cli.commands:main`; Railway: `app.py` per service; web: Next.js app. |
-| **Test/lint/build** | pytest, ruff, black (pyproject); npm run dev/build/start (web). |
+| **Test/lint/build** | pytest, ruff, black (pyproject); bun run dev/build/start (web). |
 | **CI** | None (no .github/workflows). |
 | **Docs** | docs/ (architecture, operator, compliance, runbooks, research, state, tasks). |
 | **Cursor config** | .cursor/rules (one rule), .cursor/plans, .cursor/agents, .cursor/skills, .cursor/mcp.json. |

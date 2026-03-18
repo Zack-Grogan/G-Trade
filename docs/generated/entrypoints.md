@@ -8,4 +8,4 @@
 - ingest: railway/ingest/app.py (uvicorn)
 - analytics: railway/analytics/app.py (uvicorn)
 - mcp: railway/mcp/app.py (uvicorn)
-- web: railway/web (npm run dev / next start)
+- web: railway/web (bun run dev / bun run start)

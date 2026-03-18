@@ -1,6 +1,7 @@
 ---
 description: Railway services deploy only to Railway; use skill and MCP/CLI for deploy and operations; conservative, non-production-by-default.
-alwaysApply: true
+globs: railway/**/*
+alwaysApply: false
 ---
 
 # Railway and infra guardrails

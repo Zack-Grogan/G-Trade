@@ -82,6 +82,8 @@ Omit `serviceId` and add `"groupBy": ["SERVICE_ID"]` to query all services in th
 
 When something is broken, classify the failure first. The fix depends on the class.
 
+**During iteration:** Deploy only via CLI (`railway up` from the service directory). Do not push to the service’s GitHub repo until recovery is verified (status SUCCESS, logs OK). Pushing triggers a separate build and causes conflicting deployments. After the fix is confirmed, push once and document (Linear, OPERATOR/Current-State/tasks). See rule 71-railway-iteration-single-build-path.
+
 ### Build failures
 
 The service failed to build. Look at build logs:

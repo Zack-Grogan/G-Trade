@@ -1,6 +1,6 @@
 ---
 description: Avoid destructive or risky behavior by default; flag edits to sensitive files; no secrets, no forced production automation.
-alwaysApply: true
+alwaysApply: false
 ---
 
 # Safety and non-destructive behavior

@@ -104,6 +104,14 @@ Multi-step workflows follow natural chains:
 
 When composing, return one unified response covering all steps. Don't ask the user to invoke each step separately.
 
+## Single build path during iteration
+
+When fixing a failing deploy or build, use **one** build path to avoid conflicting deployments (GitHub push and CLI deploy both trigger builds).
+
+- **Iterate with CLI only:** From the service’s repo/directory, use `railway up --service <service> -m "<summary>"` (or `--ci` to stream logs). Check `railway logs --service <service>` and `railway service status --all --json` to verify. Do **not** push to GitHub until the fix is confirmed (e.g. status SUCCESS, logs show expected behavior).
+- **After verification:** Push to GitHub once. Use Linear and project docs (OPERATOR.md, Current-State.md, tasks) to document the fix.
+- See [deploy.md](references/deploy.md) for deploy commands and [operate.md](references/operate.md) for triage; rule: `.cursor/rules/71-railway-iteration-single-build-path.mdc`.
+
 ## Setup decision flow
 
 When the user wants to create or deploy something, determine the right action from current context:

@@ -20,8 +20,11 @@ The primary operator interface is the **CLI**. There is no TUI. For a high-level
 
 MCP runs on **Railway**, not locally. After deploying g-trade-mcp (or legacy grogan-trade-mcp):
 
-1. Set `server.railway_mcp_url` in config (or in `config/default.yaml`) to your Railway MCP service URL (e.g. `https://g-trade-mcp.up.railway.app/mcp` or `https://grogan-trade-mcp.up.railway.app/mcp` if still using legacy names).
-2. In Cursor, point the `g_trade` MCP server at that URL (e.g. in `.cursor/mcp.json` or Cursor settings): use the same URL and add Bearer token if your MCP service requires it.
+1. Set `server.railway_mcp_url` in config (or in `config/default.yaml`) to your Railway MCP service URL (e.g. `https://g-trade-mcp-production.up.railway.app/mcp`).
+2. In Cursor, configure the `g_trade` MCP server in `.cursor/mcp.json`:
+   - **url:** `https://g-trade-mcp-production.up.railway.app/mcp`
+   - **headers:** `{ "Authorization": "Bearer <token>" }` where `<token>` is the value of `MCP_AUTH_TOKEN` from Railway (run `railway variable list --service g-trade-mcp` to see it).
+3. Restart Cursor or reload the MCP server to pick up the new config.
 
 Execution and Topstep stay on the Mac; MCP and analytics run on Railway so the IDE can inspect runs and state without the local process.
 
@@ -44,9 +47,11 @@ Linear is the source of "what to do next" (G-Trade project, issues GDG-214–221
 
 Use this checklist when confirming Railway and local config are aligned with the six-repo layout:
 
-1. **Railway dashboard (G-Trade project):** Confirm Postgres and all four services (g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web) exist and are healthy. If any were deployed from an old path or single repo, reconnect each service to its GitHub repo: Zack-Grogan/g-trade-ingest, Zack-Grogan/g-trade-analytics, Zack-Grogan/g-trade-mcp, Zack-Grogan/g-trade-web.
+1. **Railway dashboard (G-Trade project):** Confirm Postgres and all four services (g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web) exist and are healthy. If any were deployed from an old path or single repo, reconnect each service to its GitHub repo: Zack-Grogan/g-trade-ingest, Zack-Grogan/g-trade-analytics, Zack-Grogan/g-trade-mcp, Zack-Grogan/g-trade-web. Agent can run `railway project list --json` and Railway MCP `list-projects` / `list-services` (with linked workspace) to verify; if no project is linked, link with `railway link --project <id-or-name>` from the relevant repo root.
 2. **Env and URLs:** In Railway, ensure `DATABASE_URL`, `INGEST_API_KEY`, `ANALYTICS_API_KEY` (and any MCP auth) are set per each service README. Locally (es-hotzone-trader config): set `observability.railway_ingest_url` and `observability.railway_ingest_api_key` (or env `RAILWAY_INGEST_API_KEY`) so the bridge can reach ingest.
 3. **Optional E2E smoke check:** Run a short `es-trade start` (or replay) with the bridge configured; confirm data appears in Railway (Postgres or via analytics/MCP). This is E2E validation (Linear GDG-215).
+
+**G-Trade project created from zero (agent-executed):** Project **G-Trade** was created via Railway MCP and CLI. Postgres + four services exist; repos were connected in the dashboard. **API keys (agent-set via CLI):** `INGEST_API_KEY` and `ANALYTICS_API_KEY` are set on g-trade-ingest and g-trade-analytics (and ANALYTICS_API_KEY on g-trade-mcp); `MCP_AUTH_TOKEN` set on g-trade-mcp for Cursor MCP auth. To use the bridge locally, get the ingest key: from G-Trade repo root run `railway link --project G-Trade` then `railway variable list --service g-trade-ingest` and set `observability.railway_ingest_api_key` (or `RAILWAY_INGEST_API_KEY`) in es-hotzone-trader config. **Deploy fixes applied:** Ingest and analytics were crashing with "Could not import module 'main'"; start command was set to `uvicorn app:app --host 0.0.0.0 --port $PORT` for both (via `railway environment edit --json`). **g-trade-web:** Clerk added; Next 16 + Bun in this repo's `railway/web/`. Railway still builds from Zack-Grogan/g-trade-web; that repo must be updated to match (Next 16, Clerk, proxy.ts, bun.lockb, build/start commands). Then set in Railway: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` for production auth.
 
 ## Compliance
 

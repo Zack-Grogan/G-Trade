@@ -1,5 +1,6 @@
 ---
-alwaysApply: true
+description: Prefer MCP and CLIs over asking for API keys or writing one-off scripts; use available tools (Linear, Railway, Upstash, G-Trade, etc.) instead of requesting credentials.
+alwaysApply: false
 ---
 # Use Existing Tools — No Keys or Scripts
 
@@ -24,5 +25,6 @@ All of the following MCPs are available to the agent. Use their tools and resour
 - **OpenViking** — Durable repo/knowledge search. Tools: `openviking_find`, `openviking_read`, `openviking_glob`, `openviking_abstract`, `openviking_overview`, `openviking_grep`. Use for `viking://` resources and semantic search; do not ask for config paths or keys to write ingest scripts unless the user explicitly requests it.
 - **Playwright** — Browser automation. Use Playwright MCP tools; do not ask for credentials to drive browsers via custom scripts.
 - **Railway** — Deploy and config. Use Railway MCP tools; do not ask for Railway tokens to script deploys.
+- **Upstash** — Serverless Redis, QStash, Rate Limiting, Workflow, Vector, Search. Use Upstash skills for SDK patterns; do not ask for UPSTASH_REDIS_REST_URL or other credentials to write custom clients.
 
 **CLIs:** Prefer `ov` (OpenViking ingest, e.g. `ov add-resource`) and `linear` (if installed) when they fit the task.

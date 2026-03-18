@@ -48,8 +48,10 @@ Checklist of migration and follow-up work. Completed items are checked; open ite
 ## Open / future
 
 - [ ] **Phase 7 hardening** — Outbox backpressure, queue-growth alerts, replay/consistency checks, recovery runbook (if desired).
-- [ ] **E2E validation** — Confirm full path (Mac bridge → ingest → Postgres → analytics/MCP/web) in your environment with a test run. Tracked in Linear as GDG-215; when done, check here and add to Current-State "What has been validated."
+- [ ] **E2E validation** — Confirm full path (Mac bridge → ingest → Postgres → analytics/MCP/web) in your environment with a test run. Tracked in Linear as **GDG-215** (In Progress); when done, check here and add to Current-State "What has been validated."
 - [ ] **Linear or new plan** — Track any new features or ops work in Linear or a new plan file; keep this checklist for the completed migration only.
+
+**Plan "Deploy, Linear, and dev flow" completed:** Deployment verified via Railway CLI + MCP (see Current-State). Linear: GDG-215 confirmed In Progress. Back-to-dev flow documented in OPERATOR.md; next step is implementing GDG-215 (E2E validation).
 
 ---
 

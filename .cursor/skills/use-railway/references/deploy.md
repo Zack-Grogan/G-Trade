@@ -2,6 +2,10 @@
 
 Ship code, manage releases, and configure builds.
 
+## Iteration: avoid double builds
+
+Services connected to GitHub build on every push. When debugging a failing deploy, use **only** the CLI to deploy so one build runs at a time: `railway up --service <service> -m "<summary>"` from the repo. Verify with `railway logs` and `railway service status --all --json`. **Do not push to GitHub** until the fix is confirmed. After verification, push once and document (Linear, docs). See rule 71-railway-iteration-single-build-path.
+
 ## Deploy code
 
 ### Standard deploy
