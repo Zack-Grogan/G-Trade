@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 A-to-Z E2E test: ingest → analytics → GraphQL → RLM (health, similar_trades, hypotheses, replay, benchmark).
-Loads .env from repo root if present. Requires INGEST_URL, ANALYTICS_URL, RLM_URL (and auth keys for full test).
-Usage: from repo root, run:  python scripts/e2e_test.py
-       Or with explicit env: INGEST_URL=... ANALYTICS_URL=... RLM_URL=... python scripts/e2e_test.py
+Must run against Railway (no localhost). Loads .env from repo root if present.
+Requires INGEST_URL, ANALYTICS_URL (Railway deploy URLs). RLM_URL optional (skip RLM if unset).
+Usage: INGEST_URL=https://g-trade-ingest-xxx.up.railway.app ANALYTICS_URL=https://... [RLM_URL=...] python scripts/e2e_test.py
 """
 from __future__ import annotations
 
@@ -30,13 +30,32 @@ except ImportError:
     print("pip install httpx then re-run")
     sys.exit(1)
 
-# Base URLs (no trailing slash)
-INGEST_URL = (os.environ.get("INGEST_URL") or os.environ.get("RAILWAY_INGEST_URL") or "http://localhost:8000").rstrip("/")
-ANALYTICS_URL = (os.environ.get("ANALYTICS_URL") or os.environ.get("RAILWAY_ANALYTICS_URL") or "http://localhost:8001").rstrip("/")
-RLM_URL = (os.environ.get("RLM_URL") or os.environ.get("RAILWAY_RLM_URL") or "http://localhost:8003").rstrip("/")
+# Base URLs (no trailing slash). No localhost defaults — E2E must run against Railway.
+INGEST_URL = (os.environ.get("INGEST_URL") or os.environ.get("RAILWAY_INGEST_URL") or "").rstrip("/")
+ANALYTICS_URL = (os.environ.get("ANALYTICS_URL") or os.environ.get("RAILWAY_ANALYTICS_URL") or "").rstrip("/")
+RLM_URL = (os.environ.get("RLM_URL") or os.environ.get("RAILWAY_RLM_URL") or "").rstrip("/")
 INGEST_API_KEY = os.environ.get("INGEST_API_KEY", "")
 ANALYTICS_API_KEY = os.environ.get("ANALYTICS_API_KEY", "")
 TIMEOUT = 30.0
+
+def _is_localhost(url: str) -> bool:
+    if not url:
+        return True
+    u = url.lower()
+    return "localhost" in u or u.startswith("127.0.0.1") or (u.startswith("http://") and "railway" not in u and "up.railway.app" not in u and ":800" in u)
+
+
+def _require_railway() -> None:
+    """Exit if required URLs are missing or localhost. E2E must run against Railway."""
+    if not INGEST_URL or _is_localhost(INGEST_URL):
+        print("E2E must run against Railway. Set INGEST_URL to your deploy URL (e.g. https://g-trade-ingest-production.up.railway.app)")
+        sys.exit(1)
+    if not ANALYTICS_URL or _is_localhost(ANALYTICS_URL):
+        print("E2E must run against Railway. Set ANALYTICS_URL to your deploy URL (e.g. https://g-trade-analytics-production.up.railway.app)")
+        sys.exit(1)
+    if RLM_URL and _is_localhost(RLM_URL):
+        print("E2E must run against Railway. Set RLM_URL to your RLM deploy URL or leave unset to skip RLM.")
+        sys.exit(1)
 
 
 def ok(name: str, resp: httpx.Response, body: dict | list | None = None) -> bool:
@@ -48,16 +67,19 @@ def ok(name: str, resp: httpx.Response, body: dict | list | None = None) -> bool
 
 
 def main() -> int:
+    _require_railway()
     failures = 0
-    print("E2E test — using INGEST_URL=%s ANALYTICS_URL=%s RLM_URL=%s" % (INGEST_URL, ANALYTICS_URL, RLM_URL))
+    print("E2E test (Railway) — INGEST_URL=%s ANALYTICS_URL=%s RLM_URL=%s" % (INGEST_URL, ANALYTICS_URL, RLM_URL or "(unset, skipping RLM)"))
     with httpx.Client(timeout=TIMEOUT) as client:
         # --- Health ---
         print("\n1. Health checks")
-        for label, url in [
+        health_checks = [
             ("ingest /health", f"{INGEST_URL}/health"),
             ("analytics /health", f"{ANALYTICS_URL}/health"),
-            ("rlm /health", f"{RLM_URL}/health"),
-        ]:
+        ]
+        if RLM_URL:
+            health_checks.append(("rlm /health", f"{RLM_URL}/health"))
+        for label, url in health_checks:
             try:
                 r = client.get(url)
                 if not ok(label, r):
@@ -122,42 +144,45 @@ def main() -> int:
             print("  SKIP GraphQL (ANALYTICS_API_KEY not set)")
 
         # --- RLM: similar_trades, hypotheses/generate, replay/checkpoints, benchmark/checkpoints ---
-        print("\n5. RLM endpoints (require DATABASE_URL)")
-        rlm_skipped = 0
-        rlm_saw_503 = False
-        for label, method, url, kwargs in [
-            ("RLM /similar_trades", "get", f"{RLM_URL}/similar_trades", {"params": {"trade_id": 1, "limit": 5}}),
-            ("RLM /hypotheses/generate", "post", f"{RLM_URL}/hypotheses/generate", {"json": {"regime_context": "E2E test", "generation": 1}}),
-            ("RLM /replay/checkpoints", "get", f"{RLM_URL}/replay/checkpoints", {"params": {"limit": 10}}),
-            ("RLM /benchmark/checkpoints", "get", f"{RLM_URL}/benchmark/checkpoints", {"params": {"limit": 10}}),
-        ]:
-            try:
-                r = client.request(method, url, **kwargs)
-                if r.status_code == 200:
-                    print(f"  OK   {label}: status=200")
-                elif r.status_code == 503:
-                    rlm_saw_503 = True
-                    try:
-                        body = r.json()
-                        if body.get("service_unavailable") or "DATABASE_URL" in str(body.get("detail", "")):
-                            print(f"  SKIP {label}: 503 (DATABASE_URL not set)")
-                            rlm_skipped += 1
-                            continue
-                    except Exception:
-                        pass
-                    print(f"  FAIL {label}: status=503 body={r.text[:120]}")
-                    failures += 1
-                elif r.status_code >= 500 and rlm_saw_503:
-                    print(f"  SKIP {label}: {r.status_code} (backend config unavailable)")
-                    rlm_skipped += 1
-                else:
-                    if not ok(label, r):
+        if not RLM_URL:
+            print("\n5. RLM endpoints — SKIP (RLM_URL not set)")
+        else:
+            print("\n5. RLM endpoints (require DATABASE_URL)")
+            rlm_skipped = 0
+            rlm_saw_503 = False
+            for label, method, url, kwargs in [
+                ("RLM /similar_trades", "get", f"{RLM_URL}/similar_trades", {"params": {"trade_id": 1, "limit": 5}}),
+                ("RLM /hypotheses/generate", "post", f"{RLM_URL}/hypotheses/generate", {"json": {"regime_context": "E2E test", "generation": 1}}),
+                ("RLM /replay/checkpoints", "get", f"{RLM_URL}/replay/checkpoints", {"params": {"limit": 10}}),
+                ("RLM /benchmark/checkpoints", "get", f"{RLM_URL}/benchmark/checkpoints", {"params": {"limit": 10}}),
+            ]:
+                try:
+                    r = client.request(method, url, **kwargs)
+                    if r.status_code == 200:
+                        print(f"  OK   {label}: status=200")
+                    elif r.status_code == 503:
+                        rlm_saw_503 = True
+                        try:
+                            body = r.json()
+                            if body.get("service_unavailable") or "DATABASE_URL" in str(body.get("detail", "")):
+                                print(f"  SKIP {label}: 503 (DATABASE_URL not set)")
+                                rlm_skipped += 1
+                                continue
+                        except Exception:
+                            pass
+                        print(f"  FAIL {label}: status=503 body={r.text[:120]}")
                         failures += 1
-            except Exception as e:
-                print(f"  FAIL {label}: {e}")
-                failures += 1
-        if rlm_skipped:
-            print(f"  (RLM: {rlm_skipped} endpoint(s) skipped — DATABASE_URL or backend config not set)")
+                    elif r.status_code >= 500 and rlm_saw_503:
+                        print(f"  SKIP {label}: {r.status_code} (backend config unavailable)")
+                        rlm_skipped += 1
+                    else:
+                        if not ok(label, r):
+                            failures += 1
+                except Exception as e:
+                    print(f"  FAIL {label}: {e}")
+                    failures += 1
+            if rlm_skipped:
+                print(f"  (RLM: {rlm_skipped} endpoint(s) skipped — DATABASE_URL or backend config not set)")
     print()
     if failures:
         print("E2E completed with %d failure(s)." % failures)

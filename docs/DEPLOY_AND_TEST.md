@@ -15,25 +15,19 @@ After deploy, set `RLM_REPLAY_WORKER_URL` and `RLM_SERVICE_URL` to the RLM and a
 
 ## 3. A-to-Z test (E2E)
 
-From repo root, with `.env` (or env) set:
+**E2E must run against Railway only.** The script exits with an error if `INGEST_URL` or `ANALYTICS_URL` are unset or point to localhost. From repo root:
 
 ```bash
-# Against Railway (use your deployed URLs)
-export INGEST_URL=https://g-trade-ingest-xxx.up.railway.app
-export ANALYTICS_URL=https://g-trade-analytics-xxx.up.railway.app
+export INGEST_URL=https://g-trade-ingest-production.up.railway.app
+export ANALYTICS_URL=https://g-trade-analytics-production.up.railway.app
+# Optional once RLM is deployed:
 export RLM_URL=https://g-trade-rlm-xxx.up.railway.app
 export INGEST_API_KEY=your-ingest-key
 export ANALYTICS_API_KEY=your-analytics-key
 python scripts/e2e_test.py
 ```
 
-Or against local services (start ingest on 8000, analytics on 8001, rlm on 8003):
-
-```bash
-python scripts/e2e_test.py
-```
-
-The script checks: health (ingest, analytics, rlm), ingest state POST (if key set), analytics `/runs`, GraphQL `runs`, RLM `/similar_trades`, `/hypotheses/generate`, `/replay/checkpoints`, `/benchmark/checkpoints`.
+The script checks: health (ingest, analytics, and RLM if `RLM_URL` set), ingest state POST (if key set), analytics `/runs`, GraphQL `runs`, RLM endpoints when `RLM_URL` is set.
 
 ## 4. Local CLI (es-hotzone-trader)
 

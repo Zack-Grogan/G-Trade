@@ -1,16 +1,20 @@
 ---
-description: Railway services deploy only to Railway; use skill and MCP/CLI for deploy and operations; conservative, non-production-by-default.
-globs: railway/**/*
-alwaysApply: false
+description: Deploy and test on Railway only; no local stack services (saves RAM). E2E against deployed URLs; use Railway CLI/MCP for ops.
+globs: railway/**/*,scripts/e2e*.py,docs/DEPLOY_AND_TEST.md,docs/ENV.md
+alwaysApply: true
 ---
 
 # Railway and infra guardrails
 
-**When this applies:** Deploying, inspecting, or changing Railway services (ingest, analytics, mcp, web).
+**When this applies:** Deploying, testing, or changing Railway services (ingest, analytics, mcp, web, rlm); E2E or deployment docs.
 
 **Do this:**
-- Deploy and operate only via Railway CLI or Railway MCP (e.g. railway up, railway logs, railway status). Do not run railway/ services locally as a substitute for deployment.
+- **Deploy only to Railway.** Operate via Railway CLI or Railway MCP (e.g. railway up, railway logs, railway status). Do not run railway/ services locally as a substitute for deployment.
+- **E2E tests run against Railway only.** The script `scripts/e2e_test.py` refuses localhost and requires Railway deploy URLs. Set `INGEST_URL`, `ANALYTICS_URL`, and optionally `RLM_URL` (and auth keys) to your **deployed** Railway URLs, then run `python scripts/e2e_test.py`. Do not start local ingest/analytics/rlm for testing.
+- In docs and instructions, prefer the Railway-only flow; treat "run services locally" as legacy or emergency-only, not the default.
 - Before using Railway CLI or MCP, read the **use-railway** skill (.cursor/skills/use-railway/SKILL.md) for preflight (auth, link, context), common commands, and execution rules.
 - Default to non-production usage; do not assume production deployment permissions or automate production changes without explicit user direction.
 
-**Full procedure:** docs/engineering-system/railway-usage-policy.md; skill: use-railway.
+**Do not:** Start uvicorn/bun dev servers for ingest, analytics, rlm, mcp, or web locally for E2E or general testing; use deployed Railway services instead.
+
+**Full procedure:** docs/engineering-system/railway-usage-policy.md; skill: use-railway; docs/DEPLOY_AND_TEST.md.
