@@ -21,6 +21,8 @@ htmlcov/
 
 # Optional: Cursor debug logs
 .cursor/*.log
+# MCP config may contain tokens
+.cursor/mcp.json
 
 # Temp or local-only
 /x/
