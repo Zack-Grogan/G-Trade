@@ -49,7 +49,7 @@ Deployment and env (e.g. `DATABASE_URL`, `INGEST_API_KEY`, `ANALYTICS_API_KEY`) 
 ## What is not done or not validated
 
 - **Phase 7 (Hardening):** Plan called for backpressure on outbox size, alerts on queue growth, replay/consistency checks, and a short runbook for recovery and rollback. Not tracked as completed in the plan; treat as optional/future unless explicitly implemented.
-- **End-to-end live validation:** No guarantee that a full live run (Mac bridge → Railway ingest → Postgres → analytics/MCP/web) has been exercised end-to-end in production; operator should confirm with a test run when changing env or deploy.
+- **End-to-end live validation:** No guarantee that a full live run (Mac bridge → Railway ingest → Postgres → analytics/MCP/web) has been exercised end-to-end in production; operator should confirm with a test run when changing env or deploy. Tracked as Linear GDG-215 (E2E validation); when completed, add a bullet under "What has been validated" and close GDG-215.
 - **Automated tests for bridge/deploy:** Unit tests exist (e.g. `tests/test_bridge.py`, `tests/test_matrix_engine.py`); integration or E2E tests against real Railway services are not documented here.
 
 ---
