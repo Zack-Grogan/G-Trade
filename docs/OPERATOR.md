@@ -27,10 +27,11 @@ MCP runs on **Railway**, not locally. After deploying g-trade-mcp (or legacy gro
 3. Restart Cursor or reload the MCP server to pick up the new config.
 
 Execution and Topstep stay on the Mac; MCP and analytics run on Railway so the IDE can inspect runs and state without the local process.
+The remote MCP server now includes run timelines, state snapshots, blocker stories, and order-event reconstruction so remote investigation can answer "why did it not trade?" without reading raw tables.
 
 ## Railway and bridge (single-operator)
 
-- **Ingest:** The local bridge (started with `es-trade start` when configured) sends state, events, and trades to the Railway ingest API. Set `observability.railway_ingest_url` and `observability.railway_ingest_api_key` (or env `RAILWAY_INGEST_API_KEY`) in config so the bridge can authenticate. All Railway surfaces use single-operator auth; no public or commercial use.
+- **Ingest:** The local bridge (started with `es-trade start` when configured) sends state snapshots, run manifests, events, and trades to the Railway ingest API. Set `observability.railway_ingest_url` and `observability.railway_ingest_api_key` (or env `RAILWAY_INGEST_API_KEY`) in config so the bridge can authenticate. All Railway surfaces use single-operator auth; no public or commercial use.
 - **Analytics / MCP / Web:** Use the same single-operator model (e.g. Bearer token or allowlist). See [Architecture-Overview.md](Architecture-Overview.md) and the plan file for service details.
 
 ## Development flow (back to coding)

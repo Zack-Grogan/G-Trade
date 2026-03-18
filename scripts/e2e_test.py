@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-A-to-Z E2E test: ingest → analytics → GraphQL → RLM (health, similar_trades, hypotheses, replay, benchmark).
+ A-to-Z E2E test: ingest → analytics → GraphQL → RLM (health, reports, similar_trades, hypotheses, replay, benchmark).
 Must run against Railway (no localhost). Loads .env from repo root if present.
 Requires INGEST_URL, ANALYTICS_URL (Railway deploy URLs). RLM_URL optional (skip RLM if unset).
 Usage: INGEST_URL=https://g-trade-ingest-xxx.up.railway.app ANALYTICS_URL=https://... [RLM_URL=...] python scripts/e2e_test.py
@@ -129,7 +129,7 @@ def main() -> int:
             try:
                 r = client.post(
                     f"{ANALYTICS_URL}/graphql",
-                    json={"query": "query { runs(limit: 2) { run_id created_at } }"},
+                json={"query": "query { runs(limit: 2) { runId createdAt } }"},
                     headers={"Authorization": f"Bearer {ANALYTICS_API_KEY}", "Content-Type": "application/json"},
                 )
                 if not ok("GraphQL runs", r):
@@ -155,6 +155,7 @@ def main() -> int:
             if RLM_AUTH_TOKEN:
                 rlm_headers["Authorization"] = f"Bearer {RLM_AUTH_TOKEN}"
             for label, method, url, kwargs in [
+                ("RLM /reports", "get", f"{RLM_URL}/reports", {"params": {"limit": 5}}),
                 ("RLM /similar_trades", "get", f"{RLM_URL}/similar_trades", {"params": {"trade_id": 1, "limit": 5}}),
                 ("RLM /hypotheses/generate", "post", f"{RLM_URL}/hypotheses/generate", {"json": {"regime_context": "E2E test", "generation": 1}}),
                 ("RLM /replay/checkpoints", "get", f"{RLM_URL}/replay/checkpoints", {"params": {"limit": 10}}),
