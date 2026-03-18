@@ -1,6 +1,6 @@
 # GitHub workflow
 
-Contract for branches, commits, PRs, and review. Supports both issue-driven and exploratory work.
+Contract for branches, commits, PRs, and review. Supports both issue-driven and exploratory work. Conventions apply **per repo**; the G-Trade workspace and es-hotzone-trader use Linear project G-Trade (team GDG) and branch prefix GDG where applicable.
 
 ## Branch naming
 

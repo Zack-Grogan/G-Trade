@@ -64,6 +64,16 @@ Deployment and env (e.g. `DATABASE_URL`, `INGEST_API_KEY`, `ANALYTICS_API_KEY`) 
 
 ---
 
+## Deployment readiness
+
+- **Repos:** All six repos created under Zack-Grogan; `main` pushed: G-Trade, es-hotzone-trader, g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web.
+- **Naming:** Repo names as above; Railway service names g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web.
+- **Linear:** Project G-Trade (team GDG); branch prefix GDG for issues.
+- **Railway:** Project G-Trade; four services deployed from the four g-trade-* repos.
+- **Cursor:** .cursor and MCP (Linear, GitHub, Railway, OpenViking, etc.) aligned; “repo root” for workspace scripts = G-Trade repo root.
+
+---
+
 ## Quick reference
 
 - **Operator workflow:** [OPERATOR.md](OPERATOR.md)

@@ -18,6 +18,21 @@ Human-maintained docs are the source of truth. Generated docs (e.g. from `script
 - **`docs/`** — Operator and architecture docs. Start at [docs/README.md](docs/README.md) (index). Canonical paths: [docs/architecture/overview.md](docs/architecture/overview.md), [docs/OPERATOR.md](docs/OPERATOR.md), [docs/Compliance-Boundaries.md](docs/Compliance-Boundaries.md), [docs/Current_Plan.md](docs/Current_Plan.md). Runbooks in `docs/runbooks/`; strategy/research in `docs/research/`; engineering system in `docs/engineering-system/`.
 - **`.cursor/plans/`** — Execution plans. The canonical architecture and phased plan for TUI Sunset and Railway is in **tui_sunset_and_railway_data_network_6d1ff9ac.plan.md**. Do not edit the plan file unless the user explicitly asks to change the plan.
 
+## Repositories
+
+Code and docs live in six GitHub repos under **Zack-Grogan**:
+
+| Repo | Contents |
+|------|----------|
+| **G-Trade** | This workspace: docs, .cursor, scripts, AGENTS.md, .github. "Repo root" for commands like `python scripts/onboard_openviking.py` = root of the G-Trade clone. |
+| **es-hotzone-trader** | Trading CLI, engine, bridge, observability. |
+| **g-trade-ingest** | Ingest API (railway/ingest). |
+| **g-trade-analytics** | Analytics API (railway/analytics). |
+| **g-trade-mcp** | MCP server (railway/mcp). |
+| **g-trade-web** | Next.js app (railway/web). |
+
+Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear project G-Trade (team GDG) and prefix GDG where applicable.
+
 ## Major entry points
 
 | Entry point | Location | Purpose |

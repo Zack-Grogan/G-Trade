@@ -93,7 +93,7 @@ For full configuration examples and alternatives, see the [OpenViking quick star
 ### First-time ingest (onboarding)
 
 1. **Prereqs:** Create `~/.openviking/ov.conf` (copy from [ov.conf.example](global-cursor-pack/mcp/ov.conf.example), add your API keys). Create workspace dir: `mkdir -p ~/.openviking/workspace`. Set `OPENVIKING_CONFIG_FILE` and optionally `OPENVIKING_DATA_PATH` if you use a different path.
-2. **Run from repo root:** `python scripts/onboard_openviking.py`  
+2. **Run from G-Trade repo root** (workspace root where docs/ and scripts/ live): `python scripts/onboard_openviking.py`  
    The script runs `generate_docs_index.py`, then ingests `docs/` (authored + generated) and `AGENTS.md`, `README.md`. It prints the `viking://` root URIs for querying.
 3. **Refresh:** Run the same command after significant doc or structure changes, or after a merge. See "Refresh cadence" below.
 

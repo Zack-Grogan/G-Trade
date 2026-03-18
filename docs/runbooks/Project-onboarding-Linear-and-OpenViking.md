@@ -9,7 +9,7 @@ One-time setup so the repo is trackable in Linear and queryable via OpenViking i
 
 ## OpenViking
 
-1. **First-time ingest:** [docs/engineering-system/openviking-integration.md](../engineering-system/openviking-integration.md) — ensure `~/.openviking/ov.conf` and workspace dir exist, then run from repo root: `python scripts/onboard_openviking.py`. This regenerates `docs/generated/` and ingests `docs/`, `AGENTS.md`, and `README.md` into OpenViking.
+1. **First-time ingest:** [docs/engineering-system/openviking-integration.md](../engineering-system/openviking-integration.md) — ensure `~/.openviking/ov.conf` and workspace dir exist, then run from G-Trade repo root (workspace root): `python scripts/onboard_openviking.py`. This regenerates `docs/generated/` and ingests `docs/`, `AGENTS.md`, and `README.md` into OpenViking.
 2. **Refresh:** Run the same command after doc or structure changes, or use the Cursor command **Refresh OpenViking** (or `/refresh-openviking`).
 
 ## Quick links

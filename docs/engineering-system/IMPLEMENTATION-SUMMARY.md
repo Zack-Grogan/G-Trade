@@ -6,7 +6,7 @@ Summary of what was added or changed for the AI engineering operating layer. Do 
 
 ## 1. Repo audit (concise)
 
-- **Workspace:** Composite; git in `es-hotzone-trader/` only. Stacks: Python 3.11 (app + railway ingest/analytics/mcp), Next.js (railway/web). Entry: `es-trade` CLI, `railway/*/app.py`. Commands: pytest, ruff, black, npm run dev/build/start. Docs: docs/ (architecture, operator, compliance, runbooks, research, state, tasks). CI: none. Cursor: .cursor/rules (now 10 files), .cursor/plans, .cursor/agents, .cursor/skills, .cursor/mcp.json. No formal issue/branch/PR convention before this pass. Railway and docs strongly present. No prior docs-generation script.
+- **Workspace:** Composite; six repos under Zack-Grogan. Workspace root (docs, .cursor, scripts) in **G-Trade**; app code in **es-hotzone-trader** and **g-trade-ingest**, **g-trade-analytics**, **g-trade-mcp**, **g-trade-web**. Stacks: Python 3.11 (app + railway ingest/analytics/mcp), Next.js (railway/web). Entry: `es-trade` CLI, `railway/*/app.py`. Commands: pytest, ruff, black, npm run dev/build/start. Docs: docs/ (architecture, operator, compliance, runbooks, research, state, tasks). CI: none. Cursor: .cursor/rules (now 10 files), .cursor/plans, .cursor/agents, .cursor/skills, .cursor/mcp.json. No formal issue/branch/PR convention before this pass. Railway and docs strongly present. No prior docs-generation script.
 - **Classification:** Local = AGENTS, rules, docs, script, PR/issue templates, ignore files. Global = MCP auth, hooks install, Linear/GitHub/Railway admin. Hybrid = global-cursor-pack templates; install is manual.
 
 ---

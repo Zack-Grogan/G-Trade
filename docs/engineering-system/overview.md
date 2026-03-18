@@ -8,7 +8,7 @@ This section describes the AI operating layer: how Cursor, Linear, GitHub, Railw
 - **Linear** — Work and issue/planning source of truth (when used). See [linear-workflow.md](linear-workflow.md). Setup and backfill: [linear-setup.md](linear-setup.md); see also [runbooks/Project-onboarding-Linear-and-OpenViking.md](../runbooks/Project-onboarding-Linear-and-OpenViking.md).
 - **GitHub** — Code truth, branches, PRs, review workflow. See [github-workflow.md](github-workflow.md).
 - **Railway** — Runtime/deployment; agent usage is conservative and non-production by default. See [railway-usage-policy.md](railway-usage-policy.md).
-- **OpenViking** — Durable repository knowledge and documentation index behind MCP; not an app runtime dependency. See [openviking-integration.md](openviking-integration.md). First-time ingest: run `python scripts/onboard_openviking.py` from repo root; see [runbooks/Project-onboarding-Linear-and-OpenViking.md](../runbooks/Project-onboarding-Linear-and-OpenViking.md).
+- **OpenViking** — Durable repository knowledge and documentation index behind MCP; not an app runtime dependency. See [openviking-integration.md](openviking-integration.md). First-time ingest: run `python scripts/onboard_openviking.py` from G-Trade repo root; see [runbooks/Project-onboarding-Linear-and-OpenViking.md](../runbooks/Project-onboarding-Linear-and-OpenViking.md).
 - **Repo docs** — Human-maintained source of truth. **Generated docs** — Machine-maintained index/maps produced by `scripts/generate_docs_index.py` under `docs/generated/`.
 
 ## Local vs global

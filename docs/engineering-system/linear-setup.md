@@ -27,7 +27,7 @@ See [linear-workflow.md](linear-workflow.md) and [github-workflow.md](github-wor
 
 Open work from [Tasks.md](../Tasks.md) and the plan is listed in [linear-backfill-issues.md](linear-backfill-issues.md). Create those issues in your Linear project (manually or via the optional script below).
 
-**Optional script:** With `LINEAR_API_KEY` and `LINEAR_TEAM_ID` set in your environment, run from repo root:
+**Optional script:** With `LINEAR_API_KEY` and `LINEAR_TEAM_ID` set in your environment, run from G-Trade repo root:
 
 ```bash
 python scripts/linear_backfill.py
