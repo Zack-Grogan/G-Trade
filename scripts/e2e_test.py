@@ -36,6 +36,7 @@ ANALYTICS_URL = (os.environ.get("ANALYTICS_URL") or os.environ.get("RAILWAY_ANAL
 RLM_URL = (os.environ.get("RLM_URL") or os.environ.get("RAILWAY_RLM_URL") or "").rstrip("/")
 INGEST_API_KEY = os.environ.get("INGEST_API_KEY", "")
 ANALYTICS_API_KEY = os.environ.get("ANALYTICS_API_KEY", "")
+RLM_AUTH_TOKEN = os.environ.get("RLM_AUTH_TOKEN", "")
 TIMEOUT = 30.0
 
 def _is_localhost(url: str) -> bool:
@@ -150,12 +151,16 @@ def main() -> int:
             print("\n5. RLM endpoints (require DATABASE_URL)")
             rlm_skipped = 0
             rlm_saw_503 = False
+            rlm_headers = {}
+            if RLM_AUTH_TOKEN:
+                rlm_headers["Authorization"] = f"Bearer {RLM_AUTH_TOKEN}"
             for label, method, url, kwargs in [
                 ("RLM /similar_trades", "get", f"{RLM_URL}/similar_trades", {"params": {"trade_id": 1, "limit": 5}}),
                 ("RLM /hypotheses/generate", "post", f"{RLM_URL}/hypotheses/generate", {"json": {"regime_context": "E2E test", "generation": 1}}),
                 ("RLM /replay/checkpoints", "get", f"{RLM_URL}/replay/checkpoints", {"params": {"limit": 10}}),
                 ("RLM /benchmark/checkpoints", "get", f"{RLM_URL}/benchmark/checkpoints", {"params": {"limit": 10}}),
             ]:
+                kwargs.setdefault("headers", {}).update(rlm_headers)
                 try:
                     r = client.request(method, url, **kwargs)
                     if r.status_code == 200:
