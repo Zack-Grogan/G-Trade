@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "g_trade": {
+      "url": "http://127.0.0.1:8081/mcp"
+    },
+    "exa": {
+      "url": "https://mcp.exa.ai/mcp?exaApiKey=0bb1433a-6043-4f95-a462-df4fe0b9d7ac"
+    },
+    "openviking": {
+      "command": "python",
+      "args": ["scripts/openviking_mcp_server.py"],
+      "env": {
+        "OPENVIKING_CONFIG_FILE": "~/.openviking/ov.conf",
+        "OPENVIKING_DATA_PATH": "~/.openviking/workspace"
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://github-mcp.example/sse",
+      "env": {
+        "GITHUB_TOKEN": "<set in Cursor or env; never commit>"
+      }
+    },
+    "linear": {
+      "url": "https://linear-mcp.example/sse",
+      "env": {
+        "LINEAR_API_KEY": "<set in Cursor or env; never commit>"
+      }
+    },
+    "railway": {
+      "url": "https://railway-mcp.example/sse",
+      "env": {
+        "RAILWAY_TOKEN": "<set in Cursor or env; never commit>"
+      }
+    },
+    "openviking": {
+      "url": "https://openviking.example/mcp",
+      "env": {
+        "OPENVIKING_API_KEY": "<set in Cursor or env; never commit>"
+      }
+    }
+  }
+}

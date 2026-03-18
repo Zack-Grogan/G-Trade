@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "openviking": {
+      "command": "uvx",
+      "args": ["openviking-mcp"],
+      "env": {
+        "OPENVIKING_CONFIG_FILE": "<path-to-ov.conf e.g. ~/.openviking/ov.conf>",
+        "OPENVIKING_DATA_PATH": "<optional; OpenViking workspace/data path if not in ov.conf>"
+      }
+    }
+  }
+}

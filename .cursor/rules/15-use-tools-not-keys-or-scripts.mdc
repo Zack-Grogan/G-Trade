@@ -1,0 +1,28 @@
+---
+alwaysApply: true
+---
+# Use Existing Tools — No Keys or Scripts
+
+Do **not** ask for API keys, team IDs, project IDs, or other credentials when you have MCP tools or CLIs that can do the job. Do **not** write one-off scripts to call external APIs when those tools exist.
+
+## Rules
+
+1. **Prefer MCP and CLI first.** Before asking for an API key or writing a script, check whether an MCP server or installed CLI can perform the action (e.g. Linear MCP for issues/projects, `ov` for OpenViking, `linear` CLI if present). Use them.
+2. **Do not request credentials** (API keys, project IDs, team IDs, etc.) so you can "write a script" or "call the API." Use the tool that already has access.
+3. **Do not write scripts** for one-off operations that are about using a third-party service (Linear, OpenViking, etc.) unless the user explicitly asks for a script. The only code you should write is project-relevant application code or what the user directly asks you to write.
+4. **If a tool is available, use it.** When you have both MCP and CLI, use whichever fits the task. Do not fall back to "I need the API key" or "run this script I'm about to write" unless no tool exists and the user has asked for automation.
+
+## MCP servers available (use these; do not ask for keys or write scripts)
+
+All of the following MCPs are available to the agent. Use their tools and resources instead of requesting API keys or writing one-off scripts.
+
+- **Clerk** — Auth/user management. Use Clerk MCP tools; do not ask for Clerk API keys or write custom auth scripts.
+- **Exa** — Web and code search (e.g. `web_search_exa`, `get_code_context_exa`). Use for search; do not ask for Exa API keys or write crawlers.
+- **G-Trade** (g_trade) — Trading runs, events, performance. Tools: `get_health`, `get_debug_state`, `get_runtime_summary`, `query_events`, `list_runs`, `get_run_context`, `list_completed_trades`, `get_performance_summary`, `get_event_timeline`, `get_order_event_story`, `summarize_execution_reconstruction`, `explain_pnl_window`. Resources: `state://health`, `state://debug`, `observability://current-run`, `observability://runs/recent`, `observability://performance/current`.
+- **GitHub** — Repos, PRs, issues. Use GitHub MCP tools; do not ask for GitHub tokens to script the same actions.
+- **Linear** — Issues, projects, team workflow. Use Linear MCP tools; do not ask for `LINEAR_API_KEY` / team/project IDs to write issue scripts.
+- **OpenViking** — Durable repo/knowledge search. Tools: `openviking_find`, `openviking_read`, `openviking_glob`, `openviking_abstract`, `openviking_overview`, `openviking_grep`. Use for `viking://` resources and semantic search; do not ask for config paths or keys to write ingest scripts unless the user explicitly requests it.
+- **Playwright** — Browser automation. Use Playwright MCP tools; do not ask for credentials to drive browsers via custom scripts.
+- **Railway** — Deploy and config. Use Railway MCP tools; do not ask for Railway tokens to script deploys.
+
+**CLIs:** Prefer `ov` (OpenViking ingest, e.g. `ov add-resource`) and `linear` (if installed) when they fit the task.

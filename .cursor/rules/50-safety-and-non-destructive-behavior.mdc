@@ -1,0 +1,16 @@
+---
+description: Avoid destructive or risky behavior by default; flag edits to sensitive files; no secrets, no forced production automation.
+alwaysApply: true
+---
+
+# Safety and non-destructive behavior
+
+**When this applies:** Any edit; special attention for env, auth, migrations, infra, or broad refactors.
+
+**Do this:**
+- Do not add secrets, API keys, or credentials to the repo. Do not assume production deployment permissions or force production automation.
+- Do not run destructive shell commands (e.g. rm -rf on broad paths, force push to shared branches) without explicit user confirmation.
+- Flag or call out edits to sensitive surfaces: env files, auth config, billing, migrations, infra configs. Prefer minimal, reversible changes there.
+- Do not refactor business logic or product architecture solely for cleanliness; do not rename large parts of the codebase unless required.
+
+**Full procedure:** AGENTS.md "Safety constraints" and "What requires approval before editing"; docs/Compliance-Boundaries.md.

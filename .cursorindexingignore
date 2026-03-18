@@ -1,0 +1,13 @@
+# Reduce indexing of heavy or transient paths. Authored docs and source are indexed. Not a security control.
+
+logs/
+*.log
+.pytest_cache/
+__pycache__/
+node_modules/
+.egg-info/
+dist/
+build/
+htmlcov/
+.playwright-mcp/
+.DS_Store

@@ -1,0 +1,42 @@
+[
+  {
+    "title": "Phase 7 — Hardening",
+    "description": "Backpressure on outbox size, alerts on queue growth, replay/consistency checks, recovery/rollback runbook (optional/future). Source: Tasks.md Phase 7.",
+    "type": "feature"
+  },
+  {
+    "title": "E2E validation",
+    "description": "Confirm full path (Mac bridge → ingest → Postgres → analytics/MCP/web) in your environment with a test run. Source: Tasks.md Open / future.",
+    "type": "task"
+  },
+  {
+    "title": "Track new work in Linear",
+    "description": "Migrate from Tasks.md checklist to Linear for new features and ops work; keep Tasks.md for completed migration only. Source: Tasks.md.",
+    "type": "task"
+  },
+  {
+    "title": "Outbox backpressure",
+    "description": "Implement backpressure when outbox size exceeds a threshold so local trader does not unboundedly queue bridge payloads. Phase 7 / Current-State.",
+    "type": "feature"
+  },
+  {
+    "title": "Alerts on queue growth",
+    "description": "Add alerts or monitoring when bridge outbox/queue growth indicates backlog or ingest slowness. Phase 7 / Current-State.",
+    "type": "feature"
+  },
+  {
+    "title": "Replay and consistency checks",
+    "description": "Replay/consistency checks between local observability store and Railway Postgres (e.g. idempotency, gap detection). Phase 7 / Current-State.",
+    "type": "feature"
+  },
+  {
+    "title": "Recovery and rollback runbook",
+    "description": "Short runbook for recovery and rollback when bridge or ingest fails or data is inconsistent. Phase 7 / Current-State.",
+    "type": "task"
+  },
+  {
+    "title": "Integration/E2E tests vs Railway",
+    "description": "Add integration or E2E tests against real Railway services (ingest, analytics); document how to run them. Current-State: not documented.",
+    "type": "task"
+  }
+]

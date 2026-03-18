@@ -1,0 +1,14 @@
+---
+description: Templates and global-pack content under docs/engineering-system/ are for reuse; do not overfit them to this repo only.
+alwaysApply: false
+---
+
+# Reusable template boundary
+
+**When this applies:** Adding or editing templates, playbooks, or global-pack content under docs/engineering-system/global-cursor-pack/.
+
+**Do this:**
+- Keep content generic enough to apply to other repos; avoid hardcoding repo-specific details except in clearly marked examples.
+- Prefer parameterized or placeholder patterns over G-Trade-specific assumptions. When editing, ask whether the change would work for a different repo.
+
+**Full procedure:** docs/engineering-system/future-project-starter.md, docs/engineering-system/local-vs-global.md.

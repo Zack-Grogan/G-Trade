@@ -1,0 +1,18 @@
+---
+description: Read AGENTS.md first; it is the repository operating contract. Structural or behavioral changes require following the contract.
+alwaysApply: true
+---
+
+# Core operating contract
+
+**When this applies:** Structural or behavioral change to modules, config surface, deployment topology, or safety-relevant behavior.
+
+**Do this:**
+- Read AGENTS.md and the doc it points to for that area (architecture, OPERATOR, Compliance-Boundaries as relevant).
+- Do not redesign product architecture or rewrite business logic unless explicitly required.
+- Preserve existing conventions unless there is a documented reason to evolve them.
+- When uncertain, create neutral scaffolding or TODO markers rather than risky assumptions.
+
+**Approval required:** Plan file (e.g. tui_sunset_and_railway), broad refactors, compliance/safety-critical paths — see AGENTS.md "What requires approval before editing."
+
+**Full procedure:** AGENTS.md, docs/architecture/overview.md.

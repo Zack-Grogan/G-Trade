@@ -1,0 +1,15 @@
+---
+description: Railway services deploy only to Railway; use skill and MCP/CLI for deploy and operations; conservative, non-production-by-default.
+alwaysApply: true
+---
+
+# Railway and infra guardrails
+
+**When this applies:** Deploying, inspecting, or changing Railway services (ingest, analytics, mcp, web).
+
+**Do this:**
+- Deploy and operate only via Railway CLI or Railway MCP (e.g. railway up, railway logs, railway status). Do not run railway/ services locally as a substitute for deployment.
+- Before using Railway CLI or MCP, read the **use-railway** skill (.cursor/skills/use-railway/SKILL.md) for preflight (auth, link, context), common commands, and execution rules.
+- Default to non-production usage; do not assume production deployment permissions or automate production changes without explicit user direction.
+
+**Full procedure:** docs/engineering-system/railway-usage-policy.md; skill: use-railway.

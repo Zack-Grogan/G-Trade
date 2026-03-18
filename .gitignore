@@ -1,0 +1,27 @@
+# App code lives in separate repos; do not track here
+es-hotzone-trader/
+railway/
+
+# Env and secrets
+.env
+.env.*
+
+# Transient and local
+logs/
+*.log
+.pytest_cache/
+__pycache__/
+node_modules/
+.egg-info/
+dist/
+build/
+htmlcov/
+.playwright-mcp/
+.DS_Store
+
+# Optional: Cursor debug logs
+.cursor/*.log
+
+# Temp or local-only
+/x/
+/~

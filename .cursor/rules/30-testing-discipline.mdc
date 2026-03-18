@@ -1,0 +1,14 @@
+---
+description: Run relevant tests before completing code changes; do not remove tests without a documented reason.
+alwaysApply: false
+---
+
+# Testing discipline
+
+**When this applies:** Before completing a code change that touches application or service code.
+
+**Do this:**
+- Run the relevant tests (e.g. pytest from es-hotzone-trader, or the test surface for the area changed).
+- Do not remove or disable tests unless there is an explicit, documented reason (e.g. behavior obsolete). Prefer fixing or updating tests to match intended behavior.
+
+**Full procedure:** AGENTS.md "Testing contract."
