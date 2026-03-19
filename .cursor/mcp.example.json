@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "g_trade": {
+      "url": "https://g-trade-mcp-production.up.railway.app",
+      "headers": {
+        "Authorization": "Bearer <g_trade_mcp_token>"
+      }
+    },
+    "exa": {
+      "url": "https://mcp.exa.ai/mcp?exaApiKey=<exa_api_key>"
+    },
+    "openviking": {
+      "command": "python",
+      "args": ["scripts/openviking_mcp_server.py"],
+      "env": {
+        "OPENVIKING_CONFIG_FILE": "~/.openviking/ov.conf",
+        "OPENVIKING_DATA_PATH": "~/.openviking/workspace"
+      }
+    },
+    "upstash": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/mcp-server@latest",
+        "--email",
+        "info@example.com",
+        "--api-key",
+        "<upstash_api_key>"
+      ]
+    },
+    "shadcn": {
+      "url": "https://www.shadcn.io/api/mcp"
+    }
+  }
+}

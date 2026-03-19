@@ -1,0 +1,49 @@
+model = "gpt-5.4"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+model_reasoning_effort = "high"
+web_search = "live"
+file_opener = "cursor"
+
+[features]
+skills = true
+shell_snapshot = true
+
+[beta]
+rmcp = true
+
+# Copy to `.codex/config.toml` and replace placeholder values with your local credentials.
+
+[mcp_servers.g_trade]
+url = "https://g-trade-mcp-production.up.railway.app"
+http_headers = { "Authorization" = "Bearer <g_trade_mcp_token>" }
+enabled = true
+
+[mcp_servers.exa]
+url = "https://mcp.exa.ai/mcp?exaApiKey=<exa_api_key>"
+enabled = true
+
+[mcp_servers.upstash]
+command = "npx"
+args = ["-y", "@upstash/mcp-server@latest", "--email", "info@example.com", "--api-key", "<upstash_api_key>"]
+enabled = true
+
+[mcp_servers.railway]
+command = "npx"
+args = ["-y", "@railway/mcp-server"]
+enabled = true
+
+[mcp_servers.github]
+url = "https://api.githubcopilot.com/mcp/"
+http_headers = { "Authorization" = "Bearer <github_pat>" }
+enabled = true
+
+[mcp_servers.daytona_mcp]
+command = "daytona"
+args = ["mcp", "start"]
+env = { "HOME" = "/Users/your-user" }
+enabled = true
+
+[mcp_servers.clerk]
+url = "https://mcp.clerk.com/mcp"
+enabled = true
