@@ -2,6 +2,12 @@
 
 This file is the **repository operating contract** for AI agents. Read it before structural or behavioral changes. It orients agents to architecture, layout, conventions, and guardrails.
 
+**What this document is:** A **router and gate-keeper**. It tells you which rule, skill, or doc to load for a given intent. It does not explain how Railway works, how to write Python, or how external APIs behave — those live in skills and official docs.
+
+**What this document is NOT:** A code reference or a substitute for reading the referenced skill or doc. If you need more than "which gate do I hit", load the referenced skill/doc; do not infer from AGENTS.md alone.
+
+**Heuristic: Verify before implement.** For any external API, SDK, or CLI command you have not personally verified in the last 30 days, treat it as potentially stale. Use web search, official docs, or an MCP tool to confirm. Do not guess from training data — e.g. do not spend many messages guessing Railway CLI behavior; read [.cursor/skills/use-railway/SKILL.md](.cursor/skills/use-railway/SKILL.md) first.
+
 ## Repo purpose
 
 G-Trade is a workspace containing:
@@ -41,10 +47,10 @@ Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear p
 | Engine | `es-hotzone-trader/src/engine/trading_engine.py` | Strategy, sync, protection, adoption, dynamic exit. |
 | Bridge | `es-hotzone-trader/src/bridge/railway_bridge.py` | In-process telemetry to Railway ingest; gated by config. |
 | Debug server | `es-hotzone-trader/src/server/debug_server.py` | Health and `/debug` HTTP only; no MCP. |
-| Railway ingest | `railway/ingest/app.py` | POST /ingest/state, /ingest/events, /ingest/trades. |
+| Railway ingest | `railway/ingest/app.py` | POST /ingest/state, /ingest/events, /ingest/trades, and observability payloads including runtime logs. |
 | Railway analytics | `railway/analytics/app.py` | Read-only API over Postgres. |
 | Railway MCP | `railway/mcp/app.py` | MCP endpoint for Cursor; tools backed by analytics. |
-| Railway web | `railway/web/` | Next.js app; calls analytics API only. |
+| Railway web | `railway/web/` | Next.js operator console; server-side analytics and advisory RLM access only. |
 
 ## Main services / modules
 
@@ -58,7 +64,7 @@ Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear p
 | es-hotzone-trader | `cd es-hotzone-trader && pip install -e ".[dev]"` | Install with dev deps. |
 | es-hotzone-trader | `pytest` | From repo root or es-hotzone-trader. |
 | es-hotzone-trader | `ruff check .` / `black .` | Lint/format (pyproject config). |
-| railway/web | `cd railway/web && npm run dev` / `npm run build` | Local dev only; deploy via Railway. |
+| railway/web | `cd railway/web && bun run dev` / `bun run build` | Bun; local dev only; deploy via Railway. |
 | Docs index | `python scripts/generate_docs_index.py` | Idempotent; writes to docs/generated/. |
 
 ## Documentation contract
@@ -71,6 +77,7 @@ Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear p
 
 - Run relevant tests before completing a change that touches code. Prefer `pytest` from the app directory; respect existing testpaths and asyncio_mode in pyproject.
 - Do not remove or disable tests unless there is an explicit reason (e.g. obsolete behavior); document the reason.
+- For Clerk-gated `railway/web` changes, treat the deployed Railway URL as the authoritative environment. Local `bun run dev` or `bun run start` is useful for build and smoke checks, but final auth gating, navigation, and data-visibility validation must happen on the live Railway deployment after push.
 
 ## Issue / branch / PR contract
 
@@ -115,7 +122,7 @@ Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear p
 ## Conventions
 
 - **Python (es-hotzone-trader):** 3.11+, Click CLI, config via YAML + env. Observability in `src/observability/`, bridge in `src/bridge/`, execution in `src/execution/`, engine in `src/engine/`.
-- **Railway services:** Each has a `README.md` and `requirements.txt` (or `package.json` for web). Ingest and analytics use FastAPI; MCP uses FastAPI; web uses Next.js. Auth is Bearer or single-operator token.
+- **Railway services:** Each has a `README.md` and `requirements.txt` (or `package.json` for web). Ingest, analytics, MCP, and RLM use FastAPI; web uses Next.js. Auth is Bearer or single-operator token.
 - **Docs:** When you change behavior or deployment, update the relevant doc (OPERATOR.md, Architecture-Overview.md, runbook, or Compliance-Boundaries.md) and, if material, add research traceability (citations/assumptions) per Compliance-Boundaries.
 
 ## What to touch
@@ -131,25 +138,68 @@ Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear p
 - Do not expose unauthenticated endpoints on ingest, analytics, MCP, or web.
 - Do not treat ignore files as security controls; they only reduce noise and indexing load.
 
-## Where to go for what (routing by task)
+## Available tools (MCP + CLI + Skill)
 
-| Task / intent | Rule(s) | Skill(s) | Doc(s) |
-|---------------|---------|----------|--------|
-| Structural or architecture change | 00, 20 | — | docs/architecture/overview.md, Current-State, OPERATOR |
-| Issue-driven work (branch, commit, PR) | 40 | issue-to-pr | linear-workflow, github-workflow, playbook starting-work-from-linear-issue |
-| Exploratory work, no issue | 05, 40 | — | cursor-operating-model, linear-workflow (exploratory) |
-| Docs or generated index | 10 | — | overview (generated docs), OPERATOR |
-| Railway deploy or ops | 70 | use-railway | railway-usage-policy |
-| OpenViking / durable search / progress | 60, 61 | use-openviking | openviking-integration |
-| Safety, destructive guard, sensitive files | 50 | — | Compliance-Boundaries, AGENTS "Safety constraints" |
-| Reusing templates / global pack | 80 | — | future-project-starter, local-vs-global |
+| Tool | Access | Use for |
+|------|--------|---------|
+| Railway MCP + CLI | [.cursor/skills/use-railway/SKILL.md](.cursor/skills/use-railway/SKILL.md) | Railway: deploys, logs, status, variables, environments, buckets, domains. Read skill first; run preflight before any mutation. |
+| Upstash skill | [.cursor/skills/upstash/SKILL.md](.cursor/skills/upstash/SKILL.md) | Redis, QStash, rate limit, workflow, vector, search. Route to sub-skill; do not hand-roll clients. |
+| Exa MCP | `web_search_exa`, `get_code_context_exa` | Web/code search — use before guessing external API or SDK behavior. |
+| OpenViking MCP | [.cursor/skills/use-openviking/SKILL.md](.cursor/skills/use-openviking/SKILL.md) | Cross-repo durable knowledge, semantic search, progress reports. |
+| Linear MCP | Linear tools | Issues, projects, team workflow. |
+| G-Trade MCP | `g_trade` | Trading runs, events, performance, execution state. |
+| GitHub MCP | GitHub tools | Repos, PRs, issues. |
+| Playwright MCP | Playwright tools | Browser automation. |
+| Clerk MCP | Clerk tools | Auth/user management. |
+
+Prefer MCP and CLIs over asking for API keys or writing one-off scripts (rule 15).
+
+## Subagent routing
+
+The GLM orchestrates by dispatching to specialized subagents; dispatch is execution, not delegation. See [.cursor/rules/03-orchestration-first.mdc](.cursor/rules/03-orchestration-first.mdc) for the full model.
+
+| Task type | Subagent | When to use |
+|-----------|----------|-------------|
+| Exploration / broad search | **explore** | Find files by pattern, search code for keywords, "how does X work" across codebase. Specify thoroughness (quick / medium / very thorough). |
+| Code review | **code-reviewer** | PR or diff review; correctness, security, maintainability. |
+| API / endpoint testing | **api-tester** | API validation, performance testing, QA. |
+| Quality / verification | **evidence-collector** | QA with visual evidence; default to finding issues. |
+| Performance analysis | **performance-benchmarker** | Measure, analyze, improve performance. |
+| Documentation | **technical-writer** | Developer docs, API refs, READMEs, tutorials. |
+| Security review | **security-engineer** | Threat modeling, vulnerability assessment, secure code review. |
+| Status / progress / analysis | **openviking-analyst** | Project status, impact analysis, cross-doc synthesis (with OpenViking). |
+| Shell / commands | **shell** | Git, Railway CLI, tests, any terminal execution. |
+| Multi-step research or execution | **generalPurpose** | Broad research or multi-step work when no single specialist fits. |
+
+**Dispatch patterns:** Run at most **two subagents at a time**. Parallel (max 2) for independent subtasks; sequential for dependent work (e.g. implement → review → test). For full spec-to-production pipeline, apply the **agents-orchestrator** skill (.cursor/skills/agents-orchestrator/).
+
+## Where to go for what (forced gates)
+
+These gates are binding: when intent matches a row below, do the listed step before proceeding. You **MUST** do the "Must do first" step before anything else. Do not do the "Do not do" anti-patterns.
+
+| Gate | Intent matches | Must do first | Do not do |
+|------|----------------|---------------|-----------|
+| **Railway operations** | Railway deploy, logs, status, variables, environment, service, bucket, domain, networking | **Read [.cursor/skills/use-railway/SKILL.md](.cursor/skills/use-railway/SKILL.md) first.** Run preflight: `railway whoami --json` and `railway status --json`. Prefer GitHub push for deploys; use Railway MCP when available; use CLI only when MCP isn't working or the resource isn't natively available. Also apply rule 70 when planning or operating Railway. | Do not guess CLI auth state; do not fall back to raw GraphQL without reading the skill's `request.md` reference; when using CLI for a deploy, do not push to GitHub in the same iteration (one build path). |
+| **Upstash / serverless data** | Redis, QStash, rate limit, workflow, vector, search | **Read [.cursor/skills/upstash/SKILL.md](.cursor/skills/upstash/SKILL.md) first.** Route to the matching sub-skill. | Do not hand-roll HTTP clients; do not invent env var names without checking the skill. |
+| **External SDK / API (non-Railway)** | Daytona, LangChain, x.ai, any Python/JS package not already in the repo | **Read [.cursor/rules/92-research-and-official-sdks.mdc](.cursor/rules/92-research-and-official-sdks.mdc) first.** Web search or doc fetch before implementing. | Do not guess import paths; do not use training data for API shapes. |
+| **Third-party / BaaS** | Any framework, BaaS, or external service | **Read [.cursor/rules/90-third-party-baas-research.mdc](.cursor/rules/90-third-party-baas-research.mdc) first.** Confirm from official docs (current date). | Do not assume from training data. |
+| **Repo / project-wide search** | "How does X work", "where is Y", cross-repo context, durable knowledge | **Read [.cursor/skills/use-openviking/SKILL.md](.cursor/skills/use-openviking/SKILL.md) first.** | Do not guess; do not substitute raw grep when OpenViking is the right tool for cross-repo. |
+| **Status / progress / analysis** | "Progress monster", impact, project status, deep analysis | **Read rule 61.** Apply use-openviking skill; consider openviking-analyst subagent. | Do not synthesize from partial in-repo grep. |
+| **Railway iteration (fixing a deploy)** | Build failing, service crashing, investigating logs | **Read [.cursor/rules/71-railway-iteration-single-build-path.mdc](.cursor/rules/71-railway-iteration-single-build-path.mdc).** Prefer GitHub push; use CLI only when MCP unavailable or operation not in MCP. | — |
+| **New integration / adapter** | Writing new integration, adapter, or service module | Read the relevant skill first; if none exists, verify SDK/API from official docs before coding. | Do not write integration code without verifying SDK/API shape first. |
+| **Structural or architecture change** | Module boundaries, config surface, deployment topology | 00, 20. Read docs/architecture/overview.md, Current-State, OPERATOR. | — |
+| **Issue-driven work (branch, commit, PR)** | Linear issue, branch, PR | 40. Use issue-to-pr skill; linear-workflow, github-workflow. | — |
+| **Exploratory work, no issue** | No Linear issue yet | 05, 40. cursor-operating-model, linear-workflow (exploratory). | — |
+| **Docs or generated index** | Updating or generating docs | 10. overview (generated docs), OPERATOR. | — |
+| **Safety, destructive guard, sensitive files** | Env files, auth, billing, migrations | 50. Compliance-Boundaries, AGENTS "Safety constraints". | — |
+| **Reusing templates / global pack** | Future-project-starter, local-vs-global | 80. future-project-starter, local-vs-global. | — |
 
 Full by-concern index: [docs/engineering-system/agent-index.md](docs/engineering-system/agent-index.md).
 
 ## Quick references
 
 - **CLI entrypoint:** `es-trade` → `src/cli/commands.py` (`main`). No-arg shows help; no TUI.
-- **Bridge:** `src/bridge/railway_bridge.py` (start/stop), `src/bridge/outbox.py` (durable queue). Gated by `observability.railway_ingest_url` and API key.
+- **Bridge:** `src/bridge/railway_bridge.py` (start/stop), `src/bridge/outbox.py` (durable queue). Gated by `observability.railway_ingest_url` and preferred `observability.internal_api_token` / `GTRADE_INTERNAL_API_TOKEN`.
 - **Debug server:** Health and `/debug` only; no MCP. `src/server/debug_server.py`.
 - **Compliance:** [docs/Compliance-Boundaries.md](docs/Compliance-Boundaries.md) (Topstep, CME, pre-migration gate).
 - **Engineering system:** [docs/engineering-system/overview.md](docs/engineering-system/overview.md).
