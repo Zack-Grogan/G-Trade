@@ -1,4 +1,4 @@
-# Architecture Overview — local trader monorepo
+# Architecture Overview — local trader repo
 
 **Canonical path:** [docs/architecture/overview.md](architecture/overview.md). This file is kept for compatibility.
 
@@ -24,13 +24,13 @@
 
 | Module | Purpose |
 |--------|---------|
-| `es-hotzone-trader/src/cli/` | Operator commands and launchd workflow |
-| `es-hotzone-trader/src/engine/` | Strategy, regime logic, session gating, exits |
-| `es-hotzone-trader/src/execution/` | Order execution, protection, reconciliation |
-| `es-hotzone-trader/src/market/` | Topstep client, broker truth, fills/orders/positions |
-| `es-hotzone-trader/src/observability/` | SQLite durability, runtime logs, decision snapshots, trade review data |
-| `es-hotzone-trader/src/server/` | Local Flask console, SSE feeds, `/health`, `/debug` |
-| `es-hotzone-trader/src/analysis/` | Regime packet and trade-review analysis |
+| `src/cli/` | Operator commands and launchd workflow |
+| `src/engine/` | Strategy, regime logic, session gating, exits |
+| `src/execution/` | Order execution, protection, reconciliation |
+| `src/market/` | Topstep client, broker truth, fills/orders/positions |
+| `src/observability/` | SQLite durability, runtime logs, decision snapshots, trade review data |
+| `src/server/` | Local Flask console, SSE feeds, `/health`, `/debug` |
+| `src/analysis/` | Regime packet and trade-review analysis |
 
 ## Key docs
 

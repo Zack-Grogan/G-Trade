@@ -1,6 +1,6 @@
 # Config matrix (generated)
 
-Top-level keys in es-hotzone-trader/config/default.yaml:
+Top-level keys in config/default.yaml:
 
 - account
 - symbols

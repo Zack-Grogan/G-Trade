@@ -8,12 +8,17 @@
 logs/
 *.log
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 __pycache__/
 node_modules/
 .egg-info/
+*.egg-info/
 dist/
 build/
 htmlcov/
+coverage.xml
+*.db
 .playwright-mcp/
 .DS_Store
 

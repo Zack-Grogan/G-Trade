@@ -24,7 +24,9 @@ import re
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GENERATED = REPO_ROOT / "docs" / "generated"
-ES_APP = REPO_ROOT / "es-hotzone-trader"
+ES_APP = REPO_ROOT
+
+
 def ensure_dir():
     GENERATED.mkdir(parents=True, exist_ok=True)
 
@@ -66,13 +68,13 @@ def list_python_packages(root: Path, prefix: str) -> list[str]:
 def write_dependency_map():
     data = load_pyproject()
     deps = data.get("dependencies", [])
-    lines = ["# Dependency map (generated)", "", "## es-hotzone-trader (runtime)", ""]
+    lines = ["# Dependency map (generated)", "", "## G-Trade runtime", ""]
     for d in deps:
         lines.append(f"- {d}")
     lines.append("")
     lines.append("## Local operator stack")
     lines.append("- click, flask, sqlite3, requests, websockets, pandas, numpy")
-    lines.append("- Topstep integration runs locally via es-hotzone-trader/src/market")
+    lines.append("- Topstep integration runs locally via src/market")
     (GENERATED / "dependency-map.md").write_text("\n".join(lines))
 
 
@@ -82,8 +84,8 @@ def write_module_map():
     if src.exists():
         for d in sorted(src.iterdir()):
             if d.is_dir() and not d.name.startswith("_"):
-                modules.append(f"es-hotzone-trader.src.{d.name}")
-    lines = ["# Module map (generated)", "", "## es-hotzone-trader/src", ""]
+                modules.append(f"src.{d.name}")
+    lines = ["# Module map (generated)", "", "## src", ""]
     for m in modules:
         lines.append(f"- {m}")
     (GENERATED / "module-map.md").write_text("\n".join(lines))
@@ -93,7 +95,7 @@ def write_routes_map():
     lines = [
         "# Routes / endpoints map (generated)",
         "",
-        "## es-hotzone-trader (local service)",
+        "## Local service",
         "- GET /health",
         "- GET /debug (state snapshot)",
         "- GET / (Flask console)",
@@ -108,7 +110,7 @@ def write_routes_map():
 
 def write_config_matrix():
     yaml_path = ES_APP / "config" / "default.yaml"
-    lines = ["# Config matrix (generated)", "", "Top-level keys in es-hotzone-trader/config/default.yaml:", ""]
+    lines = ["# Config matrix (generated)", "", "Top-level keys in config/default.yaml:", ""]
     if yaml_path.exists():
         text = yaml_path.read_text()
         for line in text.splitlines():
@@ -122,19 +124,19 @@ def write_config_matrix():
 
 def write_testing_map():
     tests_dir = ES_APP / "tests"
-    lines = ["# Testing map (generated)", "", "## es-hotzone-trader/tests", ""]
+    lines = ["# Testing map (generated)", "", "## tests", ""]
     if tests_dir.exists():
         for f in sorted(tests_dir.glob("test_*.py")):
             lines.append(f"- {f.name}")
     lines.append("")
-    lines.append("Run: `pytest` from es-hotzone-trader/ or repo root. Config: pyproject.toml [tool.pytest.ini_options].")
+    lines.append("Run: `pytest` from the repo root. Config: pyproject.toml [tool.pytest.ini_options].")
     (GENERATED / "testing-map.md").write_text("\n".join(lines))
 
 
 def write_entrypoints():
     data = load_pyproject()
     scripts = data.get("scripts", {})
-    lines = ["# Entrypoints (generated)", "", "## es-hotzone-trader", ""]
+    lines = ["# Entrypoints (generated)", "", "## G-Trade", ""]
     for name, ref in scripts.items():
         lines.append(f"- **{name}** → {ref}")
     (GENERATED / "entrypoints.md").write_text("\n".join(lines))
@@ -146,12 +148,12 @@ def write_change_impact_map():
         "",
         "High-impact areas (touching these may require docs/runbook/compliance updates):",
         "",
-        "- es-hotzone-trader/src/engine/ — trading logic, reconciliation",
-        "- es-hotzone-trader/src/execution/ — order execution",
-        "- es-hotzone-trader/src/market/ — Topstep client",
-        "- es-hotzone-trader/src/server/ — local Flask console and health/debug surfaces",
-        "- es-hotzone-trader/src/bridge/ — legacy bridge code retained for historical recovery only",
-        "- es-hotzone-trader/config/default.yaml — config surface",
+        "- src/engine/ — trading logic, reconciliation",
+        "- src/execution/ — order execution",
+        "- src/market/ — Topstep client",
+        "- src/server/ — local Flask console and health/debug surfaces",
+        "- src/bridge/ — legacy bridge code retained for historical recovery only",
+        "- config/default.yaml — config surface",
         "- docs/OPERATOR.md, docs/Compliance-Boundaries.md, docs/runbooks/",
         "",
         "See AGENTS.md 'What requires docs updates' and 'What requires approval before editing'.",
@@ -165,7 +167,7 @@ def write_service_relationships():
         "# Service relationships (generated)",
         "",
         "```",
-        "Mac (es-hotzone-trader)",
+        "Mac (G-Trade)",
         "  CLI → engine → execution, market (Topstep)",
         "  engine → observability (SQLite)",
         "  Flask console ← observability, logs, broker truth, trade review",

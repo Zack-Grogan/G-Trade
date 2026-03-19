@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-18
 **Analysis Scope**: 296 events from local SQLite
-**Data Source**: es-hotzone-trader/logs/observability.db
+**Data Source**: logs/observability.db
 
 ## Executive Summary
 

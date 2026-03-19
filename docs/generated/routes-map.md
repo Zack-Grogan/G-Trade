@@ -1,6 +1,6 @@
 # Routes / endpoints map (generated)
 
-## es-hotzone-trader (local service)
+## Local service
 - GET /health
 - GET /debug (state snapshot)
 - GET / (Flask console)

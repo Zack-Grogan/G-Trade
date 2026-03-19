@@ -9,7 +9,7 @@
 ## 2. Start the trader
 
 ```bash
-cd es-hotzone-trader
+cd /Users/zgrogan/Repos/G-Trade
 es-trade service install
 es-trade service start
 es-trade service doctor
@@ -24,7 +24,7 @@ Default local endpoints:
 ## 3. Verify local runtime
 
 ```bash
-cd es-hotzone-trader
+cd /Users/zgrogan/Repos/G-Trade
 es-trade status
 es-trade broker-truth
 es-trade analyze launch-readiness

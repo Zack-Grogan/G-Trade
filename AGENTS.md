@@ -1,14 +1,14 @@
-# Agent guide — G-Trade / es-hotzone-trader
+# Agent guide — G-Trade
 
 This file is the repository operating contract for AI agents working in `G-Trade`.
 
 ## Repo purpose
 
-`G-Trade` is the canonical monorepo for:
+`G-Trade` is the canonical repo for:
 
-- `es-hotzone-trader/` — the active local trading system
+- `src/`, `config/`, `tests/`, and `pyproject.toml` — the active local trading system
 - `docs/` — operator, architecture, research, and archive notes
-- `scripts/` — repo and docs utilities
+- `scripts/` — repo and trader utilities
 - `.cursor/` and `.codex/` — project-specific AI operating assets
 
 The active stack is local-only:
@@ -31,17 +31,19 @@ Railway and MCP are retired from the active workflow. Historical references live
 
 ## Project layout
 
-- `es-hotzone-trader/`
-  - `src/cli/` — operator commands
-  - `src/analysis/` — regime packet and trade review analysis
-  - `src/engine/` — strategy, regime logic, exits, scheduling
-  - `src/execution/` — order execution and reconciliation
-  - `src/market/` — Topstep client and broker truth
-  - `src/observability/` — SQLite durability
-  - `src/server/` — local Flask console, SSE, `/health`, `/debug`
+- `src/`
+  - `cli/` — operator commands
+  - `analysis/` — regime packet and trade review analysis
+  - `engine/` — strategy, regime logic, exits, scheduling
+  - `execution/` — order execution and reconciliation
+  - `market/` — Topstep client and broker truth
+  - `observability/` — SQLite durability
+  - `server/` — local Flask console, SSE, `/health`, `/debug`
+- `config/` — runtime defaults
+- `tests/` — trader test suite
 - `docs/` — active docs
 - `docs/archive/` — historical materials
-- `scripts/` — repo utilities
+- `scripts/` — repo and trader utilities
 
 ## Start here
 
@@ -70,14 +72,14 @@ Generated docs under `docs/generated/` are machine-maintained. Do not hand-edit 
 ## Testing contract
 
 - Run relevant tests before completing a change.
-- For trader/runtime changes, prefer `pytest` from `es-hotzone-trader/`.
+- For trader/runtime changes, prefer `pytest` from the repo root.
 - Do not remove or disable tests without a documented reason.
 
 Useful commands:
 
-- `cd es-hotzone-trader && pytest`
-- `cd es-hotzone-trader && ruff check .`
-- `cd es-hotzone-trader && black .`
+- `pytest`
+- `ruff check .`
+- `black .`
 
 ## Git contract
 
@@ -88,7 +90,7 @@ Useful commands:
 
 ## Safety constraints
 
-- Do not add execution or broker logic outside `es-hotzone-trader/`.
+- Do not add execution or broker logic outside `src/`.
 - Do not add secrets or live credentials to the repo.
 - Treat `.env`, `.cursor/mcp.json`, and `.codex/config.toml` as local-only files.
 - Use example files for committed config scaffolding.
@@ -119,10 +121,10 @@ Use at most two subagents at a time.
 
 ## What requires extra care
 
-- `es-hotzone-trader/src/engine/`
-- `es-hotzone-trader/src/execution/`
-- `es-hotzone-trader/src/market/`
-- `es-hotzone-trader/src/observability/`
+- `src/engine/`
+- `src/execution/`
+- `src/market/`
+- `src/observability/`
 - launchd workflow and local runtime ports
 - compliance docs and runbooks
 

@@ -1,6 +1,6 @@
 # Dependency map (generated)
 
-## es-hotzone-trader (runtime)
+## G-Trade runtime
 
 - Flask>=3.0.0
 - pyyaml>=6.0
@@ -20,4 +20,4 @@
 
 ## Local operator stack
 - click, flask, sqlite3, requests, websockets, pandas, numpy
-- Topstep integration runs locally via es-hotzone-trader/src/market
+- Topstep integration runs locally via src/market

@@ -38,7 +38,7 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
 - Observed symptom: final broker submit/cancel transport failures can still raise through the safety path instead of failing closed.
 - Local evidence source: targeted executor tests plus runtime logs around submit/cancel failures.
 - Primary code paths:
-  - `es-hotzone-trader/src/execution/executor.py`
+  - `src/execution/executor.py`
 - External dependency:
   - official Topstep broker/API behavior docs only if retry semantics depend on transport vs. business error classes.
 - Acceptance test:
@@ -52,7 +52,7 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
   - `logs/observability.db`
   - bridge runtime logs
 - Primary code paths:
-  - `es-hotzone-trader/src/bridge/railway_bridge.py`
+  - `src/bridge/railway_bridge.py`
 - External dependency: none.
 - Acceptance test:
   - force `outbox.enqueue()` failure during replay/drain; verify cursor state does not advance and the item remains recoverable after restart.
@@ -65,7 +65,7 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
   - `logs/trading.log`
   - forced flush-failure test
 - Primary code paths:
-  - `es-hotzone-trader/src/observability/store.py`
+  - `src/observability/store.py`
 - External dependency: none.
 - Acceptance test:
   - inject a write/flush error, then verify later telemetry can still persist after recovery.
@@ -82,10 +82,10 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
   - `completed_trades`
   - `runtime_logs`
 - Primary code paths:
-  - `es-hotzone-trader/src/engine/decision_matrix.py`
-  - `es-hotzone-trader/src/engine/risk_manager.py`
-  - `es-hotzone-trader/src/engine/trading_engine.py`
-  - `es-hotzone-trader/src/engine/regime.py`
+  - `src/engine/decision_matrix.py`
+  - `src/engine/risk_manager.py`
+  - `src/engine/trading_engine.py`
+  - `src/engine/regime.py`
 - External dependency:
   - official CME Globex hours/session reference for ES session context
   - official Topstep account/order/streaming docs only where broker semantics need to be separated from signal logic
@@ -103,9 +103,9 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
   - default config
   - matrix decision payloads
 - Primary code paths:
-  - `es-hotzone-trader/src/engine/decision_matrix.py`
-  - `es-hotzone-trader/src/config/loader.py`
-  - `es-hotzone-trader/config/default.yaml`
+  - `src/engine/decision_matrix.py`
+  - `src/config/loader.py`
+  - `config/default.yaml`
 - External dependency:
   - none unless session naming needs to be aligned to an official market-hours reference.
 - Acceptance test:
@@ -121,9 +121,9 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
   - config files
   - sizing telemetry in decisions/risk logs
 - Primary code paths:
-  - `es-hotzone-trader/src/config/loader.py`
-  - `es-hotzone-trader/src/engine/risk_manager.py`
-  - `es-hotzone-trader/config/default.yaml`
+  - `src/config/loader.py`
+  - `src/engine/risk_manager.py`
+  - `config/default.yaml`
 - External dependency: none.
 - Acceptance test:
   - either implement the knobs and prove the effect, or remove them and document the runtime truth.
@@ -138,7 +138,7 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
   - live decision events
   - guard-block traces in engine logs/snapshots
 - Primary code paths:
-  - `es-hotzone-trader/src/engine/trading_engine.py`
+  - `src/engine/trading_engine.py`
 - External dependency: none.
 - Acceptance test:
   - force each guard-block branch and verify pending IDs and unresolved metadata are cleared.
@@ -149,7 +149,7 @@ Research-first roundup for `es-hotzone-trader` after the March 19 audit. This no
 - Local evidence source:
   - `logs/observability.db` tables `completed_trades`, `account_trades`, `events`
 - Primary code paths:
-  - `es-hotzone-trader/src/observability/store.py`
+  - `src/observability/store.py`
 - External dependency:
   - broker-history semantics only if local accounting turns out to be interpreting broker rows incorrectly.
 - Acceptance test:

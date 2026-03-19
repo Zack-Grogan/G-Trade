@@ -1,7 +1,7 @@
 # Service relationships (generated)
 
 ```
-Mac (es-hotzone-trader)
+Mac (G-Trade)
   CLI → engine → execution, market (Topstep)
   engine → observability (SQLite)
   Flask console ← observability, logs, broker truth, trade review

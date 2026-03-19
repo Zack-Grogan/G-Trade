@@ -1,6 +1,6 @@
 # Testing map (generated)
 
-## es-hotzone-trader/tests
+## tests
 
 - test_analysis_regime_packet.py
 - test_bridge.py
@@ -11,4 +11,4 @@
 - test_matrix_engine.py
 - test_runtime_ops.py
 
-Run: `pytest` from es-hotzone-trader/ or repo root. Config: pyproject.toml [tool.pytest.ini_options].
+Run: `pytest` from the repo root. Config: pyproject.toml [tool.pytest.ini_options].

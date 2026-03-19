@@ -17,7 +17,7 @@ This is a research artifact, not a product feature. The Topstep CSV at [`/Users/
 
 - Topstep export: [`/Users/zgrogan/Downloads/trades_export (1).csv`](/Users/zgrogan/Downloads/trades_export%20%281%29.csv)
 - Local SQLite:
-  - [`/Users/zgrogan/Repos/G-Trade/es-hotzone-trader/logs/observability.db`](/Users/zgrogan/Repos/G-Trade/es-hotzone-trader/logs/observability.db)
+  - [`/Users/zgrogan/Repos/G-Trade/logs/observability.db`](/Users/zgrogan/Repos/G-Trade/logs/observability.db)
   - `completed_trades`
   - `decision_snapshots`
   - `events`

@@ -2,7 +2,7 @@
 
 ## Scope
 
-This runbook describes the safest restart path for the ES Hot Zone Trader after lifecycle hardening. It assumes the trader is launched from the `es-hotzone-trader` project root and that the operator wants a clean, auditable stop/start sequence with preserved restart intent.
+This runbook describes the safest restart path for the ES Hot Zone Trader after lifecycle hardening. It assumes the trader is launched from the repo root and that the operator wants a clean, auditable stop/start sequence with preserved restart intent.
 
 ## Runtime Artifacts
 
@@ -33,7 +33,7 @@ Relevant system event types include:
 
 ## Pre-Restart Checks
 
-From `es-hotzone-trader/`, verify the current listener and health surfaces:
+From the repo root, verify the current listener and health surfaces:
 
 ```bash
 lsof -nP -iTCP:31381 -sTCP:LISTEN
