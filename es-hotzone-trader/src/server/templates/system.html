@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="content-grid single">
+    <article class="panel">
+      <div class="panel-head">
+        <h2>System</h2>
+        <span class="panel-chip">{{ model.summary.observability_enabled and 'observability on' or 'observability off' }}</span>
+      </div>
+      <dl class="facts">
+        <div><dt>Status</dt><dd>{{ model.health.status }}</dd></div>
+        <div><dt>Data mode</dt><dd>{{ model.health.data_mode }}</dd></div>
+        <div><dt>Zone</dt><dd>{{ model.health.zone }}</dd></div>
+        <div><dt>SQLite</dt><dd>{{ model.db_path }}</dd></div>
+        <div><dt>Run count</dt><dd>{{ model.summary.run_count }}</dd></div>
+        <div><dt>Bridge rows</dt><dd>{{ model.summary.bridge_health_count }}</dd></div>
+      </dl>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Recent runs</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Run</th>
+              <th>Started</th>
+              <th>Mode</th>
+              <th>Account</th>
+              <th>Branch</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for run in model.recent_runs %}
+              <tr>
+                <td>{{ run.run_id }}</td>
+                <td>{{ run.created_at|dt }}</td>
+                <td>{{ run.data_mode or '-' }}</td>
+                <td>{{ run.account_name or run.account_id or '-' }}</td>
+                <td>{{ run.git_branch or '-' }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="5" class="empty-cell">No run manifests recorded.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Bridge health</h2>
+      </div>
+      <div class="stack">
+        {% for row in model.bridge_health %}
+          <div class="stack-item">
+            <div class="stack-title">{{ row.observed_at|dt }}</div>
+            <div class="stack-subtle">{{ row.bridge_status or '-' }} · depth {{ row.queue_depth|integer }}</div>
+            <div>{{ row.last_error or '-' }}</div>
+          </div>
+        {% else %}
+          <div class="empty-cell">No bridge health rows available.</div>
+        {% endfor %}
+      </div>
+    </article>
+  </section>
+{% endblock %}

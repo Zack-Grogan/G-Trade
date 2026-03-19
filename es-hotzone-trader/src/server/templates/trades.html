@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="content-grid single">
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Broker fill journal</h2>
+        <span class="panel-chip">{{ model.summary.account_trade_count }} rows</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Occurred</th>
+              <th>Broker trade</th>
+              <th>Order</th>
+              <th>Side</th>
+              <th>Qty</th>
+              <th>Price</th>
+              <th>P&amp;L</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for trade in model.ledger_account_trades %}
+              <tr>
+                <td>{{ trade.occurred_at|dt }}</td>
+                <td><a href="/trades/{{ trade.broker_trade_id }}">{{ trade.broker_trade_id }}</a></td>
+                <td>{{ trade.broker_order_id or '-' }}</td>
+                <td>{{ trade.side_label }}</td>
+                <td>{{ trade.size|integer }}{% if (trade.fill_count or 1) > 1 %} · {{ trade.fill_count|integer }} fills{% endif %}</td>
+                <td>{{ trade.price|number }}</td>
+                <td class="{{ 'pos' if (trade.profit_and_loss or 0) >= 0 else 'neg' }}">{{ trade.profit_and_loss|money }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="7" class="empty-cell">No broker account trades recorded.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Local completed trades</h2>
+        <span class="panel-chip">{{ model.summary.completed_count }} rows</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Exit</th>
+              <th>Trade</th>
+              <th>Dir</th>
+              <th>Qty</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>P&amp;L</th>
+              <th>Zone</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for trade in model.completed_trades %}
+              <tr>
+                <td>{{ trade.exit_time|dt }}</td>
+                <td><a href="/trades/{{ trade.id }}">{{ trade.id }}</a></td>
+                <td>{{ trade.direction|integer }}</td>
+                <td>{{ trade.contracts|integer }}</td>
+                <td>{{ trade.entry_price|number }}</td>
+                <td>{{ trade.exit_price|number }}</td>
+                <td class="{{ 'pos' if (trade.pnl or 0) >= 0 else 'neg' }}">{{ trade.pnl|money }}</td>
+                <td>{{ trade.zone or '-' }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="8" class="empty-cell">No local completed trades recorded.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+{% endblock %}

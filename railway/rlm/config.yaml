@@ -1,0 +1,19 @@
+# RLM service config. Advisory-only: reports and recommendations, no execution changes.
+ai:
+  provider: "openrouter"
+  model: "openai/gpt-5.4-mini"
+  api_key_env: "OPENROUTER_API_KEY"
+  temperature: 0
+  max_retries: 2
+
+upstash:
+  redis_url_env: "UPSTASH_REDIS_URL"
+  qstash_url_env: "UPSTASH_QSTASH_URL"
+  workflow_url_env: "UPSTASH_WORKFLOW_URL"
+  vector_url_env: "UPSTASH_VECTOR_URL"
+
+rlm:
+  hypothesis_generation_interval: 3600  # seconds
+  min_confidence_threshold: 0.7
+  max_generations: 50
+  bh_fdr_alpha: 0.10

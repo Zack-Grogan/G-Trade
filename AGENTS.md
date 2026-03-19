@@ -12,32 +12,32 @@ This file is the **repository operating contract** for AI agents. Read it before
 
 G-Trade is a workspace containing:
 
-- **es-hotzone-trader:** CLI-based ES hot-zone day trading system. Execution and Topstep API run on the host (Mac); no TUI.
-- **railway/:** Cloud services for the G-Trade Railway project (ingest, analytics, MCP, web). Analytics and tooling only; no execution or broker.
+- **es-hotzone-trader:** CLI-based ES hot-zone day trading system. Execution and Topstep API run on the host (Mac). The primary operator surfaces are the CLI and the local Flask console.
+- **railway/:** Legacy cloud services for the G-Trade Railway project (ingest, analytics, MCP, web). Analytics/tooling only; not required for the current local Sunday/Monday launch cut.
 
 Human-maintained docs are the source of truth. Generated docs (e.g. from `scripts/generate_docs_index.py`) are machine-maintained indexes; do not treat them as overriding architecture or operator docs.
 
 ## Project layout
 
-- **`es-hotzone-trader/`** — Local trading system (Python). CLI-only operator surface; execution and Topstep API stay here. Contains engine, execution, market (Topstep) client, observability store, CLI, debug server, and the **data bridge** (outbox + thread that sends telemetry to Railway).
-- **`railway/`** — Cloud services for the G-Trade Railway project: **ingest** (FastAPI, receives bridge payloads), **analytics** (FastAPI, read-only API), **mcp** (MCP server for Cursor), **web** (Next.js). All are analytics/tooling only; no execution, no broker.
+- **`es-hotzone-trader/`** — Local trading system (Python). Execution and Topstep API stay here. Contains engine, execution, market (Topstep) client, observability store, CLI, local Flask console, and the optional legacy **data bridge** (outbox + thread that can send telemetry to Railway when explicitly enabled).
+- **`railway/`** — Legacy cloud services for the G-Trade Railway project: **ingest** (FastAPI), **analytics** (FastAPI), **mcp** (MCP server), **web** (Next.js). These remain analytics/tooling only; no execution, no broker.
 - **`docs/`** — Operator and architecture docs. Start at [docs/README.md](docs/README.md) (index). Canonical paths: [docs/architecture/overview.md](docs/architecture/overview.md), [docs/OPERATOR.md](docs/OPERATOR.md), [docs/Compliance-Boundaries.md](docs/Compliance-Boundaries.md), [docs/Current_Plan.md](docs/Current_Plan.md). Runbooks in `docs/runbooks/`; strategy/research in `docs/research/`; engineering system in `docs/engineering-system/`.
 - **`.cursor/plans/`** — Execution plans. The canonical architecture and phased plan for TUI Sunset and Railway is in **tui_sunset_and_railway_data_network_6d1ff9ac.plan.md**. Do not edit the plan file unless the user explicitly asks to change the plan.
 
-## Repositories
+## Repository ownership
 
-Code and docs live in six GitHub repos under **Zack-Grogan**:
+`G-Trade` is now the canonical monorepo. The root repository owns:
 
-| Repo | Contents |
-|------|----------|
-| **G-Trade** | This workspace: docs, .cursor, scripts, AGENTS.md, .github. "Repo root" for commands like `python scripts/onboard_openviking.py` = root of the G-Trade clone. |
-| **es-hotzone-trader** | Trading CLI, engine, bridge, observability. |
-| **g-trade-ingest** | Ingest API (railway/ingest). |
-| **g-trade-analytics** | Analytics API (railway/analytics). |
-| **g-trade-mcp** | MCP server (railway/mcp). |
-| **g-trade-web** | Next.js app (railway/web). |
+- `es-hotzone-trader/`
+- `railway/ingest/`
+- `railway/analytics/`
+- `railway/mcp/`
+- `railway/web/`
+- root docs, scripts, `.cursor/`, `.codex/`, and `.github/`
 
-Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear project G-Trade (team GDG) and prefix GDG where applicable.
+The previous standalone GitHub repositories remain historical references only. Their import remotes and SHAs are recorded in [docs/archive/repository-imports-2026-03-19.md](docs/archive/repository-imports-2026-03-19.md).
+
+Branch/PR conventions now apply at the root monorepo level unless the user explicitly asks for a historical repo workflow.
 
 ## Major entry points
 
@@ -45,12 +45,12 @@ Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear p
 |-------------|----------|---------|
 | CLI | `es-hotzone-trader`: `es-trade` → `src.cli.commands:main` | Only operator surface for trading; no-arg shows help. |
 | Engine | `es-hotzone-trader/src/engine/trading_engine.py` | Strategy, sync, protection, adoption, dynamic exit. |
-| Bridge | `es-hotzone-trader/src/bridge/railway_bridge.py` | In-process telemetry to Railway ingest; gated by config. |
-| Debug server | `es-hotzone-trader/src/server/debug_server.py` | Health and `/debug` HTTP only; no MCP. |
-| Railway ingest | `railway/ingest/app.py` | POST /ingest/state, /ingest/events, /ingest/trades, and observability payloads including runtime logs. |
-| Railway analytics | `railway/analytics/app.py` | Read-only API over Postgres. |
-| Railway MCP | `railway/mcp/app.py` | MCP endpoint for Cursor; tools backed by analytics. |
-| Railway web | `railway/web/` | Next.js operator console; server-side analytics and advisory RLM access only. |
+| Local console | `es-hotzone-trader/src/server/flask_console.py` | Local Flask operator console with `/`, `/chart`, `/trades`, `/logs`, `/system`, plus `/health` and `/debug` JSON. |
+| Bridge | `es-hotzone-trader/src/bridge/railway_bridge.py` | Optional legacy telemetry path to Railway ingest; disabled by default for the current launch posture. |
+| Railway ingest | `railway/ingest/app.py` | Legacy optional ingest API for bridged telemetry. |
+| Railway analytics | `railway/analytics/app.py` | Legacy optional read-only API over Postgres. |
+| Railway MCP | `railway/mcp/app.py` | Legacy optional MCP endpoint backed by analytics. |
+| Railway web | `railway/web/` | Legacy optional cloud operator console. |
 
 ## Main services / modules
 
@@ -114,10 +114,10 @@ Branch/PR conventions apply per repo. G-Trade and es-hotzone-trader use Linear p
 ## Architecture rules (do not break)
 
 1. **Execution and Topstep stay on the Mac.** No order placement, position management, or broker API calls from Railway or any cloud service.
-2. **Data flows one way: Mac → Railway.** The bridge pushes state/events/trades to the ingest API. Cloud never pushes orders or market data back to the trader.
-3. **MCP runs on Railway only.** The local debug server does not expose MCP; Cursor and other MCP clients use the Railway MCP URL. Config: `server.railway_mcp_url`.
-4. **Single-operator, non-commercial.** All Railway surfaces (ingest, analytics, MCP, web) use single-user auth (e.g. Bearer or allowlist). No public unauthenticated endpoints.
-5. **Local trading is resilient to cloud downtime.** The bridge uses a durable outbox and fail-open behavior; trading continues if Railway is unavailable.
+2. **Local SQLite is authoritative.** If the legacy bridge is enabled, data still flows one way: Mac → Railway. Cloud never pushes orders or market data back to the trader.
+3. **The local Flask console is the primary browser-based operator surface.** The local server exposes `/health`, `/debug`, and local console pages; it does not expose MCP.
+4. **Railway is optional legacy infrastructure.** If used, all Railway surfaces remain single-operator and non-execution.
+5. **Local trading must remain viable with bridge disabled.** The current launch posture assumes no required cloud dependency for operator workflows.
 
 ## Conventions
 
@@ -199,7 +199,7 @@ Full by-concern index: [docs/engineering-system/agent-index.md](docs/engineering
 ## Quick references
 
 - **CLI entrypoint:** `es-trade` → `src/cli/commands.py` (`main`). No-arg shows help; no TUI.
-- **Bridge:** `src/bridge/railway_bridge.py` (start/stop), `src/bridge/outbox.py` (durable queue). Gated by `observability.railway_ingest_url` and preferred `observability.internal_api_token` / `GTRADE_INTERNAL_API_TOKEN`.
-- **Debug server:** Health and `/debug` only; no MCP. `src/server/debug_server.py`.
+- **Bridge:** `src/bridge/railway_bridge.py` (start/stop), `src/bridge/outbox.py` (durable queue). Legacy/optional; gated by `observability.railway_ingest_url` and preferred `observability.internal_api_token` / `GTRADE_INTERNAL_API_TOKEN`.
+- **Local console:** `src/server/flask_console.py` via `src/server/debug_server.py` compatibility wrapper. Browser pages plus `/health` and `/debug`; no MCP.
 - **Compliance:** [docs/Compliance-Boundaries.md](docs/Compliance-Boundaries.md) (Topstep, CME, pre-migration gate).
 - **Engineering system:** [docs/engineering-system/overview.md](docs/engineering-system/overview.md).

@@ -1,27 +1,20 @@
-# G-Trade workspace
+# G-Trade monorepo
 
-Docs, .cursor rules/skills, scripts, and the AI operating layer for the G-Trade project. Application code lives in separate repositories.
+`G-Trade` is the canonical monorepo for the trader, local operator tooling, docs, scripts, and the archived Railway service code.
 
-## Repositories (Zack-Grogan)
+## Active layout
 
-| Repo | Purpose |
-|------|---------|
-| **G-Trade** (this repo) | Workspace: docs, .cursor, scripts, AGENTS.md, .github. Run workspace scripts (e.g. `python scripts/onboard_openviking.py`) from this repo root. |
-| [es-hotzone-trader](https://github.com/Zack-Grogan/es-hotzone-trader) | Trading CLI, engine, bridge, observability. |
-| [g-trade-ingest](https://github.com/Zack-Grogan/g-trade-ingest) | Ingest API (state/events/trades → Postgres). |
-| [g-trade-analytics](https://github.com/Zack-Grogan/g-trade-analytics) | Read-only analytics API. |
-| [g-trade-mcp](https://github.com/Zack-Grogan/g-trade-mcp) | MCP server for Cursor (Railway). |
-| [g-trade-web](https://github.com/Zack-Grogan/g-trade-web) | Next.js analytics UI. |
+- `es-hotzone-trader/` — local Python trader, CLI, Flask console, SQLite observability, Topstep integration
+- `docs/` — operator, architecture, research, runbooks, and archive notes
+- `scripts/` — repo and docs utilities
+- `.codex/` and `.cursor/` — project-specific AI operating assets
+- `railway/` — legacy cloud service code retained during the Railway sunset pass
 
-## Full workspace layout
+## Import history
 
-To get the full tree (this repo + app repos), clone this repo, then clone the five app repos into the same directory so you have:
+This monorepo absorbed the former nested repositories on 2026-03-19. The import record is tracked in [docs/archive/repository-imports-2026-03-19.md](docs/archive/repository-imports-2026-03-19.md).
 
-- `G-Trade/` (this repo) → `docs/`, `.cursor/`, `scripts/`, `AGENTS.md`, etc.
-- `es-hotzone-trader/` → from Zack-Grogan/es-hotzone-trader
-- `railway/ingest/` → from Zack-Grogan/g-trade-ingest
-- `railway/analytics/` → from Zack-Grogan/g-trade-analytics
-- `railway/mcp/` → from Zack-Grogan/g-trade-mcp
-- `railway/web/` → from Zack-Grogan/g-trade-web
+## Start here
 
-Start with [docs/README.md](docs/README.md) and [AGENTS.md](AGENTS.md).
+- [docs/README.md](docs/README.md)
+- [AGENTS.md](AGENTS.md)

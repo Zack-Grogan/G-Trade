@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block head %}
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
+
+{% block content %}
+  <section class="chart-header-strip">
+    <div class="strip-stat"><span>Symbol</span><strong>{{ model.symbol }}</strong></div>
+    <div class="strip-stat"><span>Zone</span><strong>{{ model.summary.zone }}</strong></div>
+    <div class="strip-stat"><span>Price</span><strong>{{ model.levels.last_price|number }}</strong></div>
+    <div class="strip-stat"><span>Long</span><strong>{{ model.summary.long_score|number }}</strong></div>
+    <div class="strip-stat"><span>Short</span><strong>{{ model.summary.short_score|number }}</strong></div>
+    <div class="strip-stat"><span>Flat</span><strong>{{ model.summary.flat_bias|number }}</strong></div>
+  </section>
+
+  <section class="chart-layout chart-layout-stacked">
+    <article class="panel chart-panel">
+      <div id="chart" class="chart-canvas" aria-label="Price chart"></div>
+    </article>
+  </section>
+
+  <section class="content-grid">
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Levels</h2>
+      </div>
+      <div class="facts compact">
+        <div><dt>Session VWAP</dt><dd>{{ model.levels.session_vwap|number }}</dd></div>
+        <div><dt>Upper band</dt><dd>{{ model.levels.upper_band|number }}</dd></div>
+        <div><dt>Lower band</dt><dd>{{ model.levels.lower_band|number }}</dd></div>
+        <div><dt>Position</dt><dd>{{ model.summary.position }}</dd></div>
+        <div><dt>Status</dt><dd>{{ model.summary.status }}</dd></div>
+        <div><dt>Daily P&amp;L</dt><dd class="{{ 'pos' if (model.summary.daily_pnl or 0) >= 0 else 'neg' }}">{{ model.summary.daily_pnl|money }}</dd></div>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Broker fills</h2>
+      </div>
+      <div class="stack compact-stack">
+        {% for trade in model.recent_trades %}
+          <div class="stack-item">
+            <div class="stack-title">{{ trade.occurred_at|dt }}</div>
+            <div class="stack-subtle">{{ trade.side_label }} · {{ trade.broker_trade_id }}</div>
+            <div class="{{ 'pos' if (trade.profit_and_loss or 0) >= 0 else 'neg' }}">{{ trade.profit_and_loss|money }}</div>
+          </div>
+        {% else %}
+          <div class="empty-cell">No broker fills yet.</div>
+        {% endfor %}
+      </div>
+    </article>
+  </section>
+
+  <script id="page-data" type="application/json">{{ model|tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    window.GTradeConsole.initChart("chart", JSON.parse(document.getElementById("page-data").textContent));
+  </script>
+{% endblock %}

@@ -1,6 +1,4 @@
-# App code lives in separate repos; do not track here
-es-hotzone-trader/
-railway/
+# Root monorepo tracks local trader code and legacy service snapshots.
 
 # Env and secrets
 .env

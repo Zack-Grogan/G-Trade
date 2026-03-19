@@ -1,0 +1,2540 @@
+"""Matrix engine and replay tests."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+from click.testing import CliRunner
+from datetime import datetime, timedelta
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+import pandas as pd
+
+from src.cli.commands import (
+    _configure_logging,
+    _log_startup_summary,
+    _read_lifecycle_request,
+    _request_runtime_action,
+    _write_lifecycle_request,
+    cli,
+)
+from src.config import BlackoutConfig, Config, EventProviderConfig, HotZoneConfig, set_config
+from src.engine import DecisionMatrixEvaluator, FeatureSnapshot, HotZoneScheduler, MatrixDecision, ReplayRunner, TradingEngine, ZoneInfo, ZoneState, get_risk_manager, get_scheduler
+from src.engine.event_provider import EventContext, LocalEventProvider
+from src.engine.market_context import OrderFlowSnapshot
+from src.engine.risk_manager import RiskManager, RiskState, TradeRecord
+from src.execution.executor import Order, OrderExecutor, OrderStatus, get_executor
+from src.indicators.rsi import rsi
+from src.market import Account, MarketData, Position, TopstepClient, get_client
+from src.observability import get_observability_store
+from src.server.mcp_server import MCP_SESSION_HEADER, handle_mcp_http_request, handle_mcp_request, reset_mcp_sessions
+from src.server.debug_server import DebugServer, TradingState
+from src.server import get_state
+
+
+def build_config() -> Config:
+    """Create a deterministic config for matrix tests."""
+    config = Config(
+        hot_zones=[
+            HotZoneConfig(name="Pre-Open", start="06:30", end="08:30", timezone="America/Chicago"),
+            HotZoneConfig(name="Post-Open", start="09:00", end="11:00", timezone="America/Chicago"),
+            HotZoneConfig(name="Midday", start="12:00", end="13:00", timezone="America/Chicago"),
+            HotZoneConfig(name="Close-Scalp", start="12:45", end="13:00", timezone="America/Chicago", mode="flatten_only"),
+        ]
+    )
+    config.alpha.min_entry_score = 1.25
+    config.alpha.full_size_score = 3.5
+    config.alpha.min_score_gap = 0.25
+    config.alpha.flat_bias_buffer = 0.0
+    config.alpha.zone_vetoes["Midday"]["max_atr_percentile"] = 1.0
+    config.regime.stress_quote_rate = 0.0
+    config.regime.trend_slope_threshold = 0.05
+    config.regime.trend_ofi_threshold = 0.2
+    config.replay.segment_size = 2
+    config.validation.walk_forward_train_bars = 2
+    config.validation.walk_forward_test_bars = 2
+    config.validation.synthetic_quote_policy = "reject"
+    config.event_provider.calendar_path = "config/does-not-exist.yaml"
+    config.event_provider.emergency_halt_path = "config/does-not-exist.flag"
+    config.observability.enabled = False
+    return config
+
+
+def zone(
+    name: str,
+    ts: pd.Timestamp,
+    minutes_remaining: float = 30.0,
+    state: ZoneState = ZoneState.ACTIVE,
+    start_time: pd.Timestamp | None = None,
+) -> ZoneInfo:
+    """Build a zone info object for tests."""
+    return ZoneInfo(
+        name=name,
+        state=state,
+        start_time=(start_time or ts).floor("min"),
+        end_time=ts.floor("min") + pd.Timedelta(minutes=minutes_remaining),
+        minutes_remaining=minutes_remaining,
+        is_first_bar=False,
+        is_last_bar=False,
+    )
+
+
+def bars_from_prices(start: str, prices: list[float], timezone: str = "America/Chicago") -> pd.DataFrame:
+    """Build simple OHLCV bars from close prices."""
+    index = pd.date_range(start, periods=len(prices), freq="min", tz=timezone)
+    rows = []
+    prior = prices[0]
+    for price in prices:
+        rows.append(
+            {
+                "open": prior,
+                "high": max(prior, price) + 0.4,
+                "low": min(prior, price) - 0.4,
+                "close": price,
+                "volume": 100,
+            }
+        )
+        prior = price
+    return pd.DataFrame(rows, index=index)
+
+
+class DecisionMatrixTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = build_config()
+        set_config(self.config)
+        self.evaluator = DecisionMatrixEvaluator(self.config)
+        self.healthy_flow = OrderFlowSnapshot(
+            ofi=12.0,
+            ofi_zscore=1.2,
+            quote_rate_per_minute=30.0,
+            quote_rate_state=0.8,
+            spread_regime=1.4,
+            volume_pace=1.0,
+        )
+
+    def test_session_profile_features_are_populated(self) -> None:
+        prices = [100.0 + (i * 0.2) for i in range(30)]
+        bars = bars_from_prices("2026-03-13 09:00", prices)
+        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=50, start_time=bars.index[0])
+
+        snapshot = self.evaluator.extract_features(
+            bars,
+            current_zone,
+            None,
+            EventContext(),
+            self.healthy_flow,
+            current_position=0,
+        )
+
+        self.assertEqual(snapshot.active_session, "RTH")
+        self.assertIn("rth_vwap", snapshot.diagnostics)
+        self.assertIn("eth_vwap", snapshot.diagnostics)
+        self.assertGreater(snapshot.diagnostics["vah"], 0)
+        self.assertGreater(snapshot.diagnostics["poc"], 0)
+        self.assertIn("poc_distance", snapshot.long_features)
+
+    def test_pre_open_session_profile_uses_eth_context(self) -> None:
+        prices = [100.0 + (i * 0.15) for i in range(30)]
+        bars = bars_from_prices("2026-03-13 06:30", prices)
+        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
+
+        snapshot = self.evaluator.extract_features(
+            bars,
+            current_zone,
+            None,
+            EventContext(),
+            self.healthy_flow,
+            current_position=0,
+        )
+
+        self.assertEqual(snapshot.active_session, "ETH")
+        self.assertIn("eth_vwap", snapshot.diagnostics)
+
+    def test_held_minutes_handles_mixed_timezone_inputs(self) -> None:
+        minutes = self.evaluator._held_minutes(
+            pd.Timestamp("2026-03-13 09:30", tz="America/Chicago"),
+            pd.Timestamp("2026-03-13 10:00"),
+        )
+
+        self.assertEqual(minutes, 30.0)
+
+    def test_pre_open_breakout_scores_long_with_flow_support(self) -> None:
+        prices = [100.0 + (i * 0.18) for i in range(15)] + [103.0, 103.5, 104.0, 104.5, 104.9]
+        bars = bars_from_prices("2026-03-13 06:30", prices)
+        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0])
+        market_data = MarketData(symbol="ES", bid=104.75, ask=105.0, last=104.9, volume=2000, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+
+        decision = self.evaluator.evaluate(
+            bars,
+            current_zone,
+            market_data,
+            RiskState.NORMAL,
+            False,
+            0,
+            True,
+            event_context=EventContext(),
+            flow_snapshot=self.healthy_flow,
+        )
+
+        self.assertEqual(decision.action, "LONG")
+        self.assertGreater(decision.long_score, decision.short_score)
+
+    def test_midday_range_setup_can_score_long(self) -> None:
+        prices = [100.0] * 12 + [99.8, 99.7, 99.6, 99.2, 98.8, 98.5, 98.6, 98.9]
+        bars = bars_from_prices("2026-03-13 12:00", prices)
+        bars.iloc[-1, bars.columns.get_loc("low")] = 97.6
+        bars.iloc[-1, bars.columns.get_loc("close")] = 98.4
+        bars.iloc[-1, bars.columns.get_loc("high")] = 98.9
+        current_zone = zone("Midday", bars.index[-1], minutes_remaining=20, start_time=bars.index[0])
+        market_data = MarketData(symbol="ES", bid=98.2, ask=98.45, last=98.4, volume=2500, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        range_flow = OrderFlowSnapshot(
+            ofi=0.0,
+            ofi_zscore=0.1,
+            quote_rate_per_minute=20.0,
+            quote_rate_state=0.1,
+            spread_regime=1.2,
+            volume_pace=0.2,
+        )
+
+        decision = self.evaluator.evaluate(
+            bars,
+            current_zone,
+            market_data,
+            RiskState.NORMAL,
+            False,
+            0,
+            True,
+            event_context=EventContext(),
+            flow_snapshot=range_flow,
+        )
+
+        self.assertEqual(decision.action, "LONG")
+        self.assertTrue(decision.feature_snapshot.mean_reversion_ready_long)
+        self.assertEqual(decision.feature_snapshot.regime_state, "RANGE")
+
+    def test_regime_classifier_marks_trend(self) -> None:
+        prices = [100.0 + (i * 0.5) for i in range(20)]
+        bars = bars_from_prices("2026-03-13 12:00", prices)
+        current_zone = zone("Midday", bars.index[-1], minutes_remaining=20, start_time=bars.index[0])
+        trend_flow = OrderFlowSnapshot(
+            ofi=12.0,
+            ofi_zscore=1.3,
+            quote_rate_per_minute=35.0,
+            quote_rate_state=1.1,
+            spread_regime=1.6,
+            volume_pace=1.0,
+        )
+
+        snapshot = self.evaluator.extract_features(
+            bars,
+            current_zone,
+            None,
+            EventContext(),
+            trend_flow,
+            current_position=0,
+        )
+
+        self.assertEqual(snapshot.regime_state, "TREND")
+
+    def test_close_scalp_is_flatten_only(self) -> None:
+        prices = [100.0 + (i * 0.1) for i in range(20)]
+        bars = bars_from_prices("2026-03-13 12:45", prices)
+        current_zone = zone("Close-Scalp", bars.index[-1], minutes_remaining=8, state=ZoneState.FLATTEN_ONLY, start_time=bars.index[0])
+        market_data = MarketData(symbol="ES", bid=101.85, ask=102.1, last=102.0, volume=1500, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+
+        flat_decision = self.evaluator.evaluate(bars, current_zone, market_data, RiskState.NORMAL, False, 0, True, event_context=EventContext(), flow_snapshot=self.healthy_flow)
+        held_decision = self.evaluator.evaluate(bars, current_zone, market_data, RiskState.NORMAL, False, 1, True, event_context=EventContext(), flow_snapshot=self.healthy_flow)
+
+        self.assertEqual(flat_decision.action, "NO_TRADE")
+        self.assertEqual(held_decision.action, "FLAT")
+
+    def test_outside_hotzones_can_be_enabled_with_dedicated_profile(self) -> None:
+        config = build_config()
+        config.strategy.trade_outside_hotzones = True
+        set_config(config)
+        evaluator = DecisionMatrixEvaluator(config)
+        prices = [100.0 + (i * 0.2) for i in range(20)]
+        bars = bars_from_prices("2026-03-13 14:10", prices)
+        market_data = MarketData(symbol="ES", bid=103.75, ask=104.0, last=103.9, volume=2000, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+
+        decision = evaluator.evaluate(
+            bars,
+            None,
+            market_data,
+            RiskState.NORMAL,
+            False,
+            0,
+            True,
+            event_context=EventContext(),
+            flow_snapshot=self.healthy_flow,
+        )
+
+        self.assertEqual(decision.zone_name, "Outside")
+        self.assertNotEqual(decision.reason, "outside_zone")
+        self.assertIn(decision.action, {"LONG", "SHORT", "NO_TRADE"})
+
+    def test_pre_open_stress_regime_can_still_enter_when_risk_is_normal(self) -> None:
+        bars = bars_from_prices("2026-03-13 06:30", [100.0 + (i * 0.1) for i in range(20)])
+        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
+        market_data = MarketData(symbol="ES", bid=101.8, ask=102.0, last=101.9, volume=1200, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        snapshot = FeatureSnapshot(
+            zone_name="Pre-Open",
+            current_price=101.9,
+            atr_value=1.0,
+            long_features={},
+            short_features={"orb_break": 2.0, "opening_drive": 2.0, "trend_state": 1.0},
+            flat_features={},
+            signed_features={"spread_ticks": 1.0, "atr_accel": 0.1, "orb_position": 0.9},
+            execution_tradeable=True,
+            regime_state="STRESS",
+            regime_reason="volatility_spike",
+        )
+
+        with patch.object(self.evaluator, "extract_features", return_value=snapshot):
+            decision = self.evaluator.evaluate(
+                bars,
+                current_zone,
+                market_data,
+                RiskState.NORMAL,
+                False,
+                0,
+                True,
+                event_context=EventContext(),
+                flow_snapshot=self.healthy_flow,
+            )
+
+        self.assertEqual(decision.action, "SHORT")
+        self.assertNotIn("regime_stress", decision.active_vetoes)
+
+    def test_pre_open_stress_regime_still_blocks_when_circuit_breaker_active(self) -> None:
+        bars = bars_from_prices("2026-03-13 06:30", [100.0 + (i * 0.1) for i in range(20)])
+        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
+        market_data = MarketData(symbol="ES", bid=101.8, ask=102.0, last=101.9, volume=1200, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        snapshot = FeatureSnapshot(
+            zone_name="Pre-Open",
+            current_price=101.9,
+            atr_value=1.0,
+            long_features={},
+            short_features={"orb_break": 2.0, "opening_drive": 2.0, "trend_state": 1.0},
+            flat_features={},
+            signed_features={"spread_ticks": 1.0, "atr_accel": 0.1, "orb_position": 0.9},
+            execution_tradeable=True,
+            regime_state="STRESS",
+            regime_reason="volatility_spike",
+        )
+
+        with patch.object(self.evaluator, "extract_features", return_value=snapshot):
+            decision = self.evaluator.evaluate(
+                bars,
+                current_zone,
+                market_data,
+                RiskState.CIRCUIT_BREAKER,
+                False,
+                0,
+                True,
+                event_context=EventContext(),
+                flow_snapshot=self.healthy_flow,
+            )
+
+        self.assertEqual(decision.action, "NO_TRADE")
+        self.assertIn("risk_circuit_breaker", decision.active_vetoes)
+
+    def test_post_open_stress_regime_remains_hard_veto(self) -> None:
+        bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.15) for i in range(20)])
+        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0])
+        market_data = MarketData(symbol="ES", bid=102.7, ask=102.9, last=102.8, volume=1800, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        snapshot = FeatureSnapshot(
+            zone_name="Post-Open",
+            current_price=102.8,
+            atr_value=1.0,
+            long_features={},
+            short_features={"trend_state": 2.0, "pullback_quality": 1.6, "rth_vwap_slope": 1.2},
+            flat_features={},
+            signed_features={"spread_ticks": 1.0, "rth_vwap_slope": 0.4, "ema_slope": 0.4},
+            execution_tradeable=True,
+            regime_state="STRESS",
+            regime_reason="volatility_spike",
+        )
+
+        with patch.object(self.evaluator, "extract_features", return_value=snapshot):
+            decision = self.evaluator.evaluate(
+                bars,
+                current_zone,
+                market_data,
+                RiskState.NORMAL,
+                False,
+                0,
+                True,
+                event_context=EventContext(),
+                flow_snapshot=self.healthy_flow,
+            )
+
+        self.assertEqual(decision.action, "NO_TRADE")
+        self.assertIn("regime_stress", decision.active_vetoes)
+
+    def test_outside_hotzones_disabled_keeps_outside_zone_veto(self) -> None:
+        prices = [100.0 + (i * 0.2) for i in range(20)]
+        bars = bars_from_prices("2026-03-13 14:10", prices)
+
+        decision = self.evaluator.evaluate(
+            bars,
+            None,
+            None,
+            RiskState.NORMAL,
+            False,
+            0,
+            True,
+            event_context=EventContext(),
+            flow_snapshot=self.healthy_flow,
+        )
+
+        self.assertEqual(decision.zone_name, "Outside")
+        self.assertEqual(decision.reason, "outside_zone")
+        self.assertIn("outside_zone", decision.active_vetoes)
+
+    def test_zone_spread_veto_is_enforced(self) -> None:
+        config = build_config()
+        config.order_execution.max_slippage_ticks = 10
+        set_config(config)
+        evaluator = DecisionMatrixEvaluator(config)
+        prices = [100.0 + (i * 0.2) for i in range(20)]
+        bars = bars_from_prices("2026-03-13 09:00", prices)
+        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
+        wide_market = MarketData(symbol="ES", bid=103.0, ask=104.5, last=104.0, volume=2000, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+
+        decision = evaluator.evaluate(
+            bars,
+            current_zone,
+            wide_market,
+            RiskState.NORMAL,
+            False,
+            0,
+            True,
+            event_context=EventContext(),
+            flow_snapshot=self.healthy_flow,
+        )
+
+        self.assertIn("spread_too_wide", decision.active_vetoes)
+
+    def test_time_stop_exit_path(self) -> None:
+        prices = [100.0 + (i * 0.15) for i in range(20)]
+        bars = bars_from_prices("2026-03-13 09:00", prices)
+        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0])
+        decision = self.evaluator.evaluate(
+            bars,
+            current_zone,
+            None,
+            RiskState.NORMAL,
+            False,
+            1,
+            True,
+            current_entry_time=bars.index[-1] - pd.Timedelta(minutes=120),
+            event_context=EventContext(),
+            flow_snapshot=self.healthy_flow,
+        )
+
+        self.assertEqual(decision.action, "FLAT")
+        self.assertEqual(decision.reason, "time_stop")
+
+    def test_feature_pruning_validation_rejects_overweight_zone(self) -> None:
+        config = build_config()
+        config.alpha.zone_weights["Pre-Open"]["long"]["extra_feature_1"] = 0.1
+        config.alpha.zone_weights["Pre-Open"]["long"]["extra_feature_2"] = 0.1
+        set_config(config)
+
+        with self.assertRaises(ValueError):
+            DecisionMatrixEvaluator(config)
+
+
+class IndicatorRegressionTests(unittest.TestCase):
+    def test_rsi_exact_period_length_does_not_raise(self) -> None:
+        close = pd.Series([float(100 + i) for i in range(14)])
+
+        values = rsi(close, period=14)
+
+        self.assertEqual(len(values), len(close))
+        self.assertTrue(values.isna().all())
+
+
+class StateReportingTests(unittest.TestCase):
+    def test_health_reports_degraded_when_live_feed_is_disconnected(self) -> None:
+        state = TradingState()
+        state.status = "running"
+        state.running = True
+        state.data_mode = "live"
+        state.heartbeat = {"market_stream_connected": False, "market_stream_error": "socket dropped"}
+
+        health = state.to_health_dict()
+
+        self.assertEqual(health["status"], "degraded")
+        self.assertFalse(health["market_stream_connected"])
+
+    def test_health_reports_replay_mode_as_replay_not_healthy(self) -> None:
+        state = TradingState()
+        state.status = "running"
+        state.running = True
+        state.data_mode = "replay"
+        state.account_is_practice = True
+
+        health = state.to_health_dict()
+
+        self.assertEqual(health["status"], "replay")
+        self.assertEqual(health["data_mode"], "replay")
+        self.assertTrue(health["practice_account"])
+
+    def test_debug_state_includes_extended_account_fields(self) -> None:
+        state = TradingState()
+        state.account_id = "PRAC-1"
+        state.account_name = "Practice"
+        state.account_balance = 50000.0
+        state.account_equity = 50350.5
+        state.account_available = 49750.25
+        state.account_margin_used = 600.0
+        state.account_open_pnl = 125.5
+        state.account_realized_pnl = 225.0
+        state.account_is_practice = True
+
+        payload = state.to_dict()
+
+        self.assertEqual(payload["account"]["equity"], 50350.5)
+        self.assertEqual(payload["account"]["available"], 49750.25)
+        self.assertEqual(payload["account"]["margin_used"], 600.0)
+        self.assertEqual(payload["account"]["open_pnl"], 125.5)
+        self.assertEqual(payload["account"]["realized_pnl"], 225.0)
+
+
+class ExecutionLifecycleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = build_config()
+        set_config(self.config)
+        get_client(force_recreate=True)
+        self.engine = TradingEngine(self.config)
+        self.engine.reset_runtime_state()
+
+    def test_executor_counts_only_active_orders_in_watchdog_snapshot(self) -> None:
+        executor = self.engine.executor
+        executor.enable_mock_mode()
+        active = executor._place_mock_order("ES", 1, "buy", "limit", 100.0, None, False, "entry")
+        inactive = executor._place_mock_order("ES", 1, "buy", "limit", 99.0, None, False, "entry")
+        inactive.status = type(inactive.status).CANCELLED
+
+        snapshot = executor.get_watchdog_snapshot("ES")
+
+        self.assertEqual(snapshot["pending_orders"], 1)
+        self.assertEqual(snapshot["tracked_orders"], 2)
+        self.assertEqual(snapshot["active_entry_orders"], 1)
+        self.assertIn(active.order_id, executor.get_active_orders(symbol="ES", is_protective=False))
+
+    def test_engine_skips_new_entry_when_active_entry_order_exists(self) -> None:
+        executor = self.engine.executor
+        executor.enable_mock_mode()
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._latest_flow_snapshot = OrderFlowSnapshot(
+            ofi=12.0,
+            ofi_zscore=1.2,
+            quote_rate_per_minute=30.0,
+            quote_rate_state=0.8,
+            spread_regime=1.4,
+            volume_pace=1.0,
+        )
+        executor._place_mock_order("ES", 1, "buy", "limit", self.engine._last_price, None, False, "entry")
+
+        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+            with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                with patch.object(executor, "place_order", wraps=executor.place_order) as place_order:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        place_order.assert_not_called()
+
+    def test_launch_gate_blocks_shadow_zone_entries(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._latest_flow_snapshot = OrderFlowSnapshot(
+            ofi=12.0,
+            ofi_zscore=1.2,
+            quote_rate_per_minute=30.0,
+            quote_rate_state=0.8,
+            spread_regime=1.4,
+            volume_pace=1.0,
+        )
+
+        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+            with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                with patch.object(self.engine.executor, "place_order", wraps=self.engine.executor.place_order) as place_order:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        place_order.assert_not_called()
+        self.assertEqual(self.engine._last_entry_block_reason, "shadow_only_zone")
+
+    def test_session_exit_hard_flat_flattens_live_entry_zone_position(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 11:31",
+            [100.0 + (i * 0.1) for i in range(5)],
+            timezone="America/Los_Angeles",
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=500,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._last_position = 1
+        self.engine._position_entry_zone = "Pre-Open"
+
+        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+            with patch.object(self.engine.risk_manager, "should_flatten_position", return_value=(False, None)):
+                with patch.object(self.engine, "_flatten_position") as flatten:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        flatten.assert_called_once_with("session_hard_flat")
+
+    def test_live_entry_skipped_when_broker_position_not_flat(self) -> None:
+        executor = self.engine.executor
+        executor.reset_state(mock_mode=False)
+        self.engine._mock_mode = False
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._latest_flow_snapshot = OrderFlowSnapshot(
+            ofi=12.0,
+            ofi_zscore=1.2,
+            quote_rate_per_minute=30.0,
+            quote_rate_state=0.8,
+            spread_regime=1.4,
+            volume_pace=1.0,
+        )
+
+        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+            with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                with patch.object(self.engine.client, "get_positions_snapshot", return_value=({"ES": type("P", (), {"quantity": 1, "entry_price": 100.0})()}, None)):
+                    with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+                        with patch.object(executor, "place_order", wraps=executor.place_order) as place_order:
+                            self.engine._evaluate_current_state(allow_entries=True)
+
+        place_order.assert_not_called()
+        self.assertEqual(self.engine._last_entry_block_reason, "broker_position_mismatch")
+        self.assertEqual(self.engine._last_entry_guard_snapshot["broker_position"], 1)
+
+    def test_live_entry_skipped_when_broker_open_order_exists(self) -> None:
+        executor = self.engine.executor
+        executor.reset_state(mock_mode=False)
+        self.engine._mock_mode = False
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._latest_flow_snapshot = OrderFlowSnapshot(
+            ofi=12.0,
+            ofi_zscore=1.2,
+            quote_rate_per_minute=30.0,
+            quote_rate_state=0.8,
+            spread_regime=1.4,
+            volume_pace=1.0,
+        )
+
+        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+            with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
+                    with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([{"id": "broker-open-1"}], None)):
+                        with patch.object(executor, "place_order", wraps=executor.place_order) as place_order:
+                            self.engine._evaluate_current_state(allow_entries=True)
+
+        place_order.assert_not_called()
+        self.assertEqual(self.engine._last_entry_block_reason, "broker_open_orders_present")
+        self.assertEqual(self.engine._last_entry_guard_snapshot["broker_open_order_ids"], ["broker-open-1"])
+        self.assertIsNone(self.engine._pending_decision_id)
+        self.assertIsNone(self.engine._pending_attempt_id)
+        self.assertIsNone(self.engine._pending_position_id)
+        self.assertIsNone(self.engine._pending_trade_id)
+
+    def test_duplicate_unresolved_entry_triggers_fail_safe_lockout(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._unresolved_entry_submission_count = 1
+        self.engine._unresolved_entry_side = "buy"
+        self.engine._unresolved_entry_order_ids = ["entry-1"]
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._latest_flow_snapshot = OrderFlowSnapshot(
+            ofi=12.0,
+            ofi_zscore=1.2,
+            quote_rate_per_minute=30.0,
+            quote_rate_state=0.8,
+            spread_regime=1.4,
+            volume_pace=1.0,
+        )
+
+        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+            with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
+                    with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+                        self.engine._evaluate_current_state(allow_entries=True)
+
+        self.assertTrue(self.engine._watchdog_state.fail_safe_lockout)
+        self.assertEqual(self.engine._last_entry_block_reason, "duplicate_unresolved_entry")
+        self.assertIsNone(self.engine._pending_decision_id)
+        self.assertIsNone(self.engine._pending_attempt_id)
+        self.assertIsNone(self.engine._pending_position_id)
+        self.assertIsNone(self.engine._pending_trade_id)
+
+    def test_sync_position_state_clears_unresolved_entry_after_confirmed_fill(self) -> None:
+        executor = self.engine.executor
+        executor.enable_mock_mode()
+        self.engine._mock_mode = True
+        order = executor._place_mock_order("ES", 1, "buy", "limit", 100.0, None, False, "entry")
+        self.engine._unresolved_entry_submission_count = 1
+        self.engine._unresolved_entry_side = "buy"
+        self.engine._unresolved_entry_order_ids = [order.order_id]
+        self.engine._pending_expected_fill_price = 100.0
+        self.engine._pending_entry_submitted_at = pd.Timestamp("2026-03-13T15:00:00Z").to_pydatetime()
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=100.0,
+            ask=100.25,
+            last=100.25,
+            volume=100,
+            timestamp=pd.Timestamp("2026-03-13T15:00:01Z").to_pydatetime(),
+        )
+
+        executor.update_order_status(
+            order.order_id,
+            type(order.status).FILLED,
+            {"filled_quantity": 1, "filled_price": 100.25},
+        )
+        executor._mock_position = 1
+        executor._mock_avg_price = 100.25
+
+        self.engine._sync_position_state()
+
+        self.assertEqual(self.engine._unresolved_entry_submission_count, 0)
+        self.assertEqual(self.engine._unresolved_entry_order_ids, [])
+        self.assertIsNone(self.engine._unresolved_entry_side)
+
+    def test_sync_position_state_broker_truth_clears_unresolved_when_flat_no_orders(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._last_position = 0
+        self.engine._unresolved_entry_submission_count = 1
+        self.engine._unresolved_entry_side = "buy"
+        self.engine._unresolved_entry_order_ids = ["oid-1"]
+        with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
+            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+                self.engine._sync_position_state()
+        self.assertEqual(self.engine._unresolved_entry_submission_count, 0)
+        self.assertEqual(self.engine._last_reconciliation_reason, "broker_flat_no_orders")
+
+    def test_sync_position_state_broker_truth_clears_stale_local_entry_orders_when_flat(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._last_position = 0
+        self.engine._unresolved_entry_submission_count = 1
+        self.engine._unresolved_entry_side = "sell"
+        self.engine._unresolved_entry_order_ids = ["ghost-entry-1"]
+        event_time = pd.Timestamp("2026-03-19T11:35:02Z").to_pydatetime()
+        self.engine.executor._pending_orders["ghost-entry-1"] = Order(
+            order_id="ghost-entry-1",
+            symbol="ES",
+            side="sell",
+            quantity=1,
+            order_type="limit",
+            limit_price=6654.25,
+            status=OrderStatus.OPEN,
+            created_time=event_time,
+            updated_time=event_time,
+            is_protective=False,
+            role="entry",
+        )
+
+        with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
+            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+                self.engine._sync_position_state()
+
+        self.assertFalse(self.engine.executor.has_active_entry_order("ES"))
+        self.assertEqual(self.engine._unresolved_entry_submission_count, 0)
+        self.assertEqual(self.engine._last_reconciliation_reason, "broker_flat_no_orders")
+
+    def test_adopt_broker_state_at_startup_adopts_position(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)])
+        self.engine._last_price = 5010.0
+        pos = Position(symbol="CON.F.US.EP.M26", quantity=1, entry_price=5005.0)
+        with patch.object(self.engine.client, "_resolve_contract_id", return_value="CON.F.US.EP.M26"):
+            with patch.object(self.engine.client, "get_positions_snapshot", return_value=({"CON.F.US.EP.M26": pos}, None)):
+                with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+                    with patch.object(self.engine.executor, "mark_position_open"):
+                        with patch.object(self.engine.executor, "ensure_protection") as ensure_protection:
+                            with patch.object(self.engine.risk_manager, "sync_position"):
+                                self.engine._adopt_broker_state_at_startup()
+        self.assertEqual(self.engine._last_position, 1)
+        self.assertTrue(self.engine._adopted_broker_position_at_startup)
+        self.assertEqual(self.engine._adoption_source, "broker_startup")
+        self.assertIsNotNone(self.engine._stop_loss)
+        self.assertIsNotNone(self.engine._take_profit)
+        ensure_protection.assert_called_once()
+
+    def test_adopt_broker_state_at_startup_adopts_open_orders(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)])
+        self.engine._last_price = 5010.0
+        broker_orders = [
+            {
+                "id": "broker-open-1",
+                "side": "sell",
+                "size": 1,
+                "type": "limit",
+                "limitPrice": 5009.75,
+            }
+        ]
+
+        with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
+            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=(broker_orders, None)):
+                self.engine._adopt_broker_state_at_startup()
+
+        self.assertTrue(self.engine.executor.has_active_entry_order("ES"))
+        snapshot = self.engine.executor.get_watchdog_snapshot("ES")
+        self.assertEqual(snapshot["active_entry_orders"], 1)
+        self.assertEqual(snapshot["active_entry_order_ids"], ["broker-open-1"])
+        self.assertEqual(self.engine._unresolved_entry_order_ids, ["broker-open-1"])
+        self.assertEqual(self.engine._adoption_source, "broker_startup_orders")
+
+    def test_sync_position_state_clears_stale_position_before_adopting_broker_orders(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)])
+        self.engine._last_price = 5010.0
+        self.engine._last_position = -1
+        self.engine._position_sync_requested = True
+        self.engine._current_position_id = "position-old"
+        self.engine._current_trade_id = "trade-old"
+        broker_orders = [
+            {
+                "id": "broker-open-2",
+                "side": "buy",
+                "size": 1,
+                "type": "limit",
+                "limitPrice": 5008.75,
+            }
+        ]
+
+        with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
+            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=(broker_orders, None)):
+                self.engine._sync_position_state()
+
+        self.assertEqual(self.engine._last_position, 0)
+        self.assertTrue(self.engine.executor.has_active_entry_order("ES"))
+        self.assertIsNone(self.engine._current_position_id)
+        self.assertIsNone(self.engine._current_trade_id)
+        self.assertEqual(self.engine._last_reconciliation_reason, "position_sync")
+
+    def test_refresh_dynamic_exit_advances_stop_for_long(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._last_position = 1
+        self.engine._last_entry_fill_price = 100.0
+        self.engine._stop_loss = 98.0
+        self.engine._position_high_water = 102.0
+        self.engine._last_price = 102.0
+        self.engine._bars = bars_from_prices("2026-03-13 09:00", [99.0 + i * 0.2 for i in range(20)])
+        with patch.object(self.engine, "_calculate_current_atr", return_value=1.0):
+            with patch.object(self.engine.executor, "ensure_protection"):
+                with self.engine._lock:
+                    self.engine._refresh_dynamic_exit()
+        self.assertGreater(self.engine._stop_loss, 98.0)
+        self.assertIn(self.engine._protection_mode, ("breakeven", "trailing"))
+
+    def test_operator_request_force_reconcile_sets_sync_requested(self) -> None:
+        self.engine._position_sync_requested = False
+        path = self.engine._operator_request_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"action": "force_reconcile", "source": "test"}), encoding="utf-8")
+        try:
+            self.engine._process_operator_request()
+            self.assertTrue(self.engine._position_sync_requested)
+            self.assertFalse(path.exists())
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_operator_request_clear_unresolved_clears_when_flat(self) -> None:
+        self.engine._last_position = 0
+        self.engine._unresolved_entry_submission_count = 1
+        self.engine._unresolved_entry_side = "sell"
+        self.engine._unresolved_entry_order_ids = ["o1"]
+        path = self.engine._operator_request_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"action": "clear_unresolved", "source": "test"}), encoding="utf-8")
+        try:
+            self.engine._process_operator_request()
+            self.assertEqual(self.engine._unresolved_entry_submission_count, 0)
+            self.assertFalse(path.exists())
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_cancelled_order_update_no_longer_counts_as_pending(self) -> None:
+        executor = self.engine.executor
+        executor.enable_mock_mode()
+        order = executor._place_mock_order("ES", 1, "buy", "limit", 100.0, None, False, "entry")
+
+        executor.update_order_status(order.order_id, type(order.status).CANCELLED)
+
+        snapshot = executor.get_watchdog_snapshot("ES")
+        self.assertEqual(snapshot["pending_orders"], 0)
+        self.assertEqual(snapshot["active_entry_orders"], 0)
+
+    def test_live_limit_order_can_fall_back_to_market(self) -> None:
+        executor = self.engine.executor
+        executor.reset_state(mock_mode=False)
+
+        with patch.object(executor.client, "place_order", side_effect=[None, "fallback-market-id"]) as place_order:
+            order = executor.place_order("ES", 1, "buy", "limit", 100.0)
+
+        assert order is not None
+        self.assertEqual(order.order_type, "market")
+        self.assertIsNone(order.limit_price)
+        self.assertEqual(place_order.call_count, 2)
+        self.assertEqual(place_order.call_args_list[0].kwargs["order_type"], "limit")
+        self.assertEqual(place_order.call_args_list[1].kwargs["order_type"], "market")
+
+    def test_reconcile_pending_orders_cancels_stale_entry(self) -> None:
+        executor = self.engine.executor
+        executor.enable_mock_mode()
+        order = executor._place_mock_order("ES", 1, "buy", "limit", 100.0, None, False, "entry")
+        order.created_time = order.created_time - timedelta(seconds=self.config.watchdog.stale_order_seconds + 5)
+
+        cancelled = executor.reconcile_pending_orders()
+
+        self.assertEqual(cancelled, 1)
+        self.assertFalse(executor.has_active_entry_order("ES"))
+        self.assertNotIn(order.order_id, executor.get_orders())
+
+    def test_engine_on_order_update_clears_cancelled_entry(self) -> None:
+        executor = self.engine.executor
+        executor.enable_mock_mode()
+        order = executor._place_mock_order("ES", 1, "buy", "limit", 100.0, None, False, "entry")
+
+        self.engine.on_order_update({"orderId": order.order_id, "status": "cancelled"})
+
+        self.assertFalse(executor.has_active_entry_order("ES"))
+        self.assertTrue(self.engine._position_sync_requested)
+
+    def test_executor_filled_order_callback_records_fill_for_sync_consumers(self) -> None:
+        executor = self.engine.executor
+        executor.enable_mock_mode()
+        order = executor._place_mock_order("ES", 2, "buy", "limit", 100.0, None, False, "entry")
+
+        executor.update_order_status(
+            order.order_id,
+            type(order.status).FILLED,
+            {"filled_quantity": 2, "filled_price": 100.25},
+        )
+
+        fills = executor.consume_fills("ES")
+
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0]["quantity"], 2)
+        self.assertEqual(fills[0]["filled_price"], 100.25)
+        self.assertEqual(executor.get_lifecycle_state(), "FILLED")
+
+
+class ReplayRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = build_config()
+        set_config(self.config)
+        get_client(force_recreate=True)
+        self.engine = TradingEngine(self.config)
+
+    def test_live_and_replay_share_engine_handler(self) -> None:
+        with patch.object(self.engine, "_evaluate_current_state", wraps=self.engine._evaluate_current_state) as wrapped:
+            self.engine.reset_runtime_state()
+            self.engine._mock_mode = True
+            self.engine.client.enable_mock_mode()
+            self.engine.executor.enable_mock_mode()
+            first = MarketData(symbol="ES", bid=100.0, ask=100.25, last=100.1, volume=100, timestamp=pd.Timestamp("2026-03-13 14:30:01Z").to_pydatetime())
+            second = MarketData(symbol="ES", bid=100.6, ask=100.85, last=100.7, volume=180, timestamp=pd.Timestamp("2026-03-13 14:31:01Z").to_pydatetime())
+            self.engine.on_market_data(first)
+            self.engine.on_market_data(second)
+            self.assertGreaterEqual(wrapped.call_count, 1)
+
+        with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as handle:
+            handle.write("timestamp,bid,ask,last,volume,bid_size,ask_size,last_size,trade_side,latency_ms\n")
+            handle.write("2026-03-13T14:30:01Z,100.0,100.25,100.1,100,5,5,2,buy,25\n")
+            handle.write("2026-03-13T14:31:01Z,100.6,100.85,100.7,180,5,5,2,buy,25\n")
+            handle.flush()
+            replay_path = handle.name
+
+        runner = ReplayRunner(config=self.config, engine=self.engine)
+        with patch.object(self.engine, "_evaluate_current_state", wraps=self.engine._evaluate_current_state) as wrapped:
+            result = runner.run(replay_path)
+            self.assertGreaterEqual(wrapped.call_count, 1)
+            self.assertEqual(result.events, 2)
+
+    def test_replay_runner_uses_engine_mock_mode_api(self) -> None:
+        with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as handle:
+            handle.write("timestamp,bid,ask,last,volume\n")
+            handle.write("2026-03-13T14:30:01Z,100.0,100.25,100.1,100\n")
+            handle.flush()
+            replay_path = handle.name
+
+        runner = ReplayRunner(config=self.config, engine=self.engine)
+        with patch.object(self.engine, "enable_mock_mode", wraps=self.engine.enable_mock_mode) as enable_mock:
+            runner.run(replay_path)
+
+        enable_mock.assert_called_once()
+
+    def test_replay_produces_segment_summary_and_dsr(self) -> None:
+        with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as handle:
+            handle.write("timestamp,bid,ask,last,volume,bid_size,ask_size,last_size,trade_side\n")
+            handle.write("2026-03-13T14:30:01Z,100.0,100.25,100.1,100,5,5,2,buy\n")
+            handle.write("2026-03-13T14:31:01Z,100.6,100.85,100.7,180,5,5,2,buy\n")
+            handle.write("2026-03-13T14:32:01Z,101.0,101.25,101.1,260,5,5,2,buy\n")
+            handle.flush()
+            replay_path = handle.name
+
+        result = ReplayRunner(config=self.config, engine=self.engine).run(replay_path)
+
+        self.assertEqual(result.events, 3)
+        self.assertGreaterEqual(len(result.segments), 1)
+        self.assertIn("trade_count", result.summary)
+        self.assertIn("deflated_sharpe_ratio_approx", result.summary)
+        self.assertIn("walk_forward", result.summary)
+        self.assertIn("matrix", result.summary)
+        self.assertIn("benchmarks", result.summary)
+        self.assertIn("acceptance", result.summary)
+
+    def test_replay_size_field_is_treated_as_per_event_volume(self) -> None:
+        event = ReplayRunner(config=self.config, engine=self.engine)._event_to_market_data(
+            {
+                "timestamp": "2026-03-13T14:30:01Z",
+                "bid": 100.0,
+                "ask": 100.25,
+                "last": 100.1,
+                "size": 7,
+            }
+        )
+
+        self.assertEqual(event.volume, 7)
+        self.assertFalse(event.volume_is_cumulative)
+
+    def test_replay_event_parser_treats_nan_quotes_as_synthetic(self) -> None:
+        event = ReplayRunner(config=self.config, engine=self.engine)._event_to_market_data(
+            {
+                "timestamp": "2026-03-13T14:30:01Z",
+                "bid": float("nan"),
+                "ask": float("nan"),
+                "last": 100.1,
+                "volume": float("nan"),
+                "size": float("nan"),
+            }
+        )
+
+        self.assertTrue(event.quote_is_synthetic)
+        self.assertEqual(event.bid, 99.85)
+        self.assertEqual(event.ask, 100.35)
+        self.assertEqual(event.volume, 0)
+        self.assertFalse(event.volume_is_cumulative)
+
+    def test_replay_marks_synthetic_quotes_as_not_decision_ready(self) -> None:
+        with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as handle:
+            handle.write("timestamp,last,volume\n")
+            handle.write("2026-03-13T14:30:01Z,100.1,100\n")
+            handle.write("2026-03-13T14:31:01Z,100.7,180\n")
+            handle.write("2026-03-13T14:32:01Z,101.1,260\n")
+            handle.flush()
+            replay_path = handle.name
+
+        result = ReplayRunner(config=self.config, engine=self.engine).run(replay_path)
+
+        self.assertTrue(result.summary["synthetic_quotes_detected"])
+        self.assertFalse(result.summary["decision_ready"])
+        self.assertEqual(result.summary["decision_ready_reason"], "synthetic_quotes_rejected")
+
+    def test_costed_trade_summary_reduces_net_pnl(self) -> None:
+        runner = ReplayRunner(config=self.config, engine=self.engine)
+        trade = TradeRecord(
+            entry_time=pd.Timestamp("2026-03-13T14:30:01Z").to_pydatetime(),
+            exit_time=pd.Timestamp("2026-03-13T14:31:01Z").to_pydatetime(),
+            direction=1,
+            contracts=1,
+            entry_price=100.0,
+            exit_price=101.0,
+            pnl=50.0,
+            zone="Post-Open",
+            strategy="WEIGHTED_SCORE_MATRIX",
+            regime="TREND",
+            event_tags=["none"],
+        )
+
+        summary = runner._costed_trade_summary([trade], strategy_name="WEIGHTED_SCORE_MATRIX")
+
+        self.assertEqual(summary["gross_pnl"], 50.0)
+        self.assertLess(summary["net_pnl"], summary["gross_pnl"])
+        self.assertLess(summary["stressed_net_pnl"], summary["net_pnl"])
+
+    def test_walk_forward_segments_are_deterministic(self) -> None:
+        runner = ReplayRunner(config=self.config, engine=self.engine)
+        bars = bars_from_prices("2026-03-13 09:00", [100.0, 100.5, 101.0, 101.5, 102.0, 102.5])
+        trades = [
+            TradeRecord(
+                entry_time=bars.index[2].to_pydatetime(),
+                exit_time=bars.index[3].to_pydatetime(),
+                direction=1,
+                contracts=1,
+                entry_price=101.0,
+                exit_price=101.5,
+                pnl=25.0,
+                zone="Post-Open",
+                strategy="WEIGHTED_SCORE_MATRIX",
+                regime="TREND",
+                event_tags=["none"],
+            )
+        ]
+
+        first = runner._walk_forward_segments(bars, trades, [])
+        second = runner._walk_forward_segments(bars, trades, [])
+
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(len(first), 1)
+
+    def test_acceptance_gates_require_benchmark_and_stress_pass(self) -> None:
+        runner = ReplayRunner(config=self.config, engine=self.engine)
+        state = get_state()
+        state.execution = {
+            "fill_drift_ticks": 0.5,
+            "protection_failures": 0,
+            "fail_safe_count": 0,
+        }
+
+        gates = runner._acceptance_gates(
+            matrix_cost_summary={
+                "net_pnl": 100.0,
+                "stressed_net_pnl": 20.0,
+                "zone_stats": {
+                    "Pre-Open": {"net_pnl": 60.0},
+                    "Post-Open": {"net_pnl": 40.0},
+                },
+            },
+            benchmark_cost_summary={"net_pnl": 50.0, "stressed_net_pnl": 0.0, "trade_count": 1},
+            walk_forward=[{"matrix_positive": True}, {"matrix_positive": False}, {"matrix_positive": True}],
+            synthetic_quotes_detected=False,
+        )
+
+        self.assertTrue(gates["decision_ready"])
+        self.assertTrue(gates["benchmark_outperformance"])
+        self.assertTrue(gates["stress_survival_ok"])
+        self.assertTrue(gates["walk_forward_ok"])
+        self.assertTrue(gates["promotable"])
+
+
+class EngineRiskExecutionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = build_config()
+        set_config(self.config)
+        get_client(force_recreate=True)
+        self.engine = TradingEngine(self.config)
+        self.engine.reset_runtime_state()
+        self.engine._mock_mode = True
+        self.engine.client.enable_mock_mode()
+        self.engine.executor.enable_mock_mode()
+
+    def test_stop_loss_flattens_position(self) -> None:
+        self.engine.executor.place_order("ES", 1, "buy", "market")
+        self.engine._sync_position_state()
+        self.engine._stop_loss = 99.0
+        self.engine._take_profit = 102.0
+
+        self.engine.on_market_data(
+            MarketData(
+                symbol="ES",
+                bid=98.5,
+                ask=98.75,
+                last=98.5,
+                volume=100,
+                bid_size=5,
+                ask_size=5,
+                last_size=1,
+                timestamp=pd.Timestamp("2026-03-13T15:00:01Z").to_pydatetime(),
+            )
+        )
+
+        self.assertEqual(self.engine.executor.get_position(), 0)
+        self.assertEqual(self.engine._last_exit_reason, "stop_loss")
+
+    def test_take_profit_flattens_position(self) -> None:
+        self.engine.executor.place_order("ES", 1, "buy", "market")
+        self.engine._sync_position_state()
+        self.engine._stop_loss = 99.0
+        self.engine._take_profit = 101.0
+
+        self.engine.on_market_data(
+            MarketData(
+                symbol="ES",
+                bid=101.0,
+                ask=101.25,
+                last=101.1,
+                volume=100,
+                bid_size=5,
+                ask_size=5,
+                last_size=1,
+                timestamp=pd.Timestamp("2026-03-13T15:01:01Z").to_pydatetime(),
+            )
+        )
+
+        self.assertEqual(self.engine.executor.get_position(), 0)
+        self.assertEqual(self.engine._last_exit_reason, "take_profit")
+
+    def test_sync_position_state_uses_cached_broker_position_after_lookup_error(self) -> None:
+        self.engine._mock_mode = False
+        cached_position = Position(symbol="ES", quantity=1, entry_price=100.25)
+        self.engine.client._positions = {"ES": cached_position}
+        self.engine._last_position = 1
+        self.engine._position_sync_requested = True
+
+        with patch.object(self.engine.client, "get_positions_snapshot", return_value=(None, "boom")):
+            self.engine._sync_position_state()
+
+        self.assertEqual(self.engine._last_position, 1)
+        self.assertFalse(self.engine._position_sync_requested)
+        self.assertEqual(self.engine._last_reconciliation_reason, "position_lookup_unavailable")
+
+    def test_sync_position_state_does_not_flatten_on_lookup_error_without_cache(self) -> None:
+        self.engine._mock_mode = False
+        self.engine.client._positions = {}
+        self.engine._last_position = 1
+        self.engine._position_sync_requested = True
+
+        with patch.object(self.engine.client, "get_positions_snapshot", return_value=(None, "boom")):
+            self.engine._sync_position_state()
+
+        self.assertEqual(self.engine._last_position, 1)
+        self.assertFalse(self.engine._position_sync_requested)
+        self.assertEqual(self.engine._last_reconciliation_reason, "position_lookup_unavailable")
+
+    def test_sync_position_state_clears_sync_flag_when_position_is_unchanged(self) -> None:
+        self.engine._mock_mode = False
+        self.engine._last_position = 1
+        self.engine._position_sync_requested = True
+
+        with patch.object(
+            self.engine.client,
+            "get_positions_snapshot",
+            return_value=({"ES": Position(symbol="ES", quantity=1, entry_price=100.0)}, None),
+        ):
+            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+                self.engine._sync_position_state()
+
+        self.assertFalse(self.engine._position_sync_requested)
+        self.assertEqual(self.engine._last_reconciliation_reason, "position_sync")
+
+    def test_watchdog_locks_out_after_stale_feed(self) -> None:
+        self.engine._watchdog_state.last_feed_time = pd.Timestamp("2026-03-13T15:00:00Z").to_pydatetime()
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=100.0,
+            ask=100.25,
+            last=100.1,
+            volume=100,
+            timestamp=pd.Timestamp("2026-03-13T15:00:30Z").to_pydatetime(),
+        )
+
+        self.engine._handle_watchdogs()
+
+        self.assertTrue(self.engine._watchdog_state.fail_safe_lockout)
+
+    def test_bar_aggregator_ignores_out_of_order_ticks(self) -> None:
+        first = MarketData(symbol="ES", bid=100.0, ask=100.25, last=100.1, volume=100, timestamp=pd.Timestamp("2026-03-13T15:00:30Z").to_pydatetime())
+        second = MarketData(symbol="ES", bid=100.2, ask=100.45, last=100.3, volume=120, timestamp=pd.Timestamp("2026-03-13T14:59:59Z").to_pydatetime())
+
+        self.engine.bar_aggregator.update(first)
+        completed = self.engine.bar_aggregator.update(second)
+
+        self.assertIsNone(completed)
+
+    def test_bar_aggregator_supports_per_event_volume(self) -> None:
+        first = MarketData(
+            symbol="ES",
+            bid=100.0,
+            ask=100.25,
+            last=100.1,
+            volume=7,
+            volume_is_cumulative=False,
+            timestamp=pd.Timestamp("2026-03-13T15:00:10Z").to_pydatetime(),
+        )
+        second = MarketData(
+            symbol="ES",
+            bid=100.1,
+            ask=100.35,
+            last=100.2,
+            volume=9,
+            volume_is_cumulative=False,
+            timestamp=pd.Timestamp("2026-03-13T15:00:40Z").to_pydatetime(),
+        )
+        third = MarketData(
+            symbol="ES",
+            bid=100.2,
+            ask=100.45,
+            last=100.3,
+            volume=5,
+            volume_is_cumulative=False,
+            timestamp=pd.Timestamp("2026-03-13T15:01:01Z").to_pydatetime(),
+        )
+
+        self.engine.bar_aggregator.update(first)
+        self.engine.bar_aggregator.update(second)
+        completed = self.engine.bar_aggregator.update(third)
+
+        self.assertIsNotNone(completed)
+        assert completed is not None
+        self.assertEqual(completed["volume"], 16)
+
+    def test_performance_summary_tracks_scratches_separately(self) -> None:
+        self.engine.risk_manager._trade_history = [
+            TradeRecord(
+                entry_time=pd.Timestamp("2026-03-13T15:00:00Z").to_pydatetime(),
+                exit_time=pd.Timestamp("2026-03-13T15:01:00Z").to_pydatetime(),
+                direction=1,
+                contracts=1,
+                entry_price=100.0,
+                exit_price=101.0,
+                pnl=50.0,
+                zone="Midday",
+                strategy="WEIGHTED_SCORE_MATRIX",
+            ),
+            TradeRecord(
+                entry_time=pd.Timestamp("2026-03-13T15:02:00Z").to_pydatetime(),
+                exit_time=pd.Timestamp("2026-03-13T15:03:00Z").to_pydatetime(),
+                direction=1,
+                contracts=1,
+                entry_price=100.0,
+                exit_price=100.0,
+                pnl=0.0,
+                zone="Midday",
+                strategy="WEIGHTED_SCORE_MATRIX",
+            ),
+            TradeRecord(
+                entry_time=pd.Timestamp("2026-03-13T15:04:00Z").to_pydatetime(),
+                exit_time=pd.Timestamp("2026-03-13T15:05:00Z").to_pydatetime(),
+                direction=-1,
+                contracts=1,
+                entry_price=100.0,
+                exit_price=101.0,
+                pnl=-50.0,
+                zone="Midday",
+                strategy="WEIGHTED_SCORE_MATRIX",
+            ),
+        ]
+
+        summary = self.engine.build_performance_summary()
+
+        self.assertEqual(summary["scratch_trades"], 1)
+        self.assertEqual(summary["avg_loser"], -50.0)
+
+    def test_sync_position_records_partial_exit_trade(self) -> None:
+        self.engine.executor.place_order("ES", 2, "buy", "market")
+        self.engine._sync_position_state()
+
+        self.engine.executor.place_order("ES", 1, "sell", "market")
+        self.engine._sync_position_state()
+
+        history = self.engine.risk_manager.get_trade_history()
+
+        self.assertEqual(self.engine.executor.get_position(), 1)
+        self.assertEqual(self.engine.risk_manager.get_metrics().current_position, 1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].contracts, 1)
+
+    def test_sync_position_records_reversal_close_before_new_open(self) -> None:
+        self.engine.executor.place_order("ES", 1, "buy", "market")
+        self.engine._sync_position_state()
+
+        self.engine.executor.place_order("ES", 2, "sell", "market")
+        self.engine._sync_position_state()
+
+        history = self.engine.risk_manager.get_trade_history()
+
+        self.assertEqual(self.engine.executor.get_position(), -1)
+        self.assertEqual(self.engine.risk_manager.get_metrics().current_position, -1)
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0].contracts, 1)
+
+
+class SchedulerTests(unittest.TestCase):
+    def test_cross_midnight_zone_uses_prior_session_start_after_midnight(self) -> None:
+        config = build_config()
+        config.hot_zones = [
+            HotZoneConfig(name="Night", start="23:00", end="01:00", timezone="America/Chicago"),
+        ]
+        scheduler = HotZoneScheduler(config)
+
+        zone = scheduler.get_current_zone(pd.Timestamp("2026-04-01 00:30", tz="America/Chicago").to_pydatetime())
+
+        assert zone is not None
+        self.assertEqual(zone.start_time, pd.Timestamp("2026-03-31 23:00", tz="America/Chicago").to_pydatetime())
+        self.assertEqual(zone.end_time, pd.Timestamp("2026-04-01 01:00", tz="America/Chicago").to_pydatetime())
+        self.assertEqual(zone.minutes_remaining, 30.0)
+
+    def test_repeated_zone_reads_do_not_advance_bar_counter(self) -> None:
+        scheduler = HotZoneScheduler(build_config())
+        current_time = pd.Timestamp("2026-03-13 09:05", tz="America/Chicago").to_pydatetime()
+
+        first = scheduler.get_current_zone(current_time)
+        second = scheduler.get_current_zone(current_time)
+
+        assert first is not None
+        assert second is not None
+        self.assertTrue(first.is_first_bar)
+        self.assertTrue(second.is_first_bar)
+        self.assertEqual(scheduler._bars_in_zone, 1)
+
+
+class AccountSafetyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = build_config()
+        self.config.safety.prac_only = True
+        self.config.account.require_preferred_account = True
+        set_config(self.config)
+        self.client = TopstepClient(self.config.api)
+
+    def test_select_account_refuses_live_only_accounts_when_prac_required(self) -> None:
+        selected = self.client._select_account(
+            [
+                {"id": "LIVE-1", "name": "LIVE-1", "canTrade": True, "balance": 50000, "simulated": False},
+            ]
+        )
+
+        self.assertIsNone(selected)
+
+    def test_select_account_rejects_preferred_env_when_it_targets_non_practice(self) -> None:
+        with patch.dict(os.environ, {"PREFERRED_ACCOUNT_ID": "LIVE-1"}, clear=False):
+            selected = self.client._select_account(
+                [
+                    {"id": "LIVE-1", "name": "LIVE-1", "canTrade": True, "balance": 50000, "simulated": False},
+                    {"id": "PRAC-1", "name": "PRAC-1", "canTrade": True, "balance": 50000, "simulated": True},
+                ]
+            )
+
+        self.assertIsNone(selected)
+
+    def test_place_order_refuses_non_practice_account_when_prac_only_enabled(self) -> None:
+        self.client._access_token = "token"
+        self.client._token_expires = float("inf")
+        self.client._account_id = 123
+        self.client._account = Account(account_id="123", name="LIVE-1", balance=50000, is_practice=False)
+
+        order_id = self.client.place_order("ES", 1, "buy", "market")
+
+        self.assertIsNone(order_id)
+
+    def test_build_hub_url_injects_access_token_query_param(self) -> None:
+        self.client._access_token = "jwt-token"
+
+        hub_url = self.client._build_hub_url("https://rtc.topstepx.com/hubs/market")
+
+        self.assertTrue(hub_url.startswith("wss://rtc.topstepx.com/hubs/market"))
+        self.assertIn("access_token=jwt-token", hub_url)
+
+    def test_decode_signalr_frames_splits_record_separator_payloads(self) -> None:
+        frames = self.client._decode_signalr_frames('{"type":6}\x1e{"type":1,"target":"GatewayQuote","arguments":["CON",{"lastPrice":1.0}]}\x1e')
+
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(frames[1]["target"], "GatewayQuote")
+
+    def test_account_summary_maps_extended_balance_fields(self) -> None:
+        account = self.client._account_summary(
+            {
+                "id": "PRAC-1",
+                "name": "Practice",
+                "balance": "50000.0",
+                "equity": "50350.5",
+                "availableFunds": "49750.25",
+                "marginRequirement": "600.0",
+                "openPnL": "125.5",
+                "realizedPnL": "225.0",
+                "simulated": True,
+            }
+        )
+
+        self.assertEqual(account.balance, 50000.0)
+        self.assertEqual(account.equity, 50350.5)
+        self.assertEqual(account.available, 49750.25)
+        self.assertEqual(account.margin_used, 600.0)
+        self.assertEqual(account.open_pnl, 125.5)
+        self.assertEqual(account.realized_pnl, 225.0)
+        self.assertTrue(account.is_practice)
+
+
+class LoggingBootstrapTests(unittest.TestCase):
+    def test_configure_logging_creates_rotating_file_handler(self) -> None:
+        config = build_config()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.logging.file = str(Path(temp_dir) / "trading.log")
+            log_path = _configure_logging(config)
+            root_logger = logging.getLogger()
+
+            self.assertTrue(log_path.exists())
+            self.assertTrue(any(getattr(handler, "baseFilename", None) == str(log_path) for handler in root_logger.handlers))
+
+    def test_configure_logging_supports_console_color_toggle(self) -> None:
+        config = build_config()
+        config.logging.console_colors = False
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.logging.file = str(Path(temp_dir) / "trading.log")
+            _configure_logging(config)
+            root_logger = logging.getLogger()
+
+            self.assertGreaterEqual(len(root_logger.handlers), 2)
+
+    def test_startup_summary_logs_structured_lines(self) -> None:
+        config = build_config()
+
+        with self.assertLogs("src.cli.commands", level="INFO") as captured:
+            _log_startup_summary(config, Path("/tmp/trading.log"), "Post-Open", "active")
+
+        joined = "\n".join(captured.output)
+        self.assertIn("startup_summary", joined)
+        self.assertIn("startup_endpoints", joined)
+
+
+class CliLifecycleControlTests(unittest.TestCase):
+    def test_request_runtime_action_persists_restart_request_when_process_not_running(self) -> None:
+        config = build_config()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.logging.file = str(Path(temp_dir) / "logs" / "trading.log")
+            set_config(config)
+            log_path = _configure_logging(config)
+
+            with patch("src.cli.commands._read_pid_file", return_value=None):
+                active_pid, runtime_status, request = _request_runtime_action(
+                    config,
+                    log_path=log_path,
+                    action="restart",
+                    reason="unit_restart",
+                    timeout_seconds=1,
+                    request_source="tests.test_matrix_engine",
+                )
+
+            stored = _read_lifecycle_request(config, log_path)
+
+            self.assertIsNone(active_pid)
+            self.assertIsNone(runtime_status)
+            self.assertEqual(request["action"], "restart")
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored["action"], "restart")
+            self.assertEqual(stored["reason"], "unit_restart")
+
+    def test_stop_command_clears_stale_request_when_engine_not_running(self) -> None:
+        config = build_config()
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.logging.file = str(Path(temp_dir) / "logs" / "trading.log")
+            set_config(config)
+            log_path = Path(config.logging.file)
+            _write_lifecycle_request(
+                config,
+                {
+                    "request_id": "stale-stop-request",
+                    "action": "stop",
+                    "reason": "stale",
+                    "source": "tests.test_matrix_engine",
+                    "requester_pid": 1,
+                    "requested_at": datetime.now().isoformat(),
+                },
+                log_path,
+            )
+
+            with patch("src.cli.commands.get_config", return_value=config), patch(
+                "src.cli.commands._resolve_log_path", return_value=log_path
+            ), patch("src.cli.commands._request_runtime_action", return_value=(None, None, {"action": "stop"})):
+                result = runner.invoke(cli, ["stop"])
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("Trading engine is not running.", result.output)
+            self.assertIsNone(_read_lifecycle_request(config, log_path))
+
+    def test_restart_command_reuses_config_when_relaunching(self) -> None:
+        config = build_config()
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.logging.file = str(Path(temp_dir) / "logs" / "trading.log")
+            runtime_status = {
+                "data_mode": "live",
+                "config_path": str(Path(temp_dir) / "config.yaml"),
+            }
+            invoked: dict[str, object] = {}
+
+            def fake_start(config: Optional[str] = None) -> None:
+                invoked["config"] = config
+
+            with patch("src.cli.commands.get_config", return_value=config), patch(
+                "src.cli.commands.set_config"
+            ), patch("src.cli.commands._resolve_log_path", return_value=Path(config.logging.file)), patch(
+                "src.cli.commands._request_runtime_action",
+                return_value=(12345, runtime_status, {"action": "restart"}),
+            ), patch("src.cli.commands.start", new=fake_start):
+                result = runner.invoke(cli, ["restart", "--reason", "unit_restart"])
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(invoked["config"], runtime_status["config_path"])
+            self.assertIn("Trading engine stopped for restart", result.output)
+
+
+class DebugServerLifecycleTests(unittest.TestCase):
+    def test_stop_closes_servers_without_httpserver_shutdown(self) -> None:
+        config = build_config()
+        set_config(config)
+        server = DebugServer(config.server)
+        server._running = True
+
+        health_thread = Mock()
+        health_thread.is_alive.return_value = True
+        debug_thread = Mock()
+        debug_thread.is_alive.return_value = True
+        server._health_thread = health_thread
+        server._debug_thread = debug_thread
+
+        health_server = Mock()
+        debug_server = Mock()
+        server._health_server = health_server
+        server._debug_server = debug_server
+
+        server.stop()
+
+        health_server.shutdown.assert_called_once()
+        debug_server.shutdown.assert_called_once()
+        health_server.server_close.assert_called_once()
+        debug_server.server_close.assert_called_once()
+        health_thread.join.assert_called_once_with(timeout=2)
+        debug_thread.join.assert_called_once_with(timeout=2)
+        self.assertIsNone(server._health_thread)
+        self.assertIsNone(server._debug_thread)
+        self.assertIsNone(server._health_server)
+        self.assertIsNone(server._debug_server)
+
+
+class ObservabilityStoreTests(unittest.TestCase):
+    def test_observability_store_persists_and_queries_events(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            store.record_event(
+                category="system",
+                event_type="test_event",
+                source="tests.test_matrix_engine",
+                payload={"value": 7},
+                symbol="ES",
+                action="test",
+                reason="test_event",
+            )
+            store.force_flush()
+
+            rows = store.query_events(limit=5, category="system", event_type="test_event")
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["payload"]["value"], 7)
+            self.assertTrue(Path(config.observability.sqlite_path).exists())
+            store.stop()
+
+    def test_observability_store_query_after_id_filters_old_rows(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            for idx in range(3):
+                store.record_event(
+                    category="system",
+                    event_type=f"event_{idx + 1}",
+                    source="tests.test_matrix_engine",
+                    payload={"value": idx + 1},
+                    symbol="ES",
+                    action=f"event_{idx + 1}",
+                    reason=f"event_{idx + 1}",
+                )
+            store.force_flush()
+
+            event_rows = store.query_events(limit=2, after_id=0, ascending=True)
+            next_event_rows = store.query_events(limit=2, after_id=event_rows[-1]["id"], ascending=True)
+
+            trades = [
+                TradeRecord(
+                    entry_time=datetime.fromisoformat("2026-03-16T12:01:00+00:00"),
+                    exit_time=datetime.fromisoformat("2026-03-16T12:02:00+00:00"),
+                    direction=1,
+                    contracts=1,
+                    entry_price=100.0,
+                    exit_price=101.0,
+                    pnl=50.0,
+                    zone="Post-Open",
+                    strategy="WEIGHTED_SCORE_MATRIX",
+                    regime="TREND",
+                    event_tags=["opening_drive"],
+                ),
+                TradeRecord(
+                    entry_time=datetime.fromisoformat("2026-03-16T12:03:00+00:00"),
+                    exit_time=datetime.fromisoformat("2026-03-16T12:04:00+00:00"),
+                    direction=-1,
+                    contracts=1,
+                    entry_price=102.0,
+                    exit_price=101.0,
+                    pnl=50.0,
+                    zone="Post-Open",
+                    strategy="WEIGHTED_SCORE_MATRIX",
+                    regime="TREND",
+                    event_tags=["pullback"],
+                ),
+                TradeRecord(
+                    entry_time=datetime.fromisoformat("2026-03-16T12:05:00+00:00"),
+                    exit_time=datetime.fromisoformat("2026-03-16T12:06:00+00:00"),
+                    direction=1,
+                    contracts=1,
+                    entry_price=103.0,
+                    exit_price=104.0,
+                    pnl=50.0,
+                    zone="Post-Open",
+                    strategy="WEIGHTED_SCORE_MATRIX",
+                    regime="TREND",
+                    event_tags=["continuation"],
+                ),
+            ]
+            for trade in trades:
+                store.record_completed_trade(trade)
+
+            trade_rows = store.query_completed_trades(limit=2, after_id=0, ascending=True)
+            next_trade_rows = store.query_completed_trades(limit=2, after_id=trade_rows[-1]["id"], ascending=True)
+
+            self.assertTrue(event_rows)
+            self.assertEqual([row["id"] for row in event_rows], [1, 2])
+            self.assertEqual([row["id"] for row in next_event_rows], [3])
+            self.assertTrue(trade_rows)
+            self.assertEqual([row["id"] for row in trade_rows], [1, 2])
+            self.assertEqual([row["id"] for row in next_trade_rows], [3])
+            store.stop()
+
+    def test_observability_store_persists_run_manifest_and_completed_trade(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            store.record_run_manifest(
+                {
+                    "run_id": store.get_run_id(),
+                    "started_at": "2026-03-16T12:00:00+00:00",
+                    "process_id": 42,
+                    "data_mode": "live",
+                    "symbols": ["ES"],
+                    "config_path": "/tmp/config.yaml",
+                    "config_hash": "abc123",
+                    "log_path": "/tmp/trading.log",
+                    "sqlite_path": config.observability.sqlite_path,
+                    "git_commit": "deadbeef",
+                    "git_branch": "main",
+                    "git_dirty": False,
+                    "git_available": True,
+                    "app_version": "0.1.0",
+                }
+            )
+            trade = TradeRecord(
+                entry_time=datetime.fromisoformat("2026-03-16T12:01:00+00:00"),
+                exit_time=datetime.fromisoformat("2026-03-16T12:02:00+00:00"),
+                direction=1,
+                contracts=2,
+                entry_price=100.0,
+                exit_price=101.0,
+                pnl=100.0,
+                zone="Post-Open",
+                strategy="WEIGHTED_SCORE_MATRIX",
+                regime="TREND",
+                event_tags=["opening_drive"],
+            )
+            store.record_completed_trade(trade)
+
+            manifests = store.query_run_manifests(limit=5)
+            trades = store.query_completed_trades(limit=5)
+
+            self.assertEqual(manifests[0]["run_id"], store.get_run_id())
+            self.assertEqual(manifests[0]["git_commit"], "deadbeef")
+            self.assertEqual(trades[0]["run_id"], store.get_run_id())
+            self.assertEqual(trades[0]["zone"], "Post-Open")
+            self.assertEqual(trades[0]["event_tags"], ["opening_drive"])
+            store.stop()
+
+    def test_observability_store_replay_runs_do_not_persist_completed_trades_by_default(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            store.record_run_manifest(
+                {
+                    "run_id": store.get_run_id(),
+                    "started_at": "2026-03-16T12:00:00+00:00",
+                    "process_id": 42,
+                    "data_mode": "replay",
+                    "symbols": ["ES"],
+                    "config_path": "/tmp/config.yaml",
+                    "config_hash": "abc123",
+                    "log_path": "/tmp/trading.log",
+                    "sqlite_path": config.observability.sqlite_path,
+                    "app_version": "0.1.0",
+                }
+            )
+            trade = TradeRecord(
+                entry_time=datetime.fromisoformat("2026-03-16T12:01:00+00:00"),
+                exit_time=datetime.fromisoformat("2026-03-16T12:02:00+00:00"),
+                direction=1,
+                contracts=2,
+                entry_price=100.0,
+                exit_price=101.0,
+                pnl=100.0,
+                zone="Post-Open",
+                strategy="WEIGHTED_SCORE_MATRIX",
+                regime="TREND",
+                event_tags=["opening_drive"],
+            )
+            self.assertFalse(store.record_completed_trade(trade))
+            with store._lock:
+                store._insert_completed_trade_locked(
+                    {
+                        "run_id": store.get_run_id(),
+                        "inserted_at": "2026-03-16T12:03:00+00:00",
+                        "entry_time": "2026-03-16T12:01:00+00:00",
+                        "exit_time": "2026-03-16T12:02:00+00:00",
+                        "direction": 1,
+                        "contracts": 2,
+                        "entry_price": 100.0,
+                        "exit_price": 101.0,
+                        "pnl": 100.0,
+                        "zone": "Post-Open",
+                        "strategy": "WEIGHTED_SCORE_MATRIX",
+                        "regime": "TREND",
+                        "event_tags_json": store._json_dumps(["opening_drive"]),
+                        "source": "runtime",
+                        "backfilled": 0,
+                        "trade_id": "legacy-trade",
+                        "position_id": "legacy-position",
+                        "decision_id": "legacy-decision",
+                        "attempt_id": "legacy-attempt",
+                        "account_id": "ACC-1",
+                        "account_name": "Practice 50K",
+                        "account_mode": "practice",
+                        "account_is_practice": True,
+                        "payload_json": store._json_dumps(
+                            {
+                                "entry_time": "2026-03-16T12:01:00+00:00",
+                                "exit_time": "2026-03-16T12:02:00+00:00",
+                                "direction": 1,
+                                "contracts": 2,
+                                "entry_price": 100.0,
+                                "exit_price": 101.0,
+                                "pnl": 100.0,
+                                "zone": "Post-Open",
+                                "strategy": "WEIGHTED_SCORE_MATRIX",
+                                "regime": "TREND",
+                                "event_tags": ["opening_drive"],
+                                "trade_id": "legacy-trade",
+                                "position_id": "legacy-position",
+                                "decision_id": "legacy-decision",
+                                "attempt_id": "legacy-attempt",
+                                "account_id": "ACC-1",
+                                "account_name": "Practice 50K",
+                                "account_mode": "practice",
+                                "account_is_practice": True,
+                            }
+                        ),
+                    }
+                )
+
+            trade_exit = datetime.fromisoformat("2026-03-16T12:02:00+00:00")
+            store.record_event(
+                category="risk",
+                event_type="trade_recorded",
+                source="tests.test_matrix_engine",
+                payload={
+                    "entry_time": "2026-03-16T12:01:00+00:00",
+                    "exit_time": "2026-03-16T12:02:00+00:00",
+                    "contracts": 1,
+                    "entry_price": 100.0,
+                    "exit_price": 101.0,
+                    "pnl": 50.0,
+                    "direction": 1,
+                    "zone": "Post-Open",
+                    "strategy": "WEIGHTED_SCORE_MATRIX",
+                    "regime": "TREND",
+                    "event_tags": ["opening_drive"],
+                },
+                event_time=trade_exit,
+                zone="Post-Open",
+                action="record_trade",
+                reason="trade_recorded",
+            )
+            store.force_flush()
+
+            result = store.backfill_completed_trades_from_events()
+            trades = store.query_completed_trades(limit=5)
+            trades_with_replay = store.query_completed_trades(limit=5, include_non_authoritative=True)
+
+            self.assertEqual(result["backfilled"], 0)
+            self.assertEqual(len(trades), 0)
+            self.assertEqual(len(trades_with_replay), 1)
+            self.assertFalse(trades_with_replay[0]["backfilled"])
+            store.stop()
+
+    def test_observability_store_canonicalizes_completed_trade_timestamps_to_prevent_duplicate_backfill(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            store.record_run_manifest(
+                {
+                    "run_id": store.get_run_id(),
+                    "started_at": "2026-03-16T12:00:00+00:00",
+                    "process_id": 42,
+                    "data_mode": "live",
+                    "symbols": ["ES"],
+                    "account": {"id": "ACC-1", "name": "Practice 50K", "is_practice": True},
+                }
+            )
+            store.record_completed_trade(
+                {
+                    "entry_time": "2026-03-16T12:01:00+00:00",
+                    "exit_time": "2026-03-16T12:02:00+00:00",
+                    "direction": 1,
+                    "contracts": 1,
+                    "entry_price": 100.0,
+                    "exit_price": 101.0,
+                    "pnl": 50.0,
+                    "zone": "Post-Open",
+                    "strategy": "WEIGHTED_SCORE_MATRIX",
+                    "regime": "TREND",
+                    "trade_id": "trade-1",
+                    "position_id": "position-1",
+                    "decision_id": "decision-1",
+                    "attempt_id": "attempt-1",
+                    "account_id": "ACC-1",
+                    "account_name": "Practice 50K",
+                    "account_is_practice": True,
+                }
+            )
+            store.record_event(
+                category="risk",
+                event_type="trade_recorded",
+                source="tests.test_matrix_engine",
+                payload={
+                    "entry_time": "2026-03-16T07:01:00-05:00",
+                    "exit_time": "2026-03-16T07:02:00-05:00",
+                    "contracts": 1,
+                    "entry_price": 100.0,
+                    "exit_price": 101.0,
+                    "pnl": 50.0,
+                    "direction": 1,
+                    "zone": "Post-Open",
+                    "strategy": "WEIGHTED_SCORE_MATRIX",
+                    "regime": "TREND",
+                    "event_tags": ["opening_drive"],
+                    "trade_id": "trade-1",
+                    "position_id": "position-1",
+                    "decision_id": "decision-1",
+                    "attempt_id": "attempt-1",
+                    "account_id": "ACC-1",
+                    "account_name": "Practice 50K",
+                    "account_is_practice": True,
+                },
+                event_time=datetime.fromisoformat("2026-03-16T07:02:00-05:00"),
+                zone="Post-Open",
+                action="record_trade",
+                reason="trade_recorded",
+            )
+            store.force_flush()
+
+            result = store.backfill_completed_trades_from_events()
+            trades = store.query_completed_trades(limit=5)
+
+            self.assertEqual(result["backfilled"], 0)
+            self.assertEqual(len(trades), 1)
+            self.assertEqual(trades[0]["exit_time"], "2026-03-16T12:02:00+00:00")
+            self.assertEqual(trades[0]["source"], "runtime")
+            store.stop()
+
+    def test_observability_store_persists_account_context_and_account_trade_history(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            store.record_run_manifest(
+                {
+                    "run_id": store.get_run_id(),
+                    "started_at": "2026-03-16T12:00:00+00:00",
+                    "process_id": 42,
+                    "data_mode": "live",
+                    "symbols": ["ES"],
+                    "account": {"id": "ACC-1", "name": "Practice 50K", "is_practice": True},
+                }
+            )
+            store.record_completed_trade(
+                {
+                    "entry_time": "2026-03-16T12:01:00+00:00",
+                    "exit_time": "2026-03-16T12:02:00+00:00",
+                    "direction": 1,
+                    "contracts": 1,
+                    "entry_price": 100.0,
+                    "exit_price": 101.0,
+                    "pnl": 50.0,
+                    "zone": "Post-Open",
+                    "strategy": "WEIGHTED_SCORE_MATRIX",
+                    "regime": "TREND",
+                    "trade_id": "trade-1",
+                    "position_id": "position-1",
+                    "decision_id": "decision-1",
+                    "attempt_id": "attempt-1",
+                    "account_id": "ACC-1",
+                    "account_name": "Practice 50K",
+                    "account_is_practice": True,
+                }
+            )
+            store.record_account_trade(
+                {
+                    "id": 8604,
+                    "accountId": 203,
+                    "contractId": "CON.F.US.EP.H25",
+                    "creationTimestamp": "2025-01-21T16:13:52.523293+00:00",
+                    "price": 6065.25,
+                    "profitAndLoss": 50.0,
+                    "fees": 1.4,
+                    "side": 1,
+                    "size": 1,
+                    "voided": False,
+                    "orderId": 14328,
+                    "account_name": "Practice 50K",
+                    "account_is_practice": True,
+                },
+                run_id=store.get_run_id(),
+            )
+
+            manifest = store.get_run_manifest(store.get_run_id())
+            trades = store.query_completed_trades(limit=5)
+            account_trades = store.query_account_trades(limit=5)
+
+            self.assertEqual(manifest["account_id"], "ACC-1")
+            self.assertTrue(manifest["account_is_practice"])
+            self.assertEqual(trades[0]["account_id"], "ACC-1")
+            self.assertEqual(trades[0]["trade_id"], "trade-1")
+            self.assertTrue(trades[0]["account_is_practice"])
+            self.assertEqual(account_trades[0]["broker_trade_id"], "8604")
+            self.assertEqual(account_trades[0]["account_id"], "203")
+            store.stop()
+
+    def test_engine_no_trade_persists_decision_event(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            get_client(force_recreate=True)
+            get_executor(force_recreate=True)
+            get_scheduler(force_recreate=True)
+            get_risk_manager(force_recreate=True)
+            engine = TradingEngine(config)
+            engine.reset_runtime_state()
+            engine.executor.enable_mock_mode()
+            engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+            engine._last_price = float(engine._bars["close"].iloc[-1])
+            engine._latest_market_data = MarketData(
+                symbol="ES",
+                bid=engine._last_price - 0.25,
+                ask=engine._last_price + 0.25,
+                last=engine._last_price,
+                volume=1000,
+                timestamp=engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+            )
+            engine._latest_flow_snapshot = OrderFlowSnapshot(
+                ofi=12.0,
+                ofi_zscore=1.2,
+                quote_rate_per_minute=30.0,
+                quote_rate_state=0.8,
+                spread_regime=1.4,
+                volume_pace=1.0,
+            )
+            decision = MatrixDecision(
+                zone_name="Post-Open",
+                action="NO_TRADE",
+                reason="matrix_not_decisive",
+                long_score=0.9,
+                short_score=0.8,
+                flat_bias=1.0,
+                active_vetoes=["trend_flat"],
+                feature_snapshot=FeatureSnapshot(
+                    zone_name="Post-Open",
+                    current_price=engine._last_price,
+                    atr_value=1.0,
+                    long_features={},
+                    short_features={},
+                    flat_features={},
+                    signed_features={},
+                    execution_tradeable=True,
+                    active_session="RTH",
+                    regime_state="range",
+                    regime_reason="contained_rotation",
+                    event_tags=[],
+                ),
+                execution_tradeable=True,
+            )
+
+            with patch.object(engine.scheduler, "get_current_zone", return_value=zone("Post-Open", engine._bars.index[-1], start_time=engine._bars.index[0])):
+                with patch.object(engine.event_provider, "get_context", return_value=EventContext()):
+                    with patch.object(engine.risk_manager, "should_flatten_position", return_value=(False, "ok")):
+                        with patch.object(engine.matrix, "evaluate", return_value=decision):
+                            engine._evaluate_current_state(allow_entries=True)
+
+            store.force_flush()
+            rows = store.query_events(limit=10, category="decision", event_type="decision_evaluated")
+
+            self.assertTrue(any(row["action"] == "NO_TRADE" for row in rows))
+            self.assertTrue(any(row["payload"]["outcome"] == "no_trade" for row in rows))
+            store.stop()
+
+
+class McpServerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_mcp_sessions()
+
+    def tearDown(self) -> None:
+        reset_mcp_sessions()
+
+    def test_mcp_query_events_tool_returns_structured_content(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            store.record_event(
+                category="system",
+                event_type="test_event",
+                source="tests.test_matrix_engine",
+                payload={"value": 9},
+                action="test",
+                reason="mcp_test",
+            )
+            store.force_flush()
+            state = TradingState()
+            state.run_id = store.get_run_id()
+            status, response = handle_mcp_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "query_events",
+                        "arguments": {"limit": 5, "category": "system", "event_type": "test_event"},
+                    },
+                },
+                lambda: state,
+            )
+
+            self.assertEqual(status, 200)
+            payload = response["result"]["structuredContent"]
+            self.assertEqual(len(payload["events"]), 1)
+            self.assertEqual(payload["events"][0]["payload"]["value"], 9)
+            store.stop()
+
+    def test_mcp_http_initialize_returns_session_header(self) -> None:
+        state = TradingState()
+
+        status, response, headers = handle_mcp_http_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "initialize",
+                "params": {},
+            },
+            lambda: state,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIn(MCP_SESSION_HEADER, headers)
+        self.assertTrue(headers[MCP_SESSION_HEADER])
+        self.assertEqual(response["result"]["serverInfo"]["name"], "es-hotzone-trader-mcp")
+
+    def test_mcp_http_initialized_notification_requires_valid_session(self) -> None:
+        state = TradingState()
+        _, _, headers = handle_mcp_http_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "initialize",
+                "params": {},
+            },
+            lambda: state,
+        )
+        session_id = headers[MCP_SESSION_HEADER]
+
+        status, response, response_headers = handle_mcp_http_request(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
+            },
+            lambda: state,
+            session_id=session_id,
+        )
+
+        self.assertEqual(status, 202)
+        self.assertIsNone(response)
+        self.assertEqual(response_headers[MCP_SESSION_HEADER], session_id)
+
+    def test_mcp_http_post_initialize_requests_allow_implicit_session_for_read_only_methods(self) -> None:
+        state = TradingState()
+
+        status, response, headers = handle_mcp_http_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "tools/list",
+                "params": {},
+            },
+            lambda: state,
+        )
+
+        self.assertEqual(status, 200)
+        self.assertIn("result", response)
+        self.assertIn("tools", response["result"])
+        self.assertIn(MCP_SESSION_HEADER, headers)
+        self.assertTrue(headers[MCP_SESSION_HEADER])
+
+    def test_mcp_current_run_resource_reads_manifest_and_trade_summary(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            store.record_run_manifest(
+                {
+                    "run_id": store.get_run_id(),
+                    "started_at": "2026-03-16T12:00:00+00:00",
+                    "process_id": 42,
+                    "data_mode": "live",
+                    "symbols": ["ES"],
+                    "config_path": "/tmp/config.yaml",
+                    "config_hash": "abc123",
+                    "log_path": "/tmp/trading.log",
+                    "sqlite_path": config.observability.sqlite_path,
+                    "app_version": "0.1.0",
+                }
+            )
+            store.record_completed_trade(
+                TradeRecord(
+                    entry_time=datetime.fromisoformat("2026-03-16T12:01:00+00:00"),
+                    exit_time=datetime.fromisoformat("2026-03-16T12:02:00+00:00"),
+                    direction=1,
+                    contracts=1,
+                    entry_price=100.0,
+                    exit_price=102.0,
+                    pnl=100.0,
+                    zone="Post-Open",
+                    strategy="WEIGHTED_SCORE_MATRIX",
+                    regime="TREND",
+                    event_tags=["opening_drive"],
+                )
+            )
+            state = TradingState()
+            state.run_id = store.get_run_id()
+            status, response = handle_mcp_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "resources/read",
+                    "params": {"uri": "observability://current-run"},
+                },
+                lambda: state,
+            )
+
+            self.assertEqual(status, 200)
+            content = json.loads(response["result"]["contents"][0]["text"])
+            self.assertEqual(content["run"]["run_id"], store.get_run_id())
+            self.assertEqual(content["performance"]["trade_count"], 1)
+            self.assertEqual(content["performance"]["total_pnl"], 100.0)
+            store.stop()
+
+    def test_mcp_execution_reconstruction_tool_summarizes_attempts_and_transitions(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+            event_time = datetime.fromisoformat("2026-03-16T12:00:00+00:00")
+            order_id = "order-123"
+            store.record_event(
+                category="decision",
+                event_type="decision_evaluated",
+                source="tests.test_matrix_engine",
+                payload={
+                    "outcome": "entry_submitted",
+                    "outcome_reason": "post_open_long_matrix",
+                    "side": "buy",
+                    "contracts": 1,
+                    "order_type": "limit",
+                    "limit_price": 100.25,
+                },
+                event_time=event_time,
+                symbol="ES",
+                zone="Post-Open",
+                action="LONG",
+                reason="post_open_long_matrix",
+                order_id=order_id,
+            )
+            store.record_event(
+                category="execution",
+                event_type="order_submitted",
+                source="tests.test_matrix_engine",
+                payload={"quantity": 1, "side": "buy", "order_type": "limit", "limit_price": 100.25, "role": "entry"},
+                event_time=event_time,
+                symbol="ES",
+                zone="Post-Open",
+                action="submit_order",
+                reason="entry",
+                order_id=order_id,
+            )
+            store.record_event(
+                category="execution",
+                event_type="order_fill",
+                source="tests.test_matrix_engine",
+                payload={"filled_quantity": 1, "filled_price": 100.25, "remaining_quantity": 0, "role": "entry", "status": "filled"},
+                event_time=event_time + timedelta(seconds=2),
+                symbol="ES",
+                zone="Post-Open",
+                action="fill_order",
+                reason="entry",
+                order_id=order_id,
+            )
+            store.record_event(
+                category="execution",
+                event_type="position_opened",
+                source="tests.test_matrix_engine",
+                payload={"prior_position": 0, "signed_position": 1, "entry_price": 100.25, "transition_price": 100.25, "event_tags": ["opening_drive"]},
+                event_time=event_time + timedelta(seconds=3),
+                symbol="ES",
+                zone="Post-Open",
+                action="entry_fill",
+                reason="post_open_long_matrix",
+            )
+            store.record_event(
+                category="execution",
+                event_type="position_closed",
+                source="tests.test_matrix_engine",
+                payload={"prior_position": 1, "signed_position": 0, "exit_price": 101.0, "transition_price": 101.0, "event_tags": ["opening_drive"]},
+                event_time=event_time + timedelta(minutes=5),
+                symbol="ES",
+                zone="Post-Open",
+                action="exit_fill",
+                reason="take_profit",
+            )
+            store.force_flush()
+            state = TradingState()
+            state.run_id = store.get_run_id()
+
+            status, response = handle_mcp_request(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "summarize_execution_reconstruction",
+                        "arguments": {"run_id": store.get_run_id(), "limit": 20},
+                    },
+                },
+                lambda: state,
+            )
+
+            self.assertEqual(status, 200)
+            payload = response["result"]["structuredContent"]
+            self.assertEqual(payload["summary"]["entry_attempt_count"], 1)
+            self.assertEqual(payload["summary"]["filled_attempt_count"], 1)
+            self.assertEqual(payload["summary"]["open_position_attempt_count"], 1)
+            self.assertEqual(payload["summary"]["closed_position_attempt_count"], 1)
+            self.assertEqual(payload["entry_attempts"][0]["order_id"], order_id)
+            self.assertEqual(payload["entry_attempts"][0]["filled_quantity"], 1.0)
+            self.assertEqual(payload["entry_attempts"][0]["terminal_event"], "position_closed")
+            self.assertEqual(payload["position_transitions"][0]["event_type"], "position_opened")
+            store.stop()
+
+
+class RiskManagerLoggingTests(unittest.TestCase):
+    def test_volatility_circuit_breaker_logs_only_on_state_transition(self) -> None:
+        config = build_config()
+        config.risk.vol_spike_threshold = 1.2
+        set_config(config)
+        manager = RiskManager(config)
+
+        for atr in (1.0, 1.0, 1.0, 1.0):
+            manager.update_volatility(atr)
+
+        with self.assertLogs("src.engine.risk_manager", level="WARNING") as captured:
+            manager.update_volatility(2.0)
+            manager.update_volatility(2.1)
+
+        self.assertEqual(len(captured.output), 1)
+        self.assertIn("risk_circuit_breaker_activated", captured.output[0])
+
+
+class ExecutorProtectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = build_config()
+        set_config(self.config)
+        self.executor = OrderExecutor(self.config)
+        self.executor.enable_mock_mode()
+
+    def test_failed_sibling_cancel_keeps_tracking_record(self) -> None:
+        self.executor._protective_orders["ES"] = {"orders": ["stop", "target"], "direction": 1, "stop_price": 99.0, "take_profit": 101.0}
+        with patch.object(self.executor, "cancel_order", side_effect=[False]):
+            self.executor._cancel_sibling_protection("ES", "stop")
+
+        self.assertIn("ES", self.executor._protective_orders)
+        self.assertEqual(self.executor._protective_orders["ES"]["orders"], ["target"])
+
+    def test_mock_reversal_resets_average_price_to_reversal_fill(self) -> None:
+        self.executor._apply_mock_fill("buy", 1, 100.0)
+        self.executor._apply_mock_fill("sell", 2, 99.5)
+
+        self.assertEqual(self.executor.get_position(), -1)
+        self.assertEqual(self.executor._mock_avg_price, 99.5)
+
+    def test_ensure_protection_uses_tolerance_for_matching_prices(self) -> None:
+        self.executor._protective_orders["ES"] = {
+            "orders": ["stop", "target"],
+            "direction": 1,
+            "stop_price": 99.0,
+            "take_profit": 101.0,
+        }
+        with patch.object(self.executor, "clear_protection") as clear_protection:
+            orders = self.executor.ensure_protection("ES", 1, 1, 99.0 + 1e-8, 101.0 - 1e-8)
+
+        self.assertEqual(orders, 2)
+        clear_protection.assert_not_called()
+
+    def test_ensure_protection_places_and_clears_stop_and_target(self) -> None:
+        placed = self.executor.ensure_protection("ES", 1, 1, 5800.0, 6000.0)
+
+        self.assertEqual(placed, 2)
+        self.assertTrue(self.executor.is_protected("ES"))
+        self.assertEqual(len(self.executor.get_active_orders(symbol="ES", is_protective=True)), 2)
+
+        cancelled = self.executor.clear_protection("ES")
+
+        self.assertEqual(cancelled, 2)
+        self.assertFalse(self.executor.is_protected("ES"))
+
+    def test_cancelled_last_protective_order_clears_tracking_without_forcing_flat(self) -> None:
+        placed = self.executor.ensure_protection("ES", 1, 1, 5800.0, None)
+
+        self.assertEqual(placed, 1)
+        protective_orders = self.executor.get_active_orders(symbol="ES", is_protective=True)
+        self.assertEqual(len(protective_orders), 1)
+
+        order = next(iter(protective_orders.values()))
+        self.executor.update_order_status(order.order_id, OrderStatus.CANCELLED)
+
+        self.assertFalse(self.executor.is_protected("ES"))
+        self.assertEqual(self.executor.get_lifecycle_state(), "WORKING")
+
+    def test_protection_pending_too_long_only_when_requested_without_orders(self) -> None:
+        now = datetime.fromisoformat("2026-03-13T15:00:10+00:00")
+        self.executor._protection_requested_at["ES"] = now - timedelta(seconds=10)
+
+        self.assertTrue(self.executor.protection_pending_too_long("ES", now, timeout_seconds=5))
+
+        self.executor._protective_orders["ES"] = {"orders": ["stop"], "direction": 1, "stop_price": 99.0, "take_profit": None}
+
+        self.assertFalse(self.executor.protection_pending_too_long("ES", now, timeout_seconds=5))
+
+
+class EventProviderTests(unittest.TestCase):
+    def test_stale_emergency_halt_file_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            halt_path = root / "emergency_halt.flag"
+            halt_path.write_text("halt", encoding="utf-8")
+            stale_age_seconds = 3600
+            stale_mtime = pd.Timestamp("2026-03-13T12:00:00Z").timestamp() - stale_age_seconds
+            os.utime(halt_path, (stale_mtime, stale_mtime))
+
+            config = EventProviderConfig(
+                calendar_path="missing.yaml",
+                emergency_halt_path="emergency_halt.flag",
+                emergency_halt_max_age_minutes=5,
+            )
+            provider = LocalEventProvider(config, BlackoutConfig(news_times=[]), root)
+
+            context = provider.get_context(pd.Timestamp("2026-03-13T12:00:00Z").to_pydatetime())
+
+        self.assertFalse(context.blackout_active)
+        self.assertNotEqual(context.reason, "manual_emergency_halt")
+
+
+if __name__ == "__main__":
+    unittest.main()

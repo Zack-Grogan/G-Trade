@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+import unittest
+from unittest.mock import patch
+
+import requests
+
+from src.config import load_config
+from src.execution.executor import Order, OrderExecutor, OrderStatus
+from src.market import MarketData
+
+
+class _FakeObservability:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+        self.lifecycle: list[dict] = []
+
+    def record_event(self, **kwargs) -> None:
+        self.events.append(kwargs)
+
+    def record_order_lifecycle(self, payload: dict) -> None:
+        self.lifecycle.append(payload)
+
+    def get_run_id(self) -> str:
+        return "test-run"
+
+
+class _FailingClient:
+    def get_market_data(self, symbol: str):
+        return None
+
+    def place_order(self, **kwargs):
+        raise requests.RequestException("submit transport failure")
+
+    def cancel_order(self, order_id: str) -> bool:
+        raise requests.RequestException("cancel transport failure")
+
+
+class _LiveClient:
+    def __init__(self, *, market_timestamp: datetime) -> None:
+        self.market_timestamp = market_timestamp
+
+    def get_market_data(self, symbol: str):
+        return MarketData(
+            symbol=symbol,
+            bid=6654.0,
+            ask=6654.25,
+            last=6654.25,
+            volume=1,
+            timestamp=self.market_timestamp,
+        )
+
+    def place_order(self, **kwargs):
+        return "live-order-1"
+
+    def cancel_order(self, order_id: str) -> bool:
+        return True
+
+
+class TestExecutorFailClosed(unittest.TestCase):
+    def _make_executor(self) -> tuple[OrderExecutor, _FakeObservability]:
+        config = load_config()
+        config.order_execution.retry_attempts = 2
+        config.order_execution.retry_delay_seconds = 0.0
+        observability = _FakeObservability()
+        with patch("src.execution.executor.get_client", return_value=_FailingClient()), patch(
+            "src.execution.executor.get_observability_store",
+            return_value=observability,
+        ):
+            executor = OrderExecutor(config=config)
+        return executor, observability
+
+    def test_place_order_transport_failure_returns_none(self) -> None:
+        executor, observability = self._make_executor()
+
+        order = executor.place_order(
+            "ES",
+            1,
+            "buy",
+            order_type="market",
+            use_limit_fallback=False,
+        )
+
+        self.assertIsNone(order)
+        failure_events = [event for event in observability.events if event["event_type"] == "order_submission_failed"]
+        self.assertEqual(len(failure_events), 1)
+        self.assertEqual(failure_events[0]["payload"]["error"], "submit transport failure")
+
+    def test_cancel_order_transport_failure_returns_false(self) -> None:
+        executor, observability = self._make_executor()
+        now = datetime.now(UTC)
+        executor._pending_orders["ord-1"] = Order(
+            order_id="ord-1",
+            symbol="ES",
+            side="buy",
+            quantity=1,
+            order_type="limit",
+            status=OrderStatus.OPEN,
+            created_time=now,
+            updated_time=now,
+        )
+
+        cancelled = executor.cancel_order("ord-1")
+
+        self.assertFalse(cancelled)
+        failure_events = [event for event in observability.events if event["event_type"] == "order_cancel_failed"]
+        self.assertEqual(len(failure_events), 1)
+        self.assertEqual(failure_events[0]["payload"]["error"], "cancel transport failure")
+
+
+class TestExecutorBrokerTruthReconciliation(unittest.TestCase):
+    def _make_executor(self, *, market_timestamp: datetime | None = None) -> tuple[OrderExecutor, _FakeObservability]:
+        config = load_config()
+        observability = _FakeObservability()
+        client = _LiveClient(market_timestamp=market_timestamp or datetime.now(UTC))
+        with patch("src.execution.executor.get_client", return_value=client), patch(
+            "src.execution.executor.get_observability_store",
+            return_value=observability,
+        ):
+            executor = OrderExecutor(config=config)
+        executor.reset_state(mock_mode=False)
+        return executor, observability
+
+    def test_live_order_timestamps_use_wall_clock_not_market_data_time(self) -> None:
+        stale_market_time = datetime.now(UTC) - timedelta(hours=12)
+        executor, _ = self._make_executor(market_timestamp=stale_market_time)
+
+        before = datetime.now(UTC) - timedelta(seconds=2)
+        order = executor.place_order("ES", 1, "sell", order_type="limit", limit_price=6654.25)
+        after = datetime.now(UTC) + timedelta(seconds=2)
+
+        self.assertIsNotNone(order)
+        assert order is not None
+        self.assertGreaterEqual(order.created_time, before)
+        self.assertLessEqual(order.created_time, after)
+        self.assertGreater(order.created_time, stale_market_time + timedelta(hours=1))
+
+    def test_reconcile_broker_open_orders_clears_missing_local_entry(self) -> None:
+        executor, _ = self._make_executor()
+        now = datetime.now(UTC)
+        executor._pending_orders["ghost-entry-1"] = Order(
+            order_id="ghost-entry-1",
+            symbol="ES",
+            side="sell",
+            quantity=1,
+            order_type="limit",
+            limit_price=6654.25,
+            status=OrderStatus.OPEN,
+            created_time=now,
+            updated_time=now,
+            is_protective=False,
+            role="entry",
+        )
+
+        result = executor.reconcile_broker_open_orders("ES", [], event_time=now, broker_position=0)
+
+        self.assertEqual(result["cleared_order_ids"], ["ghost-entry-1"])
+        self.assertFalse(executor.has_active_entry_order("ES"))
+
+    def test_reconcile_broker_open_orders_adopts_live_entry_when_flat(self) -> None:
+        executor, _ = self._make_executor()
+        now = datetime.now(UTC)
+
+        result = executor.reconcile_broker_open_orders(
+            "ES",
+            [
+                {
+                    "id": "broker-open-1",
+                    "side": "buy",
+                    "size": 1,
+                    "type": "limit",
+                    "limitPrice": 6654.25,
+                }
+            ],
+            event_time=now,
+            broker_position=0,
+        )
+
+        self.assertEqual(result["adopted_order_ids"], ["broker-open-1"])
+        self.assertTrue(executor.has_active_entry_order("ES"))
+        self.assertIn("broker-open-1", executor.get_watchdog_snapshot("ES")["active_entry_order_ids"])

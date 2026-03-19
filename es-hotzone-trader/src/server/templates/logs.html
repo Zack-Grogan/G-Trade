@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="content-grid single">
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Runtime activity</h2>
+        <span class="panel-chip">{{ model.summary.log_count }} rows</span>
+      </div>
+      <div id="logs-stream" class="stack">
+        {% for row in model.logs %}
+          <div class="stack-item">
+            <div class="stack-title">{{ row.logged_at|dt }}</div>
+            <div class="stack-subtle">{{ row.level }} · {{ row.display_source or row.logger_name or row.source }}</div>
+            <div>{{ row.display_message or row.message }}</div>
+            {% if row.exception_text %}
+              <pre class="code-block">{{ row.exception_text }}</pre>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="empty-cell">No runtime logs available.</div>
+        {% endfor %}
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-head">
+        <h2>Events and orders</h2>
+        <span class="panel-chip">{{ model.summary.event_count + model.summary.order_count }} rows</span>
+      </div>
+      <div class="stack">
+        {% for event in model.events %}
+          <div class="stack-item">
+            <div class="stack-title">{{ event.event_timestamp|dt }}</div>
+            <div class="stack-subtle">{{ event.category }} · {{ event.event_type }}</div>
+            <div>{{ event.reason or event.action or '-' }}</div>
+          </div>
+        {% endfor %}
+        {% for order in model.orders %}
+          <div class="stack-item">
+            <div class="stack-title">{{ order.observed_at|dt }}</div>
+            <div class="stack-subtle">{{ order.event_type or order.status }} · {{ order.order_id or '-' }}</div>
+            <div>{{ order.reason or order.lifecycle_state or '-' }}</div>
+          </div>
+        {% endfor %}
+        {% if not model.events and not model.orders %}
+          <div class="empty-cell">No event or order rows available.</div>
+        {% endif %}
+      </div>
+    </article>
+  </section>
+
+  <script id="page-data" type="application/json">{{ model|tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    window.GTradeConsole.initLogsStream("/stream/logs", "#logs-stream");
+  </script>
+{% endblock %}
