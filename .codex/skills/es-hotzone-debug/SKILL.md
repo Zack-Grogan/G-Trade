@@ -1,11 +1,11 @@
 ---
 name: es-hotzone-debug
-description: Debug `es-hotzone-trader` runtime, launchd service behavior, local SQLite durability, Railway bridge failures, and cross-service observability flow into ingest, analytics, MCP, and RLM. Use when the task is diagnosing trader uptime, bridge auth errors, outbox backlog, missing telemetry, or run/log recovery for this project.
+description: Debug `es-hotzone-trader` runtime, launchd service behavior, local SQLite durability, local Flask console issues, broker truth mismatches, and run/log recovery for this project.
 ---
 
 # ES Hot-Zone Debug
 
-Use this skill for project-specific debugging of the local trader plus Railway observability path.
+Use this skill for project-specific debugging of the local trader and its local operator surfaces.
 
 ## Start here
 
@@ -13,10 +13,10 @@ Use this skill for project-specific debugging of the local trader plus Railway o
    - Local SQLite durability via `es-trade db ...`
    - Local runtime/service state via `es-trade service ...`
    - Local log file and launchd stdout/stderr
-   - Railway ingest/analytics/MCP evidence only after local state is clear
+   - Local Flask console state after local runtime and SQLite are clear
 2. Keep the architecture rule intact:
    - Mac executes trades
-   - Railway is advisory/analytics-only
+   - SQLite is authoritative
    - No recommendation should create a cloud-to-executor control path
 
 ## Primary workflow
@@ -31,22 +31,19 @@ Use this skill for project-specific debugging of the local trader plus Railway o
    - `es-trade db snapshots --kind state --limit 50`
    - `es-trade db bridge-health --limit 50`
    - `es-trade db logs --limit 100`
-3. If bridge delivery is behind, inspect the outbox and delivery cursors through `service doctor`, then use:
-   - `es-trade db replay-missing`
-   - Add `--run-id <run_id>` when scoping recovery to one run
-4. Correlate with Railway.
-   - Ingest auth or insert failures: inspect ingest logs and `/health`
-   - Analytics gaps: query runtime logs, bridge failures, and run timelines
-   - MCP issues: verify MCP auth separately from internal service auth
+3. If local state and broker truth disagree, inspect:
+   - `es-trade broker-truth`
+   - `es-trade analyze trade-review`
+   - local Flask `/debug` and `/system`
 
 ## What to look for
 
 - `launchd` not installed, not loaded, or writing only to stderr
 - Runtime PID/status file says running but local debug endpoints are unavailable
-- Outbox backlog growing while delivery cursor is flat
-- Permanent auth failures (`401`, `403`, `422`) incorrectly treated as transient
-- Local SQLite contains events/logs that never reached analytics
-- MCP has no visibility because analytics lacks the expected runtime-log or bridge-failure records
+- Local position and broker position disagree
+- Local Flask console is stale or missing data relative to `/debug`
+- Runtime logs are noisy, missing, or unreadable
+- SQLite contains state the console is not surfacing correctly
 
 ## Recovery rules
 
@@ -63,5 +60,5 @@ When using this skill, report:
 1. Local runtime state
 2. Local durability state
 3. Bridge/auth state
-4. Railway visibility state
+4. Local console visibility state
 5. Exact recovery action taken or recommended

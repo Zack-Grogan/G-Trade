@@ -1,6 +1,6 @@
 ---
 description: No dead, stub, or mock code. Every module must be imported and used in a real code path; delete or wire it.
-globs: railway/**/*
+globs: "**/*"
 alwaysApply: false
 ---
 
@@ -18,4 +18,4 @@ alwaysApply: false
 - Add an endpoint that returns hardcoded or placeholder data without calling the real service or SDK.
 - Leave a BaaS/SDK integration in the codebase with no route, job, or command that invokes it.
 
-**Check before PR:** For every new file under `railway/` or any `*_client.py`, confirm there is at least one `import` or call in a live code path (app route, worker, CLI).
+**Check before PR:** For every new client/helper module or any `*_client.py`, confirm there is at least one `import` or call in a live code path (HTTP handler, worker, Flask view, CLI, or runtime service).

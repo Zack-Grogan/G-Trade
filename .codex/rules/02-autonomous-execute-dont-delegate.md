@@ -1,5 +1,5 @@
 ---
-description: Execute work yourself with MCP, CLIs, and subagents; do not hand the user checklists or "you should run X." Use Railway to deploy/verify when the plan says deploy. Subagent delegation (mcp_task) is execution, not user delegation.
+description: Execute work yourself with MCP, CLIs, and subagents; do not hand the user checklists or "you should run X." Subagent delegation is execution, not user delegation.
 alwaysApply: false
 ---
 
@@ -11,20 +11,20 @@ alwaysApply: false
 
 ## Execute first
 
-- When a plan or user says **deploy**, **verify deployment**, or **get ready to deploy**: use **Railway MCP or Railway CLI** to deploy or verify (e.g. list services, run deploy, check status). Do not only write documentation or operator steps for the user to run. If the plan says deploy, attempt the deploy with the tools; only say "you need to" when something genuinely requires human-only action (e.g. first-time OAuth in a browser).
+- When a plan or user says **deploy**, **verify deployment**, or **get ready to deploy** for the local trader, do the concrete local work yourself: verify launchd, ports, logs, health, browser pages, and tests. Do not only write documentation or operator steps for the user to run.
 - When the task involves **Linear** (issues, state, projects): use **Linear MCP** (save_issue, list_issues, etc.). Do not ask for API keys or tell the user to create issues or move state.
 - When the task involves **GitHub** (repos, PRs, branches): use **GitHub MCP**. Do not tell the user to create the repo or push.
 - When the task benefits from **durable or cross-repo context**: use **OpenViking MCP** (openviking_find, openviking_read, openviking_glob, etc.). The rules (e.g. 60, 61) and use-openviking skill exist so you use this; do not skip it and only read local files.
 
 ## Rules and skills are binding
 
-- The .cursor rules and skills are not decorative. Follow them and use the tools they reference. Use OpenViking when the task fits (search, progress, cross-repo). Use Railway MCP/CLI for deploy and ops. Use Linear and GitHub MCP for issues and code. Work like a developer who has these tools: use them.
+- The .cursor rules and skills are not decorative. Follow them and use the tools they reference. Use OpenViking when the task fits (search, progress, cross-repo). Use Linear and GitHub MCP for issues and code. Work like a developer who has these tools: use them.
 - Only escalate or say "you need to do X" when something **genuinely requires human-only action** (e.g. first-time login in a browser, confirming a destructive production change the user has not approved, or a step that has no tool or CLI).
 
 ## Wrong vs right
 
-- **Wrong:** "In Railway dashboard, verify services and reconnect each to its GitHub repo."  
-  **Right:** Use Railway MCP or CLI to list services, inspect config, and run or document the exact deploy/link steps; if a step cannot be done by the agent, say only that one step and why.
+- **Wrong:** "You should probably check the service and logs."  
+  **Right:** Check launchd status, health endpoints, logs, and runtime state yourself; if a step cannot be done by the agent, say only that one step and why.
 - **Wrong:** "Run a short es-trade start to confirm the full path (optional smoke check)."  
   **Right:** If the plan says verify E2E and you can run the CLI, run it (or run what you can) and report; do not reframe verification as an optional task for the user.
 - **Wrong:** Answering from local files only when OpenViking could add context.  

@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Print compliance gate checklist before TUI Sunset / Railway migration. See docs/Compliance-Boundaries.md."""
+"""Print the compliance gate checklist for major local trader changes."""
 from __future__ import annotations
 
 import sys
 
 
 def main() -> int:
-    print("Compliance gate (TUI Sunset / Railway migration)")
+    print("Compliance gate (local trader stack)")
     print("See docs/Compliance-Boundaries.md for full boundaries.")
     print("")
-    print("Before Phase 1+, confirm:")
+    print("Before proceeding, confirm:")
     print("  [ ] Trader is stopped (es-trade stop)")
-    print("  [ ] Topstep: execution stays on Mac; no execution from Railway")
-    print("  [ ] CME/data: cloud data use is personal, private, no redistribution")
+    print("  [ ] Topstep: execution stays on Mac")
+    print("  [ ] CME/data: usage remains personal, private, and non-redistributed")
     print("  [ ] State reset runbook reviewed; no stuck/unresolved state")
     print("")
     print("Set COMPLIANCE_GATE_ACK=1 to pass this script (e.g. for CI).")

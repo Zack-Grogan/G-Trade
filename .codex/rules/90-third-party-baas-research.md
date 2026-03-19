@@ -1,12 +1,12 @@
 ---
 description: For any third-party framework, BaaS, or external service — research how it works right now; never assume from training data.
-globs: railway/**/*
+globs: "**/*"
 alwaysApply: false
 ---
 
 # Third-party / BaaS / frameworks — research first
 
-**When this applies:** Adding or changing integration with any third-party: SDK, BaaS (UpStash, Daytona, Railway, etc.), API, or framework (LangChain, FastAPI, etc.).
+**When this applies:** Adding or changing integration with any third-party: SDK, BaaS (UpStash, Daytona, Neon, Redis, etc.), API, or framework (LangChain, FastAPI, etc.).
 
 **Do this:**
 - **Research before coding.** Use web search or official docs (fetch URLs) to confirm current behavior as of **today** (e.g. March 2026). Do not rely on training data for API shapes, package names, or env vars.

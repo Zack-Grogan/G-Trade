@@ -1,6 +1,6 @@
 ---
 description: Research first; use official SDKs and current APIs. Never trust training data for package names, versions, or API shape.
-globs: railway/**/*
+globs: "**/*"
 alwaysApply: false
 ---
 

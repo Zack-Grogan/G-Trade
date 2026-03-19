@@ -9,8 +9,8 @@ alwaysApply: false
 
 **Do this:**
 - Read docs/architecture/overview.md (or docs/Architecture-Overview.md), docs/Current-State.md, and AGENTS.md "Architecture rules" and "What to touch / What not to do."
-- Do not move execution or broker logic to Railway; do not add unauthenticated endpoints.
-- Preserve one-way data flow (Mac → Railway) and local execution invariants.
+- Do not move execution or broker logic out of the local trader.
+- Preserve local execution invariants and SQLite authority.
 
 **Subagent dispatch (max 2 at a time):**
 

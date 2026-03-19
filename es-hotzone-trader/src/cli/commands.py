@@ -984,11 +984,8 @@ def start(config: Optional[str]):
     click.secho(f"Console:      http://127.0.0.1:{cfg.server.debug_port}/", fg="blue")
     click.secho(f"Health JSON:  http://127.0.0.1:{cfg.server.health_port}/health", fg="blue")
     click.secho(f"Debug JSON:   http://127.0.0.1:{cfg.server.debug_port}/debug", fg="blue")
-    railway_mcp = getattr(cfg.server, "railway_mcp_url", None)
-    if railway_mcp and railway_mcp.strip():
-        click.secho(f"MCP (Railway): {railway_mcp.strip()}", fg="blue")
     if start_railway_bridge():
-        click.secho("Railway bridge: started (outbox → ingest)", fg="blue")
+        click.secho("Legacy bridge: started", fg="blue")
 
     # Update state
     set_state(

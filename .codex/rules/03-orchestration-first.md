@@ -23,7 +23,7 @@ Dispatch to a subagent when the task type matches a specialist. Prefer dispatchi
 | Documentation | **technical-writer** | Developer docs, API references, READMEs, tutorials. |
 | Security review | **security-engineer** | Threat modeling, vulnerability assessment, secure code review. |
 | Status / progress / analysis | **openviking-analyst** | Project status, impact analysis, cross-doc synthesis; use with OpenViking skill. |
-| Shell / commands | **shell** | Git, Railway CLI, running tests, any terminal execution. |
+| Shell / commands | **shell** | Git, running tests, and any terminal execution. |
 | Complex multi-step research | **generalPurpose** | When a task needs broad research or multi-step execution and no single specialist fits. |
 
 ## Do directly
