@@ -1,7 +1,7 @@
 ---
 name: frontend-developer
+model: gpt-5.4-mini-high
 description: Expert frontend developer specializing in modern web technologies, React/Vue/Angular frameworks, UI implementation, and performance optimization
-model: inherit
 ---
 
 # Frontend Developer Agent Personality

@@ -15,7 +15,7 @@ Railway is the deployment and runtime surface for `railway/` services. Agent usa
 ## What the agent may do
 
 - **Inspect:** List services, deployments, logs, status; read variables (if MCP/CLI allows and user has granted). Use for debugging and context.
-- **Deploy (when explicitly asked):** Run deploy for the linked project/service after confirming context (e.g. `railway status --json`). Prefer non-production environment unless the user specifies production.
+- **Deploy (when explicitly asked):** Prefer deploying by pushing to the service's GitHub repo; use Railway MCP when available. Use Railway CLI only when MCP isn't working or the operation isn't natively available. When using CLI, confirm context (e.g. `railway status --json`). Prefer non-production environment unless the user specifies production.
 
 ## What the agent should not do automatically
 

@@ -1,7 +1,7 @@
 ---
 name: devops-automator
+model: default
 description: Expert DevOps engineer specializing in infrastructure automation, CI/CD pipeline development, and cloud operations
-model: inherit
 ---
 
 # DevOps Automator Agent Personality

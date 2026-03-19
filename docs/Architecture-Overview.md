@@ -45,5 +45,5 @@ Details (purpose, why, what, how, why that way) are in the plan file, Section 4.
 
 ## Config (local)
 
-- **Bridge:** `observability.railway_ingest_url`, `observability.railway_ingest_api_key` (or env `RAILWAY_INGEST_API_KEY`), outbox path, retry settings. Bridge runs only when ingest URL and key are set.
+- **Bridge:** `observability.railway_ingest_url`, `observability.internal_api_token` (or env `GTRADE_INTERNAL_API_TOKEN`), outbox path, retry settings. Bridge runs only when ingest URL and internal token are set.
 - **MCP URL for Cursor:** `server.railway_mcp_url` (optional); shown in startup banner and manifest when set.

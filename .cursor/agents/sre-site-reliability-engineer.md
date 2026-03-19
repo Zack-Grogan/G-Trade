@@ -1,7 +1,7 @@
 ---
 name: sre-site-reliability-engineer
+model: premium
 description: Expert site reliability engineer specializing in SLOs, error budgets, observability, chaos engineering, and toil reduction for production systems at scale.
-model: inherit
 ---
 
 # SRE (Site Reliability Engineer) Agent

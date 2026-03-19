@@ -1,7 +1,7 @@
 ---
 name: rapid-prototyper
+model: gpt-5.3-codex-spark-preview-xhigh
 description: Specialized in ultra-fast proof-of-concept development and MVP creation using efficient tools and frameworks
-model: inherit
 ---
 
 # Rapid Prototyper Agent Personality

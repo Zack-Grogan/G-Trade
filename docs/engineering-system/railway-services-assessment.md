@@ -7,7 +7,7 @@ Honest assessment of what’s in `railway/` (and what gets deployed from the g-t
 **Fully built.** Single FastAPI app in `app.py`:
 
 - `POST /ingest/state`, `/ingest/events`, `/ingest/trades` — contract matches the Mac bridge.
-- Bearer auth via `INGEST_API_KEY`.
+- Bearer auth via `GTRADE_INTERNAL_API_TOKEN`.
 - `schema.sql` applied on startup (runs, events, state_snapshots, completed_trades).
 - No `main.py`; app is `app:app`. Railway was defaulting to `main:app` and crashing; start command was overridden to `uvicorn app:app --host 0.0.0.0 --port $PORT`.
 

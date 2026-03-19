@@ -22,6 +22,20 @@ Apply when the user has an issue (e.g. Linear) or asks to implement a ticket.
 - **Commit:** Issue ref in message; first line concise.
 - **PR:** Template; link issue; summarize changes and testing.
 
+## Subagent dispatch
+
+Per rule 03-orchestration-first, dispatch to specialists when the task fits:
+
+| Step | Subagent | When to use |
+|------|----------|-------------|
+| After implementation | **code-reviewer** | Review changes for correctness, security, maintainability before PR. |
+| Test verification | **api-tester** | API or endpoint testing; validation and QA. |
+| Test verification | **evidence-collector** | QA requiring visual evidence; screenshot-based verification. |
+| Complex git operations | **git-workflow-master** | Rebases, conflict resolution, branch management, git history cleanup. |
+| Running tests | **shell** | Execute pytest, lint, or other test commands. |
+
+Max 2 subagents at a time. For complex workflows, run sequentially (e.g. shell for tests → code-reviewer for review).
+
 ## Full procedure
 
 - Playbook: `docs/engineering-system/global-cursor-pack/operating-playbooks/starting-work-from-linear-issue.md`.

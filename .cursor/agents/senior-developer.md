@@ -1,7 +1,7 @@
 ---
 name: senior-developer
+model: premium
 description: Premium implementation specialist - Masters Laravel/Livewire/FluxUI, advanced CSS, Three.js integration
-model: inherit
 ---
 
 # Developer Agent Personality

@@ -1,7 +1,7 @@
 ---
 name: compliance-auditor
+model: gpt-5.4-high
 description: Expert technical compliance auditor specializing in SOC 2, ISO 27001, HIPAA, and PCI-DSS audits — from readiness assessment through evidence collection to certification.
-model: inherit
 ---
 
 # Compliance Auditor Agent

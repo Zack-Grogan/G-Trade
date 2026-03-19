@@ -1,6 +1,6 @@
-# Operator guide — CLI and Railway
+# Operator guide — CLI and local Flask console
 
-The primary operator interface is the **CLI**. There is no TUI. For a high-level picture of what runs where and how data flows, see [Architecture-Overview.md](Architecture-Overview.md).
+The primary operator interfaces are the **CLI** and the **local Flask console**. There is no TUI. For a high-level picture of what runs where and how data flows, see [Architecture-Overview.md](Architecture-Overview.md).
 
 ## Commands
 
@@ -10,29 +10,51 @@ The primary operator interface is the **CLI**. There is no TUI. For a high-level
 - `es-trade restart` — clean restart.
 - `es-trade status` — one-screen status (running, zone, position, PnL, risk).
 - `es-trade debug` — full debug state (JSON).
+- `es-trade broker-truth --focus-timestamp <iso>` — selected-account broker truth, recent broker order/trade history, and contradiction diagnostics.
+- `es-trade analyze regime-packet|trade-review|launch-readiness` — local research and launch checks from SQLite plus broker-truth context.
 - `es-trade events` — query observability events.
+- `es-trade service install|uninstall|start|stop|restart|status|logs|doctor` — manage the local `launchd` wrapper and inspect local runtime/bridge health.
+- `es-trade db runs|events|snapshots|bridge-health|logs|replay-missing` — inspect local SQLite durability and rebuild outbox work from local observability state.
 - `es-trade config` — show configuration.
 - `es-trade balance` — show Topstep account balance.
 - `es-trade health` — health check.
 - `es-trade replay <path>` — replay from file.
 
-## MCP (Cursor / IDE)
+## Local Flask console
 
-MCP runs on **Railway**, not locally. After deploying g-trade-mcp (or legacy grogan-trade-mcp):
+`es-trade start` brings up the trading engine and the local Flask console on the Mac. The console is the main browser-based operator surface for the current launch cut.
 
-1. Set `server.railway_mcp_url` in config (or in `config/default.yaml`) to your Railway MCP service URL (e.g. `https://g-trade-mcp-production.up.railway.app/mcp`).
-2. In Cursor, configure the `g_trade` MCP server in `.cursor/mcp.json`:
-   - **url:** `https://g-trade-mcp-production.up.railway.app/mcp`
-   - **headers:** `{ "Authorization": "Bearer <token>" }` where `<token>` is the value of `MCP_AUTH_TOKEN` from Railway (run `railway variable list --service g-trade-mcp` to see it).
-3. Restart Cursor or reload the MCP server to pick up the new config.
+The console is local-only and serves these pages:
+- `/` — console overview
+- `/chart` — live chart and indicators
+- `/trades` — local trade list and account-trade context
+- `/trades/<id>` — trade review
+- `/logs` — runtime and broker/order events
+- `/system` — config, health, and launch readiness
+- `/health` and `/debug` — JSON compatibility endpoints for the CLI and service checks
 
-Execution and Topstep stay on the Mac; MCP and analytics run on Railway so the IDE can inspect runs and state without the local process.
-The remote MCP server now includes run timelines, state snapshots, blocker stories, and order-event reconstruction so remote investigation can answer "why did it not trade?" without reading raw tables.
+Default local ports are pinned to a high, memorable pair so they do not collide with typical dev services:
+- `31380` — `/health`
+- `31381` — console UI and `/debug`
 
-## Railway and bridge (single-operator)
+On the console overview (`/`), **Trades today** and **Losses** use the local observability **broker ledger** (`account_trades` rows with realized P&L) for the current **America/Los_Angeles calendar day**, filtered to the active account when known. They are not the engine session risk counters (`trades_today` / `consecutive_losses` in `/debug`).
 
-- **Ingest:** The local bridge (started with `es-trade start` when configured) sends state snapshots, run manifests, events, and trades to the Railway ingest API. Set `observability.railway_ingest_url` and `observability.railway_ingest_api_key` (or env `RAILWAY_INGEST_API_KEY`) in config so the bridge can authenticate. All Railway surfaces use single-operator auth; no public or commercial use.
-- **Analytics / MCP / Web:** Use the same single-operator model (e.g. Bearer token or allowlist). See [Architecture-Overview.md](Architecture-Overview.md) and the plan file for service details.
+## Railway and MCP (legacy / optional)
+
+Railway services still exist in the repository, but they are not required for the current Monday launch.
+
+- The local bridge is disabled by default when `observability.railway_ingest_url` is empty.
+- If you intentionally re-enable cloud telemetry later, set `observability.railway_ingest_url` and `observability.internal_api_token` (or `GTRADE_INTERNAL_API_TOKEN`) before starting the bridge.
+- MCP remains a Railway-only path if you explicitly use it later; it is not part of the local launch workflow.
+- The Railway web console, analytics, and MCP remain legacy tooling for archived or future cloud workflows, not the operator path for this cut.
+
+## Launch posture
+
+- **Live entries:** `Pre-Open` is live by default.
+- **Shadow-only zones:** `Post-Open`, `Midday`, and `Outside` still score and log, but they do not place live entries in the launch cut.
+- **Session exit:** morning entries are capped by the configured session exit policy, with a checkpoint at `10:00` PT and a hard-flat time at `11:30` PT.
+- **Bridge:** disabled by default unless you explicitly configure Railway ingestion.
+- **Contracts:** the live launch posture remains `1` contract until the morning edge is reviewed forward and the trade tracking is clean.
 
 ## Development flow (back to coding)
 
@@ -44,15 +66,13 @@ Linear is the source of "what to do next" (G-Trade project, issues GDG-214–221
 4. **Commit and PR** — Commit with issue ref in message; open PR with template and link to Linear issue. See [engineering-system/github-workflow.md](engineering-system/github-workflow.md).
 5. **Close the loop** — When PR is merged, move the Linear issue to Done; optionally update [Tasks.md](Tasks.md) if that item is listed there.
 
-## Deployment verification (after repo split)
+## Legacy Railway verification
 
-Use this checklist when confirming Railway and local config are aligned with the six-repo layout:
+Use this only if you intentionally re-enable cloud telemetry or cloud tooling later:
 
-1. **Railway dashboard (G-Trade project):** Confirm Postgres and all four services (g-trade-ingest, g-trade-analytics, g-trade-mcp, g-trade-web) exist and are healthy. If any were deployed from an old path or single repo, reconnect each service to its GitHub repo: Zack-Grogan/g-trade-ingest, Zack-Grogan/g-trade-analytics, Zack-Grogan/g-trade-mcp, Zack-Grogan/g-trade-web. Agent can run `railway project list --json` and Railway MCP `list-projects` / `list-services` (with linked workspace) to verify; if no project is linked, link with `railway link --project <id-or-name>` from the relevant repo root.
-2. **Env and URLs:** In Railway, ensure `DATABASE_URL`, `INGEST_API_KEY`, `ANALYTICS_API_KEY` (and any MCP auth) are set per each service README. Locally (es-hotzone-trader config): set `observability.railway_ingest_url` and `observability.railway_ingest_api_key` (or env `RAILWAY_INGEST_API_KEY`) so the bridge can reach ingest.
-3. **Optional E2E smoke check:** Run a short `es-trade start` (or replay) with the bridge configured; confirm data appears in Railway (Postgres or via analytics/MCP). This is E2E validation (Linear GDG-215).
-
-**G-Trade project created from zero (agent-executed):** Project **G-Trade** was created via Railway MCP and CLI. Postgres + four services exist; repos were connected in the dashboard. **API keys (agent-set via CLI):** `INGEST_API_KEY` and `ANALYTICS_API_KEY` are set on g-trade-ingest and g-trade-analytics (and ANALYTICS_API_KEY on g-trade-mcp); `MCP_AUTH_TOKEN` set on g-trade-mcp for Cursor MCP auth. To use the bridge locally, get the ingest key: from G-Trade repo root run `railway link --project G-Trade` then `railway variable list --service g-trade-ingest` and set `observability.railway_ingest_api_key` (or `RAILWAY_INGEST_API_KEY`) in es-hotzone-trader config. **Deploy fixes applied:** Ingest and analytics were crashing with "Could not import module 'main'"; start command was set to `uvicorn app:app --host 0.0.0.0 --port $PORT` for both (via `railway environment edit --json`). **g-trade-web:** Clerk added; Next 16 + Bun in this repo's `railway/web/`. Railway still builds from Zack-Grogan/g-trade-web; that repo must be updated to match (Next 16, Clerk, proxy.ts, bun.lockb, build/start commands). Then set in Railway: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` for production auth.
+1. Confirm the G-Trade Railway project still has the expected services and env vars.
+2. Confirm the bridge is configured with a non-empty ingest URL and token.
+3. Run a short live or replay session and verify data lands in Railway as expected.
 
 ## Compliance
 

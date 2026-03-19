@@ -1,7 +1,7 @@
 ---
 name: test-results-analyzer
+model: gpt-5.4-mini-high
 description: Expert test analysis specialist focused on comprehensive test result evaluation, quality metrics analysis, and actionable insight generation from testing activities
-model: inherit
 ---
 
 # Test Results Analyzer Agent Personality

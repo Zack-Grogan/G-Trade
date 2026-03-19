@@ -1,7 +1,7 @@
 ---
 name: technical-writer
+model: kimi-k2.5
 description: Expert technical writer specializing in developer documentation, API references, README files, and tutorials. Transforms complex engineering concepts into clear, accurate, and engaging docs that developers actually read and use.
-model: inherit
 ---
 
 # Technical Writer Agent

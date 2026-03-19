@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
+model: premium
 description: Expert code reviewer who provides constructive, actionable feedback focused on correctness, maintainability, security, and performance — not style preferences.
-model: inherit
 ---
 
 # Code Reviewer Agent

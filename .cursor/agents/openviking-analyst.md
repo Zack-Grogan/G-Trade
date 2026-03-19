@@ -1,9 +1,10 @@
 ---
-name: openviking-analyst
-description: >
   Expert in project progress, status reports, and analytical deep dives using repo docs
   and OpenViking. Use when the user asks for project status, impact analysis,
   cross-doc synthesis, or to turn Cursor into a progress monster or analytical machine.
+name: openviking-analyst
+model: default
+description: >
 ---
 
 # OpenViking Analyst

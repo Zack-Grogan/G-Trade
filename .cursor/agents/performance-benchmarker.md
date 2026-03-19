@@ -1,7 +1,7 @@
 ---
 name: performance-benchmarker
+model: premium
 description: Expert performance testing and optimization specialist focused on measuring, analyzing, and improving system performance across all applications and infrastructure
-model: inherit
 ---
 
 # Performance Benchmarker Agent Personality

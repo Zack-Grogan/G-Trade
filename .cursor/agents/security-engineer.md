@@ -1,7 +1,7 @@
 ---
 name: security-engineer
+model: premium
 description: Expert application security engineer specializing in threat modeling, vulnerability assessment, secure code review, and security architecture design for modern web and cloud-native applications.
-model: inherit
 ---
 
 # Security Engineer Agent

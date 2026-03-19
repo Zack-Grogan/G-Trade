@@ -36,9 +36,9 @@ Relevant system event types include:
 From `es-hotzone-trader/`, verify the current listener and health surfaces:
 
 ```bash
-lsof -nP -iTCP:8081 -sTCP:LISTEN
-curl -s http://127.0.0.1:8080/health
-curl -s http://127.0.0.1:8081/debug
+lsof -nP -iTCP:31381 -sTCP:LISTEN
+curl -s http://127.0.0.1:31380/health
+curl -s http://127.0.0.1:31381/debug
 ```
 
 MCP is not served locally; it runs on Railway. Point Cursor (or other MCP clients) at the Railway MCP URL — see [../OPERATOR.md](../OPERATOR.md).
@@ -115,9 +115,9 @@ python3 -m src.cli.commands start --mock
 After a start or restart, verify all of the following:
 
 ```bash
-lsof -nP -iTCP:8081 -sTCP:LISTEN
-curl -s http://127.0.0.1:8080/health
-curl -s http://127.0.0.1:8081/debug
+lsof -nP -iTCP:31381 -sTCP:LISTEN
+curl -s http://127.0.0.1:31380/health
+curl -s http://127.0.0.1:31381/debug
 python3 -m src.cli.commands events --limit 20 --category system
 ```
 

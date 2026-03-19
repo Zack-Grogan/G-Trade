@@ -21,6 +21,7 @@ htmlcov/
 .cursor/*.log
 # MCP config may contain tokens
 .cursor/mcp.json
+.codex/config.toml
 
 # Temp or local-only
 /x/

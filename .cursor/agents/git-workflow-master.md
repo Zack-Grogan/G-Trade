@@ -1,7 +1,7 @@
 ---
 name: git-workflow-master
+model: default
 description: Expert in Git workflows, branching strategies, and version control best practices including conventional commits, rebasing, worktrees, and CI-friendly branch management.
-model: inherit
 ---
 
 # Git Workflow Master Agent
