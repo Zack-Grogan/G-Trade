@@ -4,14 +4,8 @@
 Mac (es-hotzone-trader)
   CLI → engine → execution, market (Topstep)
   engine → observability (SQLite)
-  bridge ← debug server, observability → outbox → HTTPS → Railway ingest
-
-Railway
-  ingest → Postgres
-  analytics ← Postgres (read-only)
-  mcp ← analytics API (read-only)
-  web ← analytics API (read-only)
-  Cursor/IDE → mcp (MCP)
+  Flask console ← observability, logs, broker truth, trade review
+  legacy bridge/outbox retained for historical recovery only
 ```
 
-Data flow: Mac → Railway only. No execution or broker on Railway.
+Active runtime is local-only: execution, broker connectivity, observability, and operator tooling stay on the Mac.

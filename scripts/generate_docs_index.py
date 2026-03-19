@@ -25,9 +25,6 @@ import re
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GENERATED = REPO_ROOT / "docs" / "generated"
 ES_APP = REPO_ROOT / "es-hotzone-trader"
-RAILWAY = REPO_ROOT / "railway"
-
-
 def ensure_dir():
     GENERATED.mkdir(parents=True, exist_ok=True)
 
@@ -73,11 +70,9 @@ def write_dependency_map():
     for d in deps:
         lines.append(f"- {d}")
     lines.append("")
-    lines.append("## railway/ingest, analytics, mcp")
-    lines.append("- fastapi, uvicorn, psycopg2, httpx (see railway/*/requirements.txt)")
-    lines.append("")
-    lines.append("## railway/web")
-    lines.append("- next, react (see railway/web/package.json)")
+    lines.append("## Local operator stack")
+    lines.append("- click, flask, sqlite3, requests, websockets, pandas, numpy")
+    lines.append("- Topstep integration runs locally via es-hotzone-trader/src/market")
     (GENERATED / "dependency-map.md").write_text("\n".join(lines))
 
 
@@ -91,12 +86,6 @@ def write_module_map():
     lines = ["# Module map (generated)", "", "## es-hotzone-trader/src", ""]
     for m in modules:
         lines.append(f"- {m}")
-    lines.append("")
-    lines.append("## railway services")
-    for name in ["ingest", "analytics", "mcp", "web"]:
-        p = RAILWAY / name
-        if p.exists():
-            lines.append(f"- railway/{name} (app entry: app.py or Next.js)")
     (GENERATED / "module-map.md").write_text("\n".join(lines))
 
 
@@ -104,31 +93,14 @@ def write_routes_map():
     lines = [
         "# Routes / endpoints map (generated)",
         "",
-        "## railway/ingest",
-        "- POST /ingest/state",
-        "- POST /ingest/events",
-        "- POST /ingest/trades",
-        "- GET /health",
-        "",
-        "## railway/analytics",
-        "- GET /runs",
-        "- GET /runs/{run_id}",
-        "- GET /runs/{run_id}/events",
-        "- GET /runs/{run_id}/trades",
-        "- GET /analytics/summary",
-        "- GET /health",
-        "",
-        "## railway/mcp",
-        "- POST /mcp (JSON-RPC)",
-        "- GET /mcp (metadata)",
-        "- GET /health",
-        "",
-        "## railway/web",
-        "- Next.js app; calls analytics API only.",
-        "",
-        "## es-hotzone-trader (local debug server)",
+        "## es-hotzone-trader (local service)",
         "- GET /health",
         "- GET /debug (state snapshot)",
+        "- GET / (Flask console)",
+        "- GET /chart",
+        "- GET /trades",
+        "- GET /logs",
+        "- GET /system",
         "",
     ]
     (GENERATED / "routes-map.md").write_text("\n".join(lines))
@@ -144,7 +116,7 @@ def write_config_matrix():
             if m:
                 lines.append(f"- {m.group(1)}")
     lines.append("")
-    lines.append("Env / overrides: RAILWAY_INGEST_API_KEY, DATABASE_URL, INGEST_API_KEY, ANALYTICS_API_KEY, etc. (see OPERATOR.md and railway READMEs).")
+    lines.append("Env / overrides: broker auth, account selection, and local port overrides. See docs/ENV.md and docs/OPERATOR.md.")
     (GENERATED / "config-matrix.md").write_text("\n".join(lines))
 
 
@@ -165,12 +137,6 @@ def write_entrypoints():
     lines = ["# Entrypoints (generated)", "", "## es-hotzone-trader", ""]
     for name, ref in scripts.items():
         lines.append(f"- **{name}** → {ref}")
-    lines.append("")
-    lines.append("## railway")
-    lines.append("- ingest: railway/ingest/app.py (uvicorn)")
-    lines.append("- analytics: railway/analytics/app.py (uvicorn)")
-    lines.append("- mcp: railway/mcp/app.py (uvicorn)")
-    lines.append("- web: railway/web (npm run dev / next start)")
     (GENERATED / "entrypoints.md").write_text("\n".join(lines))
 
 
@@ -183,9 +149,9 @@ def write_change_impact_map():
         "- es-hotzone-trader/src/engine/ — trading logic, reconciliation",
         "- es-hotzone-trader/src/execution/ — order execution",
         "- es-hotzone-trader/src/market/ — Topstep client",
-        "- es-hotzone-trader/src/bridge/ — telemetry to Railway",
+        "- es-hotzone-trader/src/server/ — local Flask console and health/debug surfaces",
+        "- es-hotzone-trader/src/bridge/ — legacy bridge code retained for historical recovery only",
         "- es-hotzone-trader/config/default.yaml — config surface",
-        "- railway/ingest/app.py — ingest API and schema",
         "- docs/OPERATOR.md, docs/Compliance-Boundaries.md, docs/runbooks/",
         "",
         "See AGENTS.md 'What requires docs updates' and 'What requires approval before editing'.",
@@ -202,17 +168,11 @@ def write_service_relationships():
         "Mac (es-hotzone-trader)",
         "  CLI → engine → execution, market (Topstep)",
         "  engine → observability (SQLite)",
-        "  bridge ← debug server, observability → outbox → HTTPS → Railway ingest",
-        "",
-        "Railway",
-        "  ingest → Postgres",
-        "  analytics ← Postgres (read-only)",
-        "  mcp ← analytics API (read-only)",
-        "  web ← analytics API (read-only)",
-        "  Cursor/IDE → mcp (MCP)",
+        "  Flask console ← observability, logs, broker truth, trade review",
+        "  legacy bridge/outbox retained for historical recovery only",
         "```",
         "",
-        "Data flow: Mac → Railway only. No execution or broker on Railway.",
+        "Active runtime is local-only: execution, broker connectivity, observability, and operator tooling stay on the Mac.",
         "",
     ]
     (GENERATED / "service-relationships.md").write_text("\n".join(lines))

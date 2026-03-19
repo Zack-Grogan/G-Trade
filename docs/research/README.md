@@ -1,6 +1,6 @@
 # Research and strategy reference
 
-These documents are **strategy, framework, and research material**—not the operator or deployment docs. The live system is CLI-only with execution on the Mac and telemetry on Railway; see [../README.md](../README.md) and [../OPERATOR.md](../OPERATOR.md).
+These documents are **strategy, framework, and research material**—not the operator or deployment docs. The live system is local-only with execution on the Mac; see [../README.md](../README.md) and [../OPERATOR.md](../OPERATOR.md).
 
 | Doc | Content |
 |-----|--------|

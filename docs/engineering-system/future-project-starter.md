@@ -13,7 +13,7 @@ How to reuse this AI operating layer in a new repository.
 ## Local vs global checklist
 
 - **In repo:** AGENTS.md, .cursor/rules, docs skeleton, generate_docs_index script, .cursorignore, .github templates, workflow docs.
-- **User/team:** MCP config (GitHub, Linear, Railway, OpenViking), auth tokens, Cursor hooks if used. Use `global-cursor-pack/global-setup-guide.md` and install steps there.
+- **User/team:** MCP config (GitHub, Linear, OpenViking, and any optional provider), auth tokens, Cursor hooks if used. Use `global-cursor-pack/global-setup-guide.md` and install steps there.
 
 ## Init command or script
 

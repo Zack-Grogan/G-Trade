@@ -2,6 +2,7 @@
 
 ## es-hotzone-trader (runtime)
 
+- Flask>=3.0.0
 - pyyaml>=6.0
 - requests>=2.31.0
 - websockets>=12.0
@@ -17,8 +18,6 @@
 - black>=23.0.0
 - ruff>=0.1.0
 
-## railway/ingest, analytics, mcp
-- fastapi, uvicorn, psycopg2, httpx (see railway/*/requirements.txt)
-
-## railway/web
-- next, react (see railway/web/package.json)
+## Local operator stack
+- click, flask, sqlite3, requests, websockets, pandas, numpy
+- Topstep integration runs locally via es-hotzone-trader/src/market

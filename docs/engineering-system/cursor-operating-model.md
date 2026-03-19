@@ -20,7 +20,7 @@ How Cursor (and agents in it) should behave in this repo.
 - Authored docs are authority; generated docs are refreshable indexes. When behavior or deployment changes, update the relevant doc.
 - Do not add secrets. Do not force production automation. Flag edits to sensitive files (env, auth, migrations, infra). See .cursor/rules/50-safety-and-non-destructive-behavior.mdc.
 
-## OpenViking and Railway
+## OpenViking and local operation
 
 - Use OpenViking for durable knowledge when it helps; prefer repo docs first. Do not make the app depend on OpenViking at runtime.
-- Use Railway skill/MCP for deploy and operations; default to non-production. See [railway-usage-policy.md](railway-usage-policy.md).
+- The active product is local-first. Use the CLI, Flask console, and local docs as the primary operator surfaces; treat archived Railway notes as historical only.

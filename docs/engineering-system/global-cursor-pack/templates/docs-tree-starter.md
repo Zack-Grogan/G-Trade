@@ -19,7 +19,7 @@ docs/
     cursor-operating-model.md
     linear-workflow.md
     github-workflow.md
-    railway-usage-policy.md   # If using Railway
+    provider-usage-policy.md  # If using an external hosting provider
     openviking-integration.md  # If using OpenViking
     future-project-starter.md
   generated/          # Output of docs-generation script; do not edit

@@ -4,7 +4,7 @@ Example structures for MCP server config. **Real URLs and tokens go in Cursor us
 
 - **GitHub:** Enable GitHub MCP in Cursor; add token in Cursor settings. See provider docs for scopes.
 - **Linear:** Enable Linear MCP; add API key in Cursor settings.
-- **Railway:** Enable Railway MCP; auth via Railway CLI or token per Railway docs.
+- **Optional infra provider:** Add only if the project actively uses that provider; keep auth in local user config, never in the repo.
 - **OpenViking:** For local use, stdio is typical: use `openviking-mcp.example.json` (command + env for `OPENVIKING_CONFIG_FILE`). For HTTP, use the `openviking` entry in `cursor-mcp.example.json` and point it at your OpenViking server URL.
 
 Copy the `.example.json` patterns into your Cursor MCP config file and replace placeholders. Never commit filled config.

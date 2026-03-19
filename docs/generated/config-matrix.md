@@ -25,4 +25,4 @@ Top-level keys in es-hotzone-trader/config/default.yaml:
 - logging
 - observability
 
-Env / overrides: RAILWAY_INGEST_API_KEY, DATABASE_URL, INGEST_API_KEY, ANALYTICS_API_KEY, etc. (see OPERATOR.md and railway READMEs).
+Env / overrides: broker auth, account selection, and local port overrides. See docs/ENV.md and docs/OPERATOR.md.

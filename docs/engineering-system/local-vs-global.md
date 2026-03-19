@@ -10,11 +10,11 @@ Classification of what belongs in the repo (commit) vs user/team config (outside
 ## Global user config
 
 - Cursor settings (e.g. MCP server list, optional hooks). MCP credentials and API keys (never in repo).
-- Linear/GitHub/Railway auth tokens. OpenViking service URL and auth if used.
+- Linear/GitHub auth tokens and any external service credentials. OpenViking service URL and auth if used.
 
 ## Global team config
 
-- Shared Linear workspace, GitHub org/repo settings, Railway project access. Branch protection, review policies. These are manual admin steps.
+- Shared Linear workspace, GitHub org/repo settings, branch protection, and review policies. These are manual admin steps.
 
 ## Hybrid (template in repo + manual global install)
 
@@ -24,6 +24,6 @@ Classification of what belongs in the repo (commit) vs user/team config (outside
 
 ## Manual external admin step
 
-- Creating or linking Linear workspace, GitHub repo, Railway project. Enabling MCP servers in Cursor UI. Anything requiring authentication or admin UI.
+- Creating or linking Linear workspace or GitHub repo. Enabling MCP servers in Cursor UI. Anything requiring authentication or admin UI.
 
 See [repo-audit-and-boundaries.md](repo-audit-and-boundaries.md) for the audit and classification table.

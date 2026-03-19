@@ -1,6 +1,6 @@
 # ES Hot-Zone Trader
 
-CLI-based day trading system for ES hot zones. Execution and Topstep API run locally. The current launch cut is local-first: the CLI and local Flask console are the operator surfaces, and Railway telemetry is disabled by default unless you explicitly re-enable it.
+CLI-based day trading system for ES hot zones. Execution and Topstep API run locally. The active product is local-first: the CLI and local Flask console are the operator surfaces.
 
 ## Operator interface
 
@@ -23,7 +23,7 @@ Default local ports:
 See the repo **docs/** for full operator and architecture docs:
 
 - [docs/OPERATOR.md](../docs/OPERATOR.md) — commands, local console, compliance
-- [docs/Architecture-Overview.md](../docs/Architecture-Overview.md) — what runs where, data flow, Railway services
+- [docs/Architecture-Overview.md](../docs/Architecture-Overview.md) — what runs where and the local-only architecture
 - [docs/Compliance-Boundaries.md](../docs/Compliance-Boundaries.md) — Topstep/CME boundaries and pre-migration gate
 
 ## Layout
@@ -33,19 +33,13 @@ See the repo **docs/** for full operator and architecture docs:
 - **`src/execution/`** — Order executor
 - **`src/market/`** — Topstep client (market data, orders, positions)
 - **`src/observability/`** — SQLite store (events, runs, completed trades, account trade history, snapshots, bridge health, runtime logs)
-- **`src/bridge/`** — Data bridge and outbox (Mac → Railway ingest)
-- **`src/server/`** — Local Flask operator console plus `/health` and `/debug` JSON; MCP is legacy/optional and not part of the local launch cut
+- **`src/bridge/`** — Legacy bridge/outbox code retained for historical recovery only
+- **`src/server/`** — Local Flask operator console plus `/health` and `/debug` JSON
 - **`config/default.yaml`** — Default configuration
 
-## Railway
-
-Cloud services still live in the repo under **railway/** (ingest, analytics, mcp, rlm, web), but they are not required for the Monday launch cut. Keep them only if you intentionally want cloud telemetry or cloud review.
-
-If you re-enable the bridge later, set `observability.railway_ingest_url` plus `observability.internal_api_token` (or env `GTRADE_INTERNAL_API_TOKEN`) so the local bridge can send data.
-
-Account-aware durability is now first-class:
+Account-aware durability is first-class:
 
 - local run manifests, state snapshots, and completed trades persist `account_id`, `account_name`, and practice/live mode
-- broker account trade history can be synced into local SQLite and shipped to Railway as `account_trades`
+- broker account trade history can be synced into local SQLite for local analysis and reconciliation
 - startup can optionally sync recent broker account history with `observability.sync_account_trade_history_on_startup`
 - launch defaults favor `Pre-Open` live, later zones shadow-only, and a morning session exit policy with a `10:00` PT checkpoint and `11:30` PT hard-flat

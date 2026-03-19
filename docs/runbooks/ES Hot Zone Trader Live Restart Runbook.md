@@ -41,7 +41,7 @@ curl -s http://127.0.0.1:31380/health
 curl -s http://127.0.0.1:31381/debug
 ```
 
-MCP is not served locally; it runs on Railway. Point Cursor (or other MCP clients) at the Railway MCP URL — see [../OPERATOR.md](../OPERATOR.md).
+The local operator surfaces are the CLI and the Flask console. `/debug` is the JSON compatibility endpoint for local inspection.
 
 If the debug server is up, inspect the runtime state for:
 
@@ -173,7 +173,7 @@ cat logs/runtime/lifecycle_request.json
 
 ## State reset and compliance (for major upgrades)
 
-The TUI Sunset and Railway migration is **complete**. This section is retained for future major upgrades or when you need a clean freeze and state reset (e.g. before changing runtime behavior or after stuck state).
+The local trader migration is complete. This section is retained for future major upgrades or when you need a clean freeze and state reset (e.g. before changing runtime behavior or after stuck state).
 
 1. **Freeze:** Stop the trader and do not start it until the upgrade or fix is ready.
    ```bash

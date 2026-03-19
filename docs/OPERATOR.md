@@ -39,21 +39,19 @@ Default local ports are pinned to a high, memorable pair so they do not collide 
 
 On the console overview (`/`), **Trades today** and **Losses** use the local observability **broker ledger** (`account_trades` rows with realized P&L) for the current **America/Los_Angeles calendar day**, filtered to the active account when known. They are not the engine session risk counters (`trades_today` / `consecutive_losses` in `/debug`).
 
-## Railway and MCP (legacy / optional)
+## Local-only workflow
 
-Railway services still exist in the repository, but they are not required for the current Monday launch.
+The active operator workflow is local-only:
 
-- The local bridge is disabled by default when `observability.railway_ingest_url` is empty.
-- If you intentionally re-enable cloud telemetry later, set `observability.railway_ingest_url` and `observability.internal_api_token` (or `GTRADE_INTERNAL_API_TOKEN`) before starting the bridge.
-- MCP remains a Railway-only path if you explicitly use it later; it is not part of the local launch workflow.
-- The Railway web console, analytics, and MCP remain legacy tooling for archived or future cloud workflows, not the operator path for this cut.
+- use the CLI for service control, analysis, and broker truth
+- use the local Flask console for browser-based visibility
+- use SQLite as the durable source of truth
 
 ## Launch posture
 
 - **Live entries:** `Pre-Open` is live by default.
 - **Shadow-only zones:** `Post-Open`, `Midday`, and `Outside` still score and log, but they do not place live entries in the launch cut.
 - **Session exit:** morning entries are capped by the configured session exit policy, with a checkpoint at `10:00` PT and a hard-flat time at `11:30` PT.
-- **Bridge:** disabled by default unless you explicitly configure Railway ingestion.
 - **Contracts:** the live launch posture remains `1` contract until the morning edge is reviewed forward and the trade tracking is clean.
 
 ## Development flow (back to coding)
@@ -65,14 +63,6 @@ Linear is the source of "what to do next" (G-Trade project, issues GDG-214–221
 3. **Implement** — Follow [.cursor/skills/issue-to-pr/SKILL.md](../.cursor/skills/issue-to-pr/SKILL.md): read issue and AGENTS.md, implement, run tests, update docs if behavior or config changed.
 4. **Commit and PR** — Commit with issue ref in message; open PR with template and link to Linear issue. See [engineering-system/github-workflow.md](engineering-system/github-workflow.md).
 5. **Close the loop** — When PR is merged, move the Linear issue to Done; optionally update [Tasks.md](Tasks.md) if that item is listed there.
-
-## Legacy Railway verification
-
-Use this only if you intentionally re-enable cloud telemetry or cloud tooling later:
-
-1. Confirm the G-Trade Railway project still has the expected services and env vars.
-2. Confirm the bridge is configured with a non-empty ingest URL and token.
-3. Run a short live or replay session and verify data lands in Railway as expected.
 
 ## Compliance
 

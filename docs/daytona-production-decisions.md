@@ -21,7 +21,7 @@
 - **Daily/monthly sandbox runs:** Document Daytona plan limits; alert when approaching threshold.
 - **Auto-stop:** Sandbox must auto-stop after idle (e.g. 15–30 min) to avoid runaway cost.
 - **Auto-delete:** Stopped sandboxes auto-delete after interval (e.g. 1 h) unless archived for inspection.
-- **Network:** Sandboxes used for what-if replay do not need outbound to Topstep/ProjectX; allow outbound only to Railway (ingest/analytics) if needed for reporting.
+- **Network:** Sandboxes used for what-if replay do not need outbound to Topstep/ProjectX; keep outbound closed by default and only open what the local experiment explicitly needs.
 
 ## Sign-off
 

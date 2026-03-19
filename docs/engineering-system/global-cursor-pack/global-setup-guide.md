@@ -9,13 +9,13 @@ What belongs in **global** Cursor (or user/team) config vs **repo** config. Appl
 
 ## In global user config (not in repo)
 
-- **Cursor MCP servers:** Add and enable MCP servers (GitHub, Linear, Railway, OpenViking) in Cursor settings. Use the example configs in `mcp/` as reference; put real URLs and tokens in Cursor's MCP config (e.g. user-level or workspace-level), never in the repo.
-- **Credentials:** API keys, Bearer tokens, Linear/GitHub/Railway/OpenViking auth. Store in env or Cursor secrets; never commit.
+- **Cursor MCP servers:** Add and enable MCP servers (GitHub, Linear, OpenViking, and any optional infra provider) in Cursor settings. Use the example configs in `mcp/` as reference; put real URLs and tokens in Cursor's MCP config (e.g. user-level or workspace-level), never in the repo.
+- **Credentials:** API keys, Bearer tokens, and Linear/GitHub/OpenViking auth. Store in env or Cursor secrets; never commit.
 - **Hooks:** If you use Cursor hooks or a shell hook that runs before/after Cursor actions, install the scripts from `hooks/` to a path Cursor or your shell uses (see hooks/README in this pack).
 
 ## In global team config
 
-- Linear workspace, GitHub org/repo settings, Railway project access. Branch protection, review policies. Configure in the respective services' admin UI.
+- Linear workspace, GitHub org/repo settings, and any provider-specific access. Branch protection and review policies. Configure in the respective services' admin UI.
 
 ## OpenViking (optional)
 
