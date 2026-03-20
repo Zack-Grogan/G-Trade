@@ -19,6 +19,7 @@ import pytz
 from src.config import Config, get_config
 from src.engine.decision_matrix import DecisionMatrixEvaluator, MatrixDecision
 from src.engine.event_provider import EventContext, LocalEventProvider
+from src.engine.market_hours import MarketHoursGuard
 from src.engine.market_context import MicrostructureTracker, OrderFlowSnapshot
 from src.engine.risk_manager import RiskManager, get_risk_manager
 from src.engine.scheduler import HotZoneScheduler, ZoneInfo, get_scheduler
@@ -26,7 +27,9 @@ from src.execution import OrderExecutor, get_executor
 from src.indicators import atr
 from src.market import MarketData, TopstepClient, get_client
 from src.observability import get_observability_store
-from src.server import get_state, set_state
+from src.observability import taxonomy as obs
+from src.runtime import get_state, set_state
+from src.runtime.local_tts import LocalTtsNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +83,8 @@ class BarAggregator:
                 self._bucket_start.isoformat(),
             )
             get_observability_store().record_event(
-                category="market",
-                event_type="out_of_order_tick",
+                category=obs.CATEGORY_MARKET,
+                event_type=obs.EVENT_OUT_OF_ORDER_TICK,
                 source="src.engine.trading_engine",
                 payload={
                     "bucket_start": bucket_start.isoformat(),
@@ -149,6 +152,7 @@ class TradingEngine:
         self.event_provider = LocalEventProvider(
             self.config.event_provider, self.config.blackout, Path(__file__).parent.parent.parent
         )
+        self.market_hours_guard = MarketHoursGuard(self.config.strategy)
         self.bar_aggregator = BarAggregator(self.default_tz)
         self.microstructure = MicrostructureTracker(self.config.order_flow)
 
@@ -187,6 +191,7 @@ class TradingEngine:
         self._last_decision_price: Optional[float] = None
         self._decision_events_since_heartbeat: int = 0
         self._last_runtime_heartbeat_log_at: float = time.time()
+        self._last_empty_bars_log_at: float = 0.0
         self._unresolved_entry_submission_count: int = 0
         self._unresolved_entry_side: Optional[str] = None
         self._unresolved_entry_order_ids: list[str] = []
@@ -223,6 +228,7 @@ class TradingEngine:
         self._last_decision_id: Optional[str] = None
         self._last_attempt_id: Optional[str] = None
         self.observability = get_observability_store()
+        self._local_tts = LocalTtsNotifier(self.config.operator_tts)
 
     @property
     def running(self) -> bool:
@@ -371,8 +377,8 @@ class TradingEngine:
             }
         )
         self._record_event(
-            category="decision",
-            event_type="decision_evaluated",
+            category=obs.CATEGORY_DECISION,
+            event_type=obs.EVENT_DECISION_EVALUATED,
             payload=payload,
             event_time=event_time,
             action=decision.action,
@@ -521,8 +527,8 @@ class TradingEngine:
         self._mock_mode = False
         self._running = True
         self._record_event(
-            category="system",
-            event_type="engine_starting",
+            category=obs.CATEGORY_SYSTEM,
+            event_type=obs.EVENT_ENGINE_STARTING,
             payload={"symbol": self.symbol},
             event_time=self._current_event_time(),
             action="start",
@@ -540,8 +546,8 @@ class TradingEngine:
         if not self.client._access_token and not self.client.authenticate():
             self._running = False
             self._record_event(
-                category="system",
-                event_type="engine_start_failed",
+                category=obs.CATEGORY_SYSTEM,
+                event_type=obs.EVENT_ENGINE_START_FAILED,
                 payload={"error": "TopstepX authentication failed"},
                 event_time=self._current_event_time(),
                 action="start",
@@ -552,8 +558,8 @@ class TradingEngine:
         if account is None:
             self._running = False
             self._record_event(
-                category="system",
-                event_type="engine_start_failed",
+                category=obs.CATEGORY_SYSTEM,
+                event_type=obs.EVENT_ENGINE_START_FAILED,
                 payload={"error": "No tradable Topstep account available"},
                 event_time=self._current_event_time(),
                 action="start",
@@ -583,8 +589,8 @@ class TradingEngine:
             self._running = False
             self.client.stop_market_stream()
             self._record_event(
-                category="market",
-                event_type="stream_not_ready",
+                category=obs.CATEGORY_MARKET,
+                event_type=obs.EVENT_STREAM_NOT_READY,
                 payload={
                     "error": self.client.get_last_stream_error(),
                     "timeout_seconds": max(float(self.config.watchdog.feed_stale_seconds), 10.0),
@@ -603,8 +609,8 @@ class TradingEngine:
         self._worker.start()
         self._position_sync_requested = True
         self._record_event(
-            category="system",
-            event_type="engine_started",
+            category=obs.CATEGORY_SYSTEM,
+            event_type=obs.EVENT_ENGINE_STARTED,
             payload={"symbol": self.symbol},
             event_time=self._current_event_time(),
             action="start",
@@ -615,8 +621,8 @@ class TradingEngine:
         """Stop the engine."""
         self._running = False
         self._record_event(
-            category="system",
-            event_type="engine_stopping",
+            category=obs.CATEGORY_SYSTEM,
+            event_type=obs.EVENT_ENGINE_STOPPING,
             payload={"position": self._last_position},
             event_time=self._current_event_time(),
             action="stop",
@@ -631,13 +637,14 @@ class TradingEngine:
             self._worker.join(timeout=5)
             self._worker = None
         self._record_event(
-            category="system",
-            event_type="engine_stopped",
+            category=obs.CATEGORY_SYSTEM,
+            event_type=obs.EVENT_ENGINE_STOPPED,
             payload={"position": self._last_position},
             event_time=self._current_event_time(),
             action="stop",
             reason="engine_stopped",
         )
+        self._local_tts.close()
 
     def on_order_update(self, payload: dict) -> None:
         """Handle external order updates when available from the broker stream."""
@@ -646,6 +653,9 @@ class TradingEngine:
             return
         status_map = {
             "filled": "FILLED",
+            "partially_filled": "PARTIALLY_FILLED",
+            "partial_filled": "PARTIALLY_FILLED",
+            "partially filled": "PARTIALLY_FILLED",
             "open": "OPEN",
             "working": "OPEN",
             "cancelled": "CANCELLED",
@@ -661,6 +671,15 @@ class TradingEngine:
             "filled_price": payload.get("filledPrice", payload.get("filled_price", 0.0)),
         }
         self.executor.update_order_status(str(order_id), OrderStatus[status], fill_info)
+        tts_keys = {
+            OrderStatus.FILLED: "filled",
+            OrderStatus.PARTIALLY_FILLED: "partially_filled",
+            OrderStatus.REJECTED: "rejected",
+            OrderStatus.CANCELLED: "cancelled",
+        }
+        tts_key = tts_keys.get(OrderStatus[status])
+        if tts_key:
+            self._local_tts.speak(tts_key, mock_mode=self._mock_mode)
         logger.info(
             "broker_order_update order_id=%s status=%s filled_quantity=%s filled_price=%s",
             order_id,
@@ -669,8 +688,8 @@ class TradingEngine:
             fill_info["filled_price"],
         )
         self._record_event(
-            category="execution",
-            event_type="broker_order_update",
+            category=obs.CATEGORY_EXECUTION,
+            event_type=obs.EVENT_BROKER_ORDER_UPDATE,
             payload={
                 "payload": payload,
                 "filled_quantity": fill_info["filled_quantity"],
@@ -692,8 +711,8 @@ class TradingEngine:
     def on_position_update(self, payload: dict) -> None:
         """Request a position sync after any broker-side position event."""
         self._record_event(
-            category="execution",
-            event_type="broker_position_update",
+            category=obs.CATEGORY_EXECUTION,
+            event_type=obs.EVENT_BROKER_POSITION_UPDATE,
             payload={"payload": payload},
             event_time=self._current_event_time(),
             action="sync_position",
@@ -827,8 +846,8 @@ class TradingEngine:
         if action == "force_reconcile":
             self._position_sync_requested = True
             self._record_event(
-                category="system",
-                event_type="operator_force_reconcile",
+                category=obs.CATEGORY_SYSTEM,
+                event_type=obs.EVENT_OPERATOR_FORCE_RECONCILE,
                 payload={"source": data.get("source", "cli")},
                 event_time=self._current_event_time(),
                 action="operator_request",
@@ -838,8 +857,8 @@ class TradingEngine:
             if self._last_position == 0 and self._unresolved_entry_submission_count > 0:
                 self._clear_unresolved_entry_state("operator_clear")
                 self._record_event(
-                    category="system",
-                    event_type="operator_clear_unresolved",
+                    category=obs.CATEGORY_SYSTEM,
+                    event_type=obs.EVENT_OPERATOR_CLEAR_UNRESOLVED,
                     payload={"source": data.get("source", "cli")},
                     event_time=self._current_event_time(),
                     action="operator_request",
@@ -906,8 +925,8 @@ class TradingEngine:
             except Exception:
                 logger.exception("Trading engine loop error")
                 self._record_event(
-                    category="system",
-                    event_type="engine_loop_error",
+                    category=obs.CATEGORY_SYSTEM,
+                    event_type=obs.EVENT_ENGINE_LOOP_ERROR,
                     payload={},
                     event_time=self._current_event_time(),
                     action="loop",
@@ -961,8 +980,8 @@ class TradingEngine:
         ):
             return
         self._record_event(
-            category="execution",
-            event_type="unresolved_entry_cleared",
+            category=obs.CATEGORY_EXECUTION,
+            event_type=obs.EVENT_UNRESOLVED_ENTRY_CLEARED,
             payload={"reason": reason, "prior_state": self._unresolved_entry_snapshot()},
             event_time=self._current_event_time(),
             action="clear_unresolved_entry",
@@ -998,8 +1017,8 @@ class TradingEngine:
             self._unresolved_entry_order_ids.append(order_id)
         self._entry_contamination_detected = self._unresolved_entry_submission_count > 1
         self._record_event(
-            category="execution",
-            event_type="unresolved_entry_tracked",
+            category=obs.CATEGORY_EXECUTION,
+            event_type=obs.EVENT_UNRESOLVED_ENTRY_TRACKED,
             payload={
                 "side": side,
                 "order_id": order_id,
@@ -1088,8 +1107,8 @@ class TradingEngine:
             and any(bool(v) for v in contradictions.values())
         ):
             self._record_event(
-                category="execution",
-                event_type="broker_truth_contradiction",
+                category=obs.CATEGORY_EXECUTION,
+                event_type=obs.EVENT_BROKER_TRUTH_CONTRADICTION,
                 payload={"broker_truth": bundle},
                 event_time=self._current_event_time(),
                 action="broker_truth_refresh",
@@ -1133,8 +1152,8 @@ class TradingEngine:
         self._last_reconciliation_at = event_time
         self._last_reconciliation_reason = reason
         self._record_event(
-            category="execution",
-            event_type="broker_orders_adopted",
+            category=obs.CATEGORY_EXECUTION,
+            event_type=obs.EVENT_BROKER_ORDERS_ADOPTED,
             payload={
                 "order_ids": broker_order_ids,
                 "side": side,
@@ -1203,7 +1222,7 @@ class TradingEngine:
                 event_tags = (
                     self._latest_event_context.active_tags if self._latest_event_context else []
                 )
-                self.risk_manager.sync_position(
+                completed_trades = self.risk_manager.sync_position(
                     signed_position=broker_position,
                     entry_price=entry_price,
                     transition_price=entry_price,
@@ -1213,6 +1232,13 @@ class TradingEngine:
                     strategy="WEIGHTED_SCORE_MATRIX",
                     current_time=event_time,
                 )
+                for trade in completed_trades:
+                    self._local_tts.speak_realized_pnl(
+                        trade.pnl,
+                        trade.exit_time,
+                        mock_mode=self._mock_mode,
+                        timezone_name=self.default_tz,
+                    )
                 self.executor.mark_position_open()
                 self.executor.ensure_protection(
                     symbol=self.symbol,
@@ -1226,8 +1252,8 @@ class TradingEngine:
                 self._last_reconciliation_at = event_time
                 self._last_reconciliation_reason = "startup_adopt_position"
                 self._record_event(
-                    category="execution",
-                    event_type="broker_position_adopted",
+                    category=obs.CATEGORY_EXECUTION,
+                    event_type=obs.EVENT_BROKER_POSITION_ADOPTED,
                     payload={
                         "broker_position": broker_position,
                         "entry_price": entry_price,
@@ -1335,6 +1361,10 @@ class TradingEngine:
 
     def _evaluate_current_state(self, allow_entries: bool) -> None:
         if self._bars.empty:
+            now_ts = time.time()
+            if now_ts - self._last_empty_bars_log_at >= 60.0:
+                logger.debug("evaluate_skipped reason=empty_bars")
+                self._last_empty_bars_log_at = now_ts
             return
 
         current_time = self._bars.index[-1]
@@ -1416,7 +1446,11 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="flatten_request" if self._last_position != 0 else "already_flat",
+                outcome=(
+                    obs.OUTCOME_FLATTEN_REQUEST
+                    if self._last_position != 0
+                    else obs.OUTCOME_ALREADY_FLAT
+                ),
                 outcome_reason=decision.reason,
             )
             if self._last_position != 0:
@@ -1429,7 +1463,9 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome=decision.action.lower(),
+                outcome=(
+                    obs.OUTCOME_NO_TRADE if decision.action == "NO_TRADE" else obs.OUTCOME_HOLD
+                ),
                 outcome_reason=decision.reason,
             )
             return
@@ -1441,7 +1477,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="shadow_only_zone",
+                outcome=obs.OUTCOME_SHADOW_ONLY_ZONE,
                 outcome_reason=zone_gate_reason or "shadow_only_zone",
             )
             return
@@ -1452,7 +1488,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="entries_disabled",
+                outcome=obs.OUTCOME_ENTRIES_DISABLED,
                 outcome_reason="allow_entries_false",
             )
             return
@@ -1463,7 +1499,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="position_open",
+                outcome=obs.OUTCOME_POSITION_OPEN,
                 outcome_reason="position_already_open",
             )
             return
@@ -1474,7 +1510,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="fail_safe_lockout",
+                outcome=obs.OUTCOME_FAIL_SAFE_LOCKOUT,
                 outcome_reason="watchdog_lockout",
             )
             return
@@ -1488,7 +1524,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="active_entry_order",
+                outcome=obs.OUTCOME_ACTIVE_ENTRY_ORDER,
                 outcome_reason="active_entry_order",
             )
             return
@@ -1510,7 +1546,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="risk_blocked",
+                outcome=obs.OUTCOME_RISK_BLOCKED,
                 outcome_reason=reason,
             )
             return
@@ -1523,8 +1559,32 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="size_zero" if contracts <= 0 else "missing_side",
+                outcome=obs.OUTCOME_SIZE_ZERO if contracts <= 0 else obs.OUTCOME_MISSING_SIDE,
                 outcome_reason="contracts_non_positive" if contracts <= 0 else "missing_order_side",
+                contracts=contracts,
+            )
+            return
+
+        market_open, market_reason, market_payload = self._market_hours_entry_allowed(current_time)
+        if not market_open:
+            self._last_entry_block_reason = market_reason
+            self._record_event(
+                category=obs.CATEGORY_RISK,
+                event_type=obs.EVENT_MARKET_CLOSED_ENTRY_BLOCK,
+                payload=market_payload,
+                event_time=self._current_event_time(),
+                action="block_entry",
+                reason=market_reason,
+                zone=decision.zone_name,
+            )
+            self._record_decision_event(
+                decision,
+                zone=zone,
+                current_time=current_time,
+                current_price=current_price,
+                allow_entries=allow_entries,
+                outcome=obs.OUTCOME_MARKET_CLOSED_ENTRY_BLOCK,
+                outcome_reason=market_reason or "market_closed",
                 contracts=contracts,
             )
             return
@@ -1551,8 +1611,8 @@ class TradingEngine:
             if guard_reason == "duplicate_unresolved_entry":
                 self._entry_contamination_detected = True
                 self._record_event(
-                    category="risk",
-                    event_type="duplicate_unresolved_entry_detected",
+                    category=obs.CATEGORY_RISK,
+                    event_type=obs.EVENT_DUPLICATE_UNRESOLVED_ENTRY_DETECTED,
                     payload=guard_snapshot,
                     event_time=self._current_event_time(),
                     action="fail_safe",
@@ -1565,7 +1625,7 @@ class TradingEngine:
                     current_time=current_time,
                     current_price=current_price,
                     allow_entries=allow_entries,
-                    outcome="fail_safe_lockout",
+                    outcome=obs.OUTCOME_FAIL_SAFE_LOCKOUT,
                     outcome_reason=guard_reason,
                     contracts=contracts,
                     order_type=order_type,
@@ -1578,7 +1638,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="broker_entry_guard_blocked",
+                outcome=obs.OUTCOME_BROKER_ENTRY_GUARD_BLOCKED,
                 outcome_reason=guard_reason,
                 contracts=contracts,
                 order_type=order_type,
@@ -1611,7 +1671,7 @@ class TradingEngine:
                 current_time=current_time,
                 current_price=current_price,
                 allow_entries=allow_entries,
-                outcome="order_submit_failed",
+                outcome=obs.OUTCOME_ORDER_SUBMIT_FAILED,
                 outcome_reason="executor_place_order_returned_none",
                 contracts=contracts,
                 order_type=order_type,
@@ -1621,6 +1681,7 @@ class TradingEngine:
                 position_id=position_id,
                 trade_id=trade_id,
             )
+            self._local_tts.speak("submit_failed", mock_mode=self._mock_mode)
             self._clear_pending_entry_metadata()
             return
 
@@ -1644,7 +1705,7 @@ class TradingEngine:
             current_time=current_time,
             current_price=current_price,
             allow_entries=allow_entries,
-            outcome="order_submitted",
+            outcome=obs.OUTCOME_ORDER_SUBMITTED,
             outcome_reason="entry_order_placed",
             contracts=contracts,
             order_type=order_type,
@@ -1693,19 +1754,6 @@ class TradingEngine:
             limit_price or "market",
             decision.zone_name,
             decision.reason,
-        )
-        self._record_decision_event(
-            decision,
-            zone=zone,
-            current_time=current_time,
-            current_price=current_price,
-            allow_entries=allow_entries,
-            outcome="entry_submitted",
-            outcome_reason=decision.reason,
-            contracts=contracts,
-            order_type=order_type,
-            limit_price=limit_price,
-            order_id=order.order_id,
         )
 
     def _record_matrix_state(self, decision: MatrixDecision) -> None:
@@ -1764,8 +1812,8 @@ class TradingEngine:
         previous_zone = self._active_zone_name
         self._active_zone_name = zone_name
         self._record_event(
-            category="market",
-            event_type="zone_transition",
+            category=obs.CATEGORY_MARKET,
+            event_type=obs.EVENT_ZONE_TRANSITION,
             payload={
                 "previous_zone": previous_zone,
                 "new_zone": zone_name,
@@ -1796,6 +1844,17 @@ class TradingEngine:
         if zone_name in shadow_zones:
             return False, "shadow_only_zone"
         return False, "launch_gate_blocked"
+
+    def _market_hours_entry_allowed(
+        self, current_time: pd.Timestamp | datetime
+    ) -> tuple[bool, Optional[str], dict[str, Any]]:
+        timestamp = pd.Timestamp(current_time)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize(self.default_tz)
+        status = self.market_hours_guard.evaluate(timestamp.to_pydatetime())
+        if status.is_open:
+            return True, None, status.payload
+        return False, status.reason or "market_closed", status.payload
 
     def _parse_local_clock(self, value: str) -> tuple[int, int]:
         parsed = datetime.strptime(value.strip(), "%H:%M")
@@ -1886,8 +1945,8 @@ class TradingEngine:
         self.executor.clear_protection(self.symbol)
         self.executor.cancel_all_orders()
         self._record_event(
-            category="execution",
-            event_type="flatten_requested",
+            category=obs.CATEGORY_EXECUTION,
+            event_type=obs.EVENT_FLATTEN_REQUESTED,
             payload={"reason": reason, "position": self._last_position},
             event_time=self._current_event_time(),
             action="flatten",
@@ -1940,8 +1999,8 @@ class TradingEngine:
             if not self._mock_mode and not position_authoritative:
                 if signed_position != self._last_position:
                     self._record_event(
-                        category="execution",
-                        event_type="position_sync_skipped_unavailable",
+                        category=obs.CATEGORY_EXECUTION,
+                        event_type=obs.EVENT_POSITION_SYNC_SKIPPED_UNAVAILABLE,
                         payload={
                             "signed_position": signed_position,
                             "last_position": self._last_position,
@@ -1998,8 +2057,8 @@ class TradingEngine:
                     self._last_reconciliation_at = event_time
                     self._last_reconciliation_reason = "broker_flat_no_orders"
                     self._record_event(
-                        category="execution",
-                        event_type="reconciliation_broker_truth",
+                        category=obs.CATEGORY_EXECUTION,
+                        event_type=obs.EVENT_RECONCILIATION_BROKER_TRUTH,
                         payload={
                             "reason": "broker_flat_no_orders",
                             "signed_position": 0,
@@ -2071,7 +2130,7 @@ class TradingEngine:
                 decision_id = self._pending_decision_id or self._last_decision_id
                 attempt_id = self._pending_attempt_id or self._last_attempt_id
 
-                self.risk_manager.sync_position(
+                completed_trades = self.risk_manager.sync_position(
                     signed_position=signed_position,
                     entry_price=actual_entry_price,
                     transition_price=transition_price or actual_entry_price,
@@ -2085,6 +2144,13 @@ class TradingEngine:
                     position_id=position_id,
                     trade_id=trade_id,
                 )
+                for trade in completed_trades:
+                    self._local_tts.speak_realized_pnl(
+                        trade.pnl,
+                        trade.exit_time,
+                        mock_mode=self._mock_mode,
+                        timezone_name=self.default_tz,
+                    )
                 self._clear_unresolved_entry_state("position_transition_confirmed")
 
                 if prior_position == 0 and signed_position != 0:
@@ -2129,8 +2195,8 @@ class TradingEngine:
                         self._last_protection_attach_latency_seconds,
                     )
                     self._record_event(
-                        category="execution",
-                        event_type="position_opened",
+                        category=obs.CATEGORY_EXECUTION,
+                        event_type=obs.EVENT_POSITION_OPENED,
                         payload={
                             "prior_position": prior_position,
                             "signed_position": signed_position,
@@ -2177,8 +2243,8 @@ class TradingEngine:
                         regime_state,
                     )
                     self._record_event(
-                        category="execution",
-                        event_type="position_closed",
+                        category=obs.CATEGORY_EXECUTION,
+                        event_type=obs.EVENT_POSITION_CLOSED,
                         payload={
                             "prior_position": prior_position,
                             "signed_position": signed_position,
@@ -2228,8 +2294,8 @@ class TradingEngine:
                         self._position_high_water = actual_entry_price
                         self._position_low_water = actual_entry_price
                     self._record_event(
-                        category="execution",
-                        event_type="position_adjusted",
+                        category=obs.CATEGORY_EXECUTION,
+                        event_type=obs.EVENT_POSITION_ADJUSTED,
                         payload={
                             "prior_position": prior_position,
                             "signed_position": signed_position,
@@ -2294,8 +2360,8 @@ class TradingEngine:
                     take_profit=self._take_profit,
                 )
                 self._record_event(
-                    category="execution",
-                    event_type="dynamic_exit_updated",
+                    category=obs.CATEGORY_EXECUTION,
+                    event_type=obs.EVENT_DYNAMIC_EXIT_UPDATED,
                     payload={
                         "stop_price": candidate,
                         "protection_mode": self._protection_mode,
@@ -2325,8 +2391,8 @@ class TradingEngine:
                     take_profit=self._take_profit,
                 )
                 self._record_event(
-                    category="execution",
-                    event_type="dynamic_exit_updated",
+                    category=obs.CATEGORY_EXECUTION,
+                    event_type=obs.EVENT_DYNAMIC_EXIT_UPDATED,
                     payload={
                         "stop_price": candidate,
                         "protection_mode": self._protection_mode,
@@ -2369,8 +2435,8 @@ class TradingEngine:
 
         if feed_stale:
             self._record_event(
-                category="risk",
-                event_type="watchdog_triggered",
+                category=obs.CATEGORY_RISK,
+                event_type=obs.EVENT_WATCHDOG_TRIGGERED,
                 payload={
                     "feed_stale": feed_stale,
                     "broker_ack_stale": broker_ack_stale,
@@ -2383,8 +2449,8 @@ class TradingEngine:
             self._trigger_fail_safe("feed_stale")
         elif protection_timeout:
             self._record_event(
-                category="risk",
-                event_type="watchdog_triggered",
+                category=obs.CATEGORY_RISK,
+                event_type=obs.EVENT_WATCHDOG_TRIGGERED,
                 payload={
                     "feed_stale": feed_stale,
                     "broker_ack_stale": broker_ack_stale,
@@ -2397,8 +2463,8 @@ class TradingEngine:
             self._trigger_fail_safe("protection_ack_timeout")
         elif broker_ack_stale:
             self._record_event(
-                category="risk",
-                event_type="watchdog_triggered",
+                category=obs.CATEGORY_RISK,
+                event_type=obs.EVENT_WATCHDOG_TRIGGERED,
                 payload={
                     "feed_stale": feed_stale,
                     "broker_ack_stale": broker_ack_stale,
@@ -2419,8 +2485,8 @@ class TradingEngine:
             self._protection_failure_count += 1
         logger.error("Fail-safe lockout activated: %s", reason)
         self._record_event(
-            category="risk",
-            event_type="fail_safe_activated",
+            category=obs.CATEGORY_RISK,
+            event_type=obs.EVENT_FAIL_SAFE_ACTIVATED,
             payload={
                 "reason": reason,
                 "position": self._last_position,

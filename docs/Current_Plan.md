@@ -4,7 +4,7 @@ There is no active migration plan now. The repo is in steady state as a **local 
 
 ## Current system
 
-- **Operator interfaces:** CLI and local Flask console
+- **Operator interfaces:** CLI and SQLite observability
 - **Execution:** trading engine, order executor, and Topstep API stay on the Mac
 - **Durability:** SQLite is the only required source of truth
 - **Cloud:** retired from the active operator path; historical notes remain archived

@@ -9,21 +9,13 @@ What belongs in **global** Cursor (or user/team) config vs **repo** config. Appl
 
 ## In global user config (not in repo)
 
-- **Cursor MCP servers:** Add and enable MCP servers (GitHub, Linear, OpenViking, and any optional infra provider) in Cursor settings. Use the example configs in `mcp/` as reference; put real URLs and tokens in Cursor's MCP config (e.g. user-level or workspace-level), never in the repo.
-- **Credentials:** API keys, Bearer tokens, and Linear/GitHub/OpenViking auth. Store in env or Cursor secrets; never commit.
+- **Cursor MCP servers:** Add and enable MCP servers (GitHub, Linear, and any optional infra provider) in Cursor settings. Use the example configs in `mcp/` as reference; put real URLs and tokens in Cursor's MCP config (e.g. user-level or workspace-level), never in the repo.
+- **Credentials:** API keys, Bearer tokens, and Linear/GitHub auth. Store in env or Cursor secrets; never commit.
 - **Hooks:** If you use Cursor hooks or a shell hook that runs before/after Cursor actions, install the scripts from `hooks/` to a path Cursor or your shell uses (see hooks/README in this pack).
 
 ## In global team config
 
 - Linear workspace, GitHub org/repo settings, and any provider-specific access. Branch protection and review policies. Configure in the respective services' admin UI.
-
-## OpenViking (optional)
-
-OpenViking provides durable, cross-repo context for Cursor (semantic search, L0/L1 summaries over docs). The app does not depend on it at runtime.
-
-1. Install: `pip install openviking` (Python 3.10+). Create `~/.openviking/ov.conf` with `storage.workspace`, `embedding.dense`, and `vlm` (see [OpenViking Quick Start](https://github.com/volcengine/OpenViking#3-environment-configuration)). Set `OPENVIKING_CONFIG_FILE` to the config path.
-2. Run either the OpenViking HTTP server (`openviking-server`) and point MCP at its URL, or run the OpenViking MCP server over stdio. For stdio, use the pattern in `mcp/openviking-mcp.example.json`: add the `openviking` server with `command`/`args`/`env`, and set `OPENVIKING_CONFIG_FILE` (and optionally `OPENVIKING_DATA_PATH`) in env. One server or stdio process per workspace to avoid contention.
-3. Ingest docs when needed (e.g. after `scripts/generate_docs_index.py` or merge). See `docs/engineering-system/openviking-integration.md` for ingest and refresh.
 
 ## Install steps (manual)
 

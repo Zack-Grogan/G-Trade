@@ -1,6 +1,6 @@
-# Operator guide — CLI and local Flask console
+# Operator guide — CLI and local SQLite
 
-The primary operator interfaces are the **CLI** and the **local Flask console**. There is no TUI. For a high-level picture of what runs where and how data flows, see [Architecture-Overview.md](Architecture-Overview.md).
+The primary operator interface is the **CLI**. There is no TUI and no local HTTP console. Runtime truth for a running trader is available via CLI commands and SQLite (`logs/observability.db`, `logs/runtime/runtime_status.json`). For a high-level picture of what runs where and how data flows, see [Architecture-Overview.md](Architecture-Overview.md).
 
 ## Commands
 
@@ -8,57 +8,43 @@ The primary operator interfaces are the **CLI** and the **local Flask console**.
 - `es-trade start` — start the trading engine (live).
 - `es-trade stop` — request clean stop.
 - `es-trade restart` — clean restart.
-- `es-trade status` — one-screen status (running, zone, position, PnL, risk).
-- `es-trade debug` — full debug state (JSON).
+- `es-trade status` — one-screen status (running, zone, position, PnL, risk). Uses SQLite state snapshots when inspecting a **separate** trader process.
+- `es-trade debug` — full debug state (JSON), with `_runtime_state_source` indicating `in_process`, `sqlite`, or `status_file`.
 - `es-trade broker-truth --focus-timestamp <iso>` — selected-account broker truth, recent broker order/trade history, and contradiction diagnostics.
-- `es-trade analyze regime-packet|trade-review|launch-readiness` — local research and launch checks from SQLite plus broker-truth context.
-- `es-trade events` — query observability events.
+- `es-trade analyze regime-packet|trade-review|launch-readiness` — local research, broker-truth checks, and launch-readiness output from SQLite plus runtime context.
+- `es-trade events` — query observability events (same SQLite `events` table as `es-trade db events`; use `--run-id` to scope one process run).
 - `es-trade service install|uninstall|start|stop|restart|status|logs|doctor` — manage the local `launchd` wrapper and inspect local runtime health.
 - `es-trade db runs|events|snapshots|bridge-health|logs` — inspect local SQLite durability (including historical bridge-health rows from archived integrations).
 - `es-trade config` — show configuration.
 - `es-trade balance` — show Topstep account balance.
-- `es-trade health` — health check.
+- `es-trade health` — health check (same sources as `status`).
 - `es-trade replay <path>` — replay from file.
 
-## Local Flask console
+## Runtime inspection (no HTTP)
 
-`es-trade start` brings up the trading engine and the local Flask console on the Mac. The console is the main browser-based operator surface for the current launch cut.
+- **Same process:** `status` / `health` / `debug` read in-process `TradingState`.
+- **Another process:** use the same commands; the CLI loads the latest **state snapshot** from SQLite for the run id in `logs/runtime/runtime_status.json`, or falls back to fields from that JSON if the snapshot has not been written yet.
 
-The console is local-only and serves these pages:
-- `/` — console overview (status and zone in the header; live state omits duplicate status/zone; a short log teaser links to `/logs`; recent events are behind an expandable section)
-- `/chart` — live chart and indicators (compact symbol/price/zone strip; recent broker fills capped with a link to `/trades`)
-- `/trades` — local trade list and account-trade context
-- `/trades/<id>` — trade review
-- `/logs` — runtime log stream as the primary view; events and orders are behind an expandable section
-- `/system` — config, health, and launch readiness
-- `/health` and `/debug` — JSON compatibility endpoints for the CLI and service checks
+## Local text-to-speech (optional)
 
-Chart notes:
-- `/chart` reads retained local `market_tape` across runs so price history does not disappear just because the current runtime restarted.
-- In live mode, `/chart` can attempt a bounded historical 1-minute bar backfill from the TopstepX/ProjectX history API when the requested lookback window has an older gap and credentials are available.
-- Replay writes its feed into the same local `market_tape`, so `/chart` can show replay candles and the same indicator overlays without a separate chart path.
-- The plotted VWAP/band overlays are derived from stored candles, and alpha lines are carried forward from recorded decision snapshots instead of being rendered as flat current-state lines.
-- The chart now defaults to a **7d** window and exposes a `24h` / `48h` / `7d` selector in the page so operators can inspect longer retained history without editing the URL by hand.
-- Candlesticks are the primary price layer; the redundant close-only price overlay is suppressed so the chart does not read like indicators-only rendering.
+On macOS, the engine can announce order lifecycle events using the system `say` command (fully local, no network). Enable in `config/default.yaml` or your override under `operator_tts` (`enabled: true`). Configure `voice` / `rate` per `man say`, limit the queue with `max_queue`, and restrict which events speak via `events` (`filled`, `partially_filled`, `rejected`, `cancelled`, `submit_failed`, `realized_pnl`). When `realized_pnl` is enabled, closing a position (risk-manager completed trade) speaks realized profit or loss in dollars and, if `include_trade_time_in_speech` is true, the exit time in your configured hot-zone timezone (e.g. “A profit of 1,200 dollars at 3:45 PM.”). By default TTS is off and does not run in replay/mock mode unless `speak_in_mock_mode` is true.
 
-Default local ports are pinned to a high, memorable pair so they do not collide with typical dev services:
-- `31380` — `/health`
-- `31381` — console UI and `/debug`
+## Observability contract
 
-On the console overview (`/`), **Trades today** and **Losses** use the local observability **broker ledger** (`account_trades` rows with realized P&L) for the current **America/Los_Angeles calendar day**, filtered to the active account when known. They are not the engine session risk counters (`trades_today` / `consecutive_losses` in `/debug`).
+Canonical rules for categories, decision outcomes, correlation IDs, and streams: [Observability-Contract.md](Observability-Contract.md). Code constants live in `src/observability/taxonomy.py`.
 
 ## Local-only workflow
 
 The active operator workflow is local-only:
 
 - use the CLI for service control, analysis, and broker truth
-- use the local Flask console for browser-based visibility
 - use SQLite as the durable source of truth
 
 ## Launch posture
 
-- **Live entries:** `Pre-Open` is live by default.
-- **Shadow-only zones:** `Post-Open`, `Midday`, and `Outside` still score and log, but they do not place live entries in the launch cut.
+- **Live entries:** `Pre-Open` and `Outside` are live by default (see `strategy.live_entry_zones` in config).
+- **Shadow-only zones:** `Post-Open` and `Midday` still score and log without live entries until promoted. Launch-gate behavior is config-driven only (not tied to practice vs live); set `PREFERRED_ACCOUNT_ID` to the account you intend to trade.
+- **Market-hours guard:** signal evaluation and logging keep running, but new entry submission is blocked during configured closed windows (daily maintenance/weekend/holiday overrides). Broker outside-hours rejections remain as fallback telemetry.
 - **Session exit:** morning entries are capped by the configured session exit policy, with a checkpoint at `10:00` PT and a hard-flat time at `11:30` PT.
 - **Contracts:** the live launch posture remains `1` contract until the morning edge is reviewed forward and the trade tracking is clean.
 

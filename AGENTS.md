@@ -15,7 +15,7 @@ The active stack is local-only:
 
 - Python
 - CLI
-- local Flask console
+- in-process runtime state (`src/runtime/`)
 - SQLite
 - Topstep
 
@@ -25,7 +25,7 @@ Railway and MCP are retired from the active workflow. Historical references live
 
 1. Execution and Topstep stay on the Mac.
 2. SQLite is the source of truth for runs, events, snapshots, market tape, order lifecycle, and trade review.
-3. The CLI and local Flask console are the operator surfaces.
+3. The CLI and SQLite-backed observability are the operator surfaces.
 4. No cloud dependency is required to trade, debug, or review the system.
 5. Do not reintroduce a cloud-to-executor control path.
 
@@ -38,7 +38,7 @@ Railway and MCP are retired from the active workflow. Historical references live
   - `execution/` — order execution and reconciliation
   - `market/` — Topstep client and broker truth
   - `observability/` — SQLite durability
-  - `server/` — local Flask console, SSE, `/health`, `/debug`
+  - `runtime/` — in-process trading state and CLI/SQLite inspection helpers
 - `config/` — runtime defaults
 - `tests/` — trader test suite
 - `docs/` — active docs
@@ -60,7 +60,8 @@ Before structural or behavioral changes, read:
 Update docs when you change:
 
 - CLI surface
-- Flask console behavior
+- CLI status/debug behavior
+- observability event/decision taxonomy or SQLite query behavior (`docs/Observability-Contract.md`, `src/observability/taxonomy.py`)
 - config keys
 - launchd/runtime workflow
 - strategy or exit behavior
@@ -100,8 +101,8 @@ Useful commands:
 
 - `agents-orchestrator`
 - `es-hotzone-debug`
+- `g-trade-observability`
 - `issue-to-pr`
-- `use-openviking`
 
 ## Subagent routing
 
@@ -109,14 +110,14 @@ Use at most two subagents at a time.
 
 | Task type | Subagent |
 |-----------|----------|
-| Broad codebase search | `explorer` |
+| Broad codebase search | `explore` |
 | Code review | `code-reviewer` |
 | API/runtime validation | `api-tester` |
 | UI/runtime evidence | `evidence-collector` |
 | Performance analysis | `performance-benchmarker` |
 | Docs | `technical-writer` |
 | Security review | `security-engineer` |
-| Status / synthesis | `openviking-analyst` |
+| Status / synthesis | `explore`, `technical-writer` |
 
 ## What requires extra care
 
@@ -144,8 +145,7 @@ Use at most two subagents at a time.
 
 ### Running services
 
-- **Flask console**: `python3 -c "from src.server import create_app; app = create_app(); app.run(host='127.0.0.1', port=31381)"` — serves the operator dashboard on port 31381. Health endpoint: `GET /health`. The full `es-trade start` command also starts the Flask console but requires Topstep credentials for the engine.
-- **CLI**: `es-trade --help` for all commands. `es-trade config`, `es-trade status`, `es-trade health`, `es-trade debug` work without credentials. Commands that connect to Topstep (`start`, `replay`) require `EMAIL` and `TOPSTEP_API_KEY` in a `.env` file.
+- **CLI**: `es-trade --help` for all commands. `es-trade config`, `es-trade status`, `es-trade health`, `es-trade debug` work without credentials (they read local runtime state and/or SQLite). Commands that connect to Topstep (`start`, `replay`) require `EMAIL` and `TOPSTEP_API_KEY` in a `.env` file.
 
 ### Testing & linting
 

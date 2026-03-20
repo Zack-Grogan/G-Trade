@@ -17,12 +17,12 @@ def main() -> int:
     print("  [ ] State reset runbook reviewed; no stuck/unresolved state")
     print("")
     print("Set COMPLIANCE_GATE_ACK=1 to pass this script (e.g. for CI).")
-    ack = __import__("os").environ.get("COMPLIANCE_GATE_ACK", "")
-    if ack == "1":
+    ack = __import__("os").environ.get("COMPLIANCE_GATE_ACK", "").strip().lower()
+    if ack in {"1", "true", "yes", "on"}:
         print("COMPLIANCE_GATE_ACK=1 set — gate passed.")
         return 0
     print("Complete the checklist and re-run, or set COMPLIANCE_GATE_ACK=1 to acknowledge.")
-    return 0  # informational only; does not block
+    return 1
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ Dispatch to a subagent when the task type matches a specialist. Prefer dispatchi
 | Performance analysis | **performance-benchmarker** | Measuring, analyzing, improving system performance. |
 | Documentation | **technical-writer** | Developer docs, API references, READMEs, tutorials. |
 | Security review | **security-engineer** | Threat modeling, vulnerability assessment, secure code review. |
-| Status / progress / analysis | **openviking-analyst** | Project status, impact analysis, cross-doc synthesis; use with OpenViking skill. |
+| Status / progress / analysis | **explore**, **technical-writer** | Read `AGENTS.md`, `docs/Current-State.md`, `docs/README.md` first. Use **explore** for codebase-wide context (set thoroughness); use **technical-writer** for structured synthesis from docs. |
 | Shell / commands | **shell** | Git, running tests, and any terminal execution. |
 | Complex multi-step research | **generalPurpose** | When a task needs broad research or multi-step execution and no single specialist fits. |
 

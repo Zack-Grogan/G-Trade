@@ -43,8 +43,7 @@ from src.execution.executor import Order, OrderExecutor, OrderStatus, get_execut
 from src.indicators.rsi import rsi
 from src.market import Account, MarketData, Position, TopstepClient, get_client
 from src.observability import get_observability_store
-from src.server.debug_server import DebugServer, TradingState
-from src.server import get_state
+from src.runtime import TradingState, get_state
 
 
 def build_config() -> Config:
@@ -739,6 +738,162 @@ class ExecutionLifecycleTests(unittest.TestCase):
 
         place_order.assert_not_called()
         self.assertEqual(self.engine._last_entry_block_reason, "shadow_only_zone")
+
+    def test_launch_gate_allows_outside_when_configured_in_live_entry_zones(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open", "Outside"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday"]
+
+        allowed, reason = self.engine._zone_live_entry_allowed("Outside")
+
+        self.assertTrue(allowed)
+        self.assertIsNone(reason)
+
+    def test_launch_gate_blocks_outside_when_only_in_shadow_zones(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
+
+        allowed, reason = self.engine._zone_live_entry_allowed("Outside")
+
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "shadow_only_zone")
+
+    def test_market_hours_guard_blocks_entries_while_signal_pipeline_still_runs(self) -> None:
+        self.config.strategy.market_hours_guard_enabled = True
+        self.engine._bars = bars_from_prices(
+            "2026-03-14 09:00", [100.0 + (i * 0.15) for i in range(30)]
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        snapshot = FeatureSnapshot(
+            zone_name="Post-Open",
+            current_price=self.engine._last_price,
+            atr_value=1.0,
+            long_features={},
+            short_features={},
+            flat_features={},
+            signed_features={},
+        )
+        decision = MatrixDecision(
+            zone_name="Post-Open",
+            action="LONG",
+            reason="test_signal",
+            long_score=4.0,
+            short_score=1.0,
+            flat_bias=0.0,
+            active_vetoes=[],
+            feature_snapshot=snapshot,
+            execution_tradeable=True,
+            side="buy",
+            stop_loss=self.engine._last_price - 4.0,
+            take_profit=self.engine._last_price + 8.0,
+            max_hold_minutes=30,
+        )
+        order = Order(
+            order_id="entry-1",
+            symbol="ES",
+            side="buy",
+            quantity=1,
+            order_type="market",
+            status=OrderStatus.OPEN,
+        )
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(self.engine.matrix, "evaluate", return_value=decision) as evaluate:
+                with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                    with patch.object(self.engine, "_determine_contracts", return_value=1):
+                        with patch.object(
+                            self.engine, "_evaluate_live_entry_guard", return_value=(True, None, {})
+                        ):
+                            with patch.object(
+                                self.engine.executor, "place_order", return_value=order
+                            ) as place_order:
+                                self.engine._evaluate_current_state(allow_entries=True)
+
+        evaluate.assert_called_once()
+        place_order.assert_not_called()
+        self.assertEqual(self.engine._last_entry_block_reason, "market_closed_weekend")
+
+    def test_market_hours_guard_allows_entries_after_reopen(self) -> None:
+        self.config.strategy.market_hours_guard_enabled = True
+        self.engine._bars = bars_from_prices(
+            "2026-03-15 17:05", [100.0 + (i * 0.15) for i in range(30)]
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        snapshot = FeatureSnapshot(
+            zone_name="Outside",
+            current_price=self.engine._last_price,
+            atr_value=1.0,
+            long_features={},
+            short_features={},
+            flat_features={},
+            signed_features={},
+        )
+        decision = MatrixDecision(
+            zone_name="Outside",
+            action="LONG",
+            reason="test_signal",
+            long_score=4.0,
+            short_score=1.0,
+            flat_bias=0.0,
+            active_vetoes=[],
+            feature_snapshot=snapshot,
+            execution_tradeable=True,
+            side="buy",
+            stop_loss=self.engine._last_price - 4.0,
+            take_profit=self.engine._last_price + 8.0,
+            max_hold_minutes=30,
+        )
+        order = Order(
+            order_id="entry-2",
+            symbol="ES",
+            side="buy",
+            quantity=1,
+            order_type="market",
+            status=OrderStatus.OPEN,
+        )
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Outside", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(self.engine.matrix, "evaluate", return_value=decision):
+                with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                    with patch.object(self.engine, "_determine_contracts", return_value=1):
+                        with patch.object(
+                            self.engine, "_evaluate_live_entry_guard", return_value=(True, None, {})
+                        ):
+                            with patch.object(
+                                self.engine.executor, "place_order", return_value=order
+                            ) as place_order:
+                                self.engine._evaluate_current_state(allow_entries=True)
+
+        place_order.assert_called_once()
 
     def test_session_exit_hard_flat_flattens_live_entry_zone_position(self) -> None:
         self.config.strategy.session_exit_enabled = True
@@ -1738,21 +1893,22 @@ class AccountSafetyTests(unittest.TestCase):
         self.client = TopstepClient(self.config.api)
 
     def test_select_account_refuses_live_only_accounts_when_prac_required(self) -> None:
-        selected = self.client._select_account(
-            [
-                {
-                    "id": "LIVE-1",
-                    "name": "LIVE-1",
-                    "canTrade": True,
-                    "balance": 50000,
-                    "simulated": False,
-                },
-            ]
-        )
+        with patch.dict(os.environ, {"PREFERRED_ACCOUNT_ID": ""}, clear=False):
+            selected = self.client._select_account(
+                [
+                    {
+                        "id": "LIVE-1",
+                        "name": "LIVE-1",
+                        "canTrade": True,
+                        "balance": 50000,
+                        "simulated": False,
+                    },
+                ]
+            )
 
         self.assertIsNone(selected)
 
-    def test_select_account_rejects_preferred_env_when_it_targets_non_practice(self) -> None:
+    def test_select_account_uses_preferred_account_id_even_when_non_practice(self) -> None:
         with patch.dict(os.environ, {"PREFERRED_ACCOUNT_ID": "LIVE-1"}, clear=False):
             selected = self.client._select_account(
                 [
@@ -1773,19 +1929,35 @@ class AccountSafetyTests(unittest.TestCase):
                 ]
             )
 
-        self.assertIsNone(selected)
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected.account_id, "LIVE-1")
+        self.assertFalse(selected.is_practice)
 
-    def test_place_order_refuses_non_practice_account_when_prac_only_enabled(self) -> None:
+    @patch("src.market.topstep_client.requests.post")
+    def test_place_order_submits_for_non_practice_account_when_prac_only_enabled(
+        self, mock_post
+    ) -> None:
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "success": True,
+            "orderId": 999,
+            "errorCode": 0,
+        }
+        mock_post.return_value = response
         self.client._access_token = "token"
         self.client._token_expires = float("inf")
         self.client._account_id = 123
         self.client._account = Account(
             account_id="123", name="LIVE-1", balance=50000, is_practice=False
         )
+        self.client._resolve_contract_id = Mock(return_value="CON.F.US.EP.M26")
 
         order_id = self.client.place_order("ES", 1, "buy", "market")
 
-        self.assertIsNone(order_id)
+        self.assertEqual(order_id, "999")
+        mock_post.assert_called()
 
     def test_build_hub_url_injects_access_token_query_param(self) -> None:
         self.client._access_token = "jwt-token"
@@ -1861,7 +2033,7 @@ class LoggingBootstrapTests(unittest.TestCase):
 
         joined = "\n".join(captured.output)
         self.assertIn("startup_summary", joined)
-        self.assertIn("startup_endpoints", joined)
+        self.assertIn("startup_operator_surface=cli+sqlite", joined)
 
 
 class CliLifecycleControlTests(unittest.TestCase):
@@ -1955,38 +2127,42 @@ class CliLifecycleControlTests(unittest.TestCase):
             self.assertEqual(invoked["config"], runtime_status["config_path"])
             self.assertIn("Trading engine stopped for restart", result.output)
 
-
-class DebugServerLifecycleTests(unittest.TestCase):
-    def test_stop_closes_servers_without_httpserver_shutdown(self) -> None:
+    def test_analyze_launch_readiness_smoke(self) -> None:
         config = build_config()
-        set_config(config)
-        server = DebugServer(config.server)
-        server._running = True
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.logging.file = str(Path(temp_dir) / "logs" / "trading.log")
+            set_config(config)
+            readiness = {
+                "generated_at": datetime.now().isoformat(),
+                "checks": {
+                    "launch_gate_enabled": True,
+                    "pre_open_live": True,
+                    "shadow_zones_defined": True,
+                    "session_exit_enabled": True,
+                    "bridge_disabled_by_default": True,
+                    "recent_morning_sample_positive": True,
+                    "runtime_reachable": True,
+                    "runtime_running": True,
+                    "runtime_healthy": True,
+                    "funded_account_selected": True,
+                    "broker_truth_available": True,
+                    "broker_truth_flat": True,
+                    "broker_truth_no_contradictions": True,
+                    "recovery_verified": True,
+                },
+                "ready": True,
+                "runtime_status": "healthy",
+                "runtime_state_source": "sqlite",
+                "current_zone": "Pre-Open",
+                "account_id": "12345",
+                "launch_defaults": {},
+            }
+            with patch("src.cli.commands.build_launch_readiness", return_value=readiness):
+                result = runner.invoke(cli, ["analyze", "launch-readiness"])
 
-        health_thread = Mock()
-        health_thread.is_alive.return_value = True
-        debug_thread = Mock()
-        debug_thread.is_alive.return_value = True
-        server._health_thread = health_thread
-        server._debug_thread = debug_thread
-
-        health_server = Mock()
-        debug_server = Mock()
-        server._health_server = health_server
-        server._debug_server = debug_server
-
-        server.stop()
-
-        health_server.shutdown.assert_called_once()
-        debug_server.shutdown.assert_called_once()
-        health_server.server_close.assert_called_once()
-        debug_server.server_close.assert_called_once()
-        health_thread.join.assert_called_once_with(timeout=2)
-        debug_thread.join.assert_called_once_with(timeout=2)
-        self.assertIsNone(server._health_thread)
-        self.assertIsNone(server._debug_thread)
-        self.assertIsNone(server._health_server)
-        self.assertIsNone(server._debug_server)
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn('"ready": true', result.output)
 
 
 class ObservabilityStoreTests(unittest.TestCase):

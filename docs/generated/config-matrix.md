@@ -21,7 +21,7 @@ Top-level keys in config/default.yaml:
 - event_provider
 - api
 - replay
-- server
+- operator_tts
 - logging
 - observability
 

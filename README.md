@@ -4,10 +4,10 @@ CLI-based ES hot-zone day trading system. Execution, broker integration, observa
 
 ## Operator interface
 
-The active operator surfaces are the CLI and local Flask console:
+The active operator surfaces are the **CLI** and **local SQLite** observability (`es-trade db …`, state snapshots in `logs/observability.db`).
 
 - `es-trade` — show help and commands
-- `es-trade start` — start the trading engine and local Flask console
+- `es-trade start` — start the trading engine (live)
 - `es-trade stop` / `es-trade restart` — lifecycle
 - `es-trade status` — one-screen runtime status
 - `es-trade debug` / `es-trade events` / `es-trade config` / `es-trade balance` / `es-trade health`
@@ -16,15 +16,11 @@ The active operator surfaces are the CLI and local Flask console:
 - `es-trade service install|uninstall|start|stop|restart|status|logs|doctor` — manage the local `launchd` wrapper
 - `es-trade db runs|events|snapshots|bridge-health|logs|account-trades|sync-account-trades` — inspect the local durability store
 
-Default local endpoints:
-
-- `http://127.0.0.1:31380/health`
-- `http://127.0.0.1:31381/`
-- `http://127.0.0.1:31381/debug`
+Runtime inspection is via the CLI (`es-trade status`, `es-trade health`, `es-trade debug`) and SQLite; there is no local HTTP console.
 
 ## Active layout
 
-- `src/` — trader runtime, engine, execution, broker client, observability, local server, analysis
+- `src/` — trader runtime, engine, execution, broker client, observability, runtime state, analysis
 - `config/` — default config and local runtime defaults
 - `tests/` — trader test suite
 - `docs/` — operator, architecture, research, runbooks, and archive notes

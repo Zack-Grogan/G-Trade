@@ -2,7 +2,6 @@
 
 ## G-Trade runtime
 
-- Flask>=3.0.0
 - pyyaml>=6.0
 - requests>=2.31.0
 - websockets>=12.0
@@ -19,5 +18,5 @@
 - ruff>=0.1.0
 
 ## Local operator stack
-- click, flask, sqlite3, requests, websockets, pandas, numpy
+- click, sqlite3, requests, websockets, pandas, numpy
 - Topstep integration runs locally via src/market

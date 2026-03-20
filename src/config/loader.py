@@ -72,6 +72,15 @@ class StrategyConfig:
     session_exit_checkpoint_time: str = "10:00"
     session_exit_hard_flat_time: str = "11:30"
     session_exit_timezone: str = "America/Los_Angeles"
+    market_hours_guard_enabled: bool = True
+    market_hours_timezone: str = "America/Chicago"
+    market_hours_daily_maintenance_start: str = "16:00"
+    market_hours_daily_maintenance_end: str = "17:00"
+    market_hours_weekend_close_day: str = "Friday"
+    market_hours_weekend_close_time: str = "16:00"
+    market_hours_weekend_open_day: str = "Sunday"
+    market_hours_weekend_open_time: str = "17:00"
+    market_hours_holiday_dates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -370,7 +379,6 @@ class ValidationConfig:
 class SafetyConfig:
     prac_only: bool = True
     preferred_account_match: str = "PRAC"
-    allow_non_prac_override_env: str = "ALLOW_NON_PRAC_ACCOUNT"
 
 
 @dataclass
@@ -396,13 +404,6 @@ class APIConfig:
     ws_url: str = "wss://realtime.topstepx.com/api"
     timeout: int = 30
     retry_attempts: int = 3
-
-
-@dataclass
-class ServerConfig:
-    health_port: int = 31380
-    debug_port: int = 31381
-    host: str = "127.0.0.1"
 
 
 @dataclass
@@ -438,6 +439,28 @@ class ReplayConfig:
 
 
 @dataclass
+class OperatorTtsConfig:
+    """Local macOS `say` announcements for order lifecycle (no network)."""
+
+    enabled: bool = False
+    voice: Optional[str] = None
+    rate: Optional[int] = None
+    max_queue: int = 2
+    speak_in_mock_mode: bool = False
+    include_trade_time_in_speech: bool = True
+    events: list[str] = field(
+        default_factory=lambda: [
+            "filled",
+            "partially_filled",
+            "rejected",
+            "cancelled",
+            "submit_failed",
+            "realized_pnl",
+        ]
+    )
+
+
+@dataclass
 class Config:
     account: AccountConfig = field(default_factory=AccountConfig)
     symbols: list = field(default_factory=lambda: ["ES"])
@@ -457,24 +480,22 @@ class Config:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     event_provider: EventProviderConfig = field(default_factory=EventProviderConfig)
     api: APIConfig = field(default_factory=APIConfig)
-    server: ServerConfig = field(default_factory=ServerConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     observability: ObservabilityConfig = field(default_factory=ObservabilityConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
+    operator_tts: OperatorTtsConfig = field(default_factory=OperatorTtsConfig)
 
 
 _DEPRECATED_CONFIG_KEYS: dict[type, dict[str, str]] = {
+    SafetyConfig: {
+        "allow_non_prac_override_env": "removed; runtime account selection uses PREFERRED_ACCOUNT_ID only.",
+    },
     StrategyConfig: {
         "vwap_session": "ignored; active session is derived from the zone (Pre-Open uses ETH, other zones use RTH).",
     },
     RiskConfig: {
         "use_volatility_sizing": "ignored; position sizing is driven by ATR, account.risk_per_contract, max_contracts, and risk state.",
         "target_daily_risk_pct": "ignored; daily risk is enforced by max_daily_loss and related risk controls, not a target percentage knob.",
-    },
-    ServerConfig: {
-        "mcp_enabled": "removed; in-process MCP endpoint support was retired from the local runtime.",
-        "mcp_path": "removed; in-process MCP endpoint support was retired from the local runtime.",
-        "railway_mcp_url": "removed; Railway integration is retired from the local runtime.",
     },
     ObservabilityConfig: {
         "internal_api_token": "removed; Railway bridge ingest is retired.",
@@ -536,6 +557,14 @@ def load_config(config_path: Optional[str] = None) -> Config:
     with resolved_path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
 
+    if data.get("server"):
+        _warn_deprecated_config_key(
+            "Config",
+            "server",
+            "removed; HTTP health/debug console was retired — use CLI and SQLite (`es-trade status`, `es-trade debug`).",
+        )
+        data.pop("server", None)
+
     hot_zones = [HotZoneConfig(**zone) for zone in data.get("hot_zones", [])]
 
     return Config(
@@ -559,10 +588,10 @@ def load_config(config_path: Optional[str] = None) -> Config:
         safety=_dict_to_dataclass(data.get("safety", {}), SafetyConfig),
         event_provider=_dict_to_dataclass(data.get("event_provider", {}), EventProviderConfig),
         api=_dict_to_dataclass(data.get("api", {}), APIConfig),
-        server=_dict_to_dataclass(data.get("server", {}), ServerConfig),
         logging=_dict_to_dataclass(data.get("logging", {}), LoggingConfig),
         observability=_dict_to_dataclass(data.get("observability", {}), ObservabilityConfig),
         replay=_dict_to_dataclass(data.get("replay", {}), ReplayConfig),
+        operator_tts=_dict_to_dataclass(data.get("operator_tts", {}), OperatorTtsConfig),
     )
 
 

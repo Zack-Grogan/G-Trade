@@ -6,15 +6,13 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from statistics import mean
 from typing import Any, Iterable, Optional
-import json
-from urllib.error import URLError
-from urllib.request import urlopen
 
 import pytz
 
 from src.config import Config, get_config
 from src.observability import ObservabilityStore, get_observability_store
-from src.server import get_state
+from src.runtime.inspection import fetch_runtime_debug_state, health_dict_from_debug
+from src.runtime.state import get_state
 
 PACIFIC_TZ = pytz.timezone("America/Los_Angeles")
 
@@ -100,21 +98,11 @@ def _resolve_account_id(account_id: Optional[str]) -> Optional[str]:
 
 
 def _load_runtime_state(cfg: Config) -> tuple[dict[str, Any], dict[str, Any], str]:
-    debug_url = f"http://{cfg.server.host}:{cfg.server.debug_port}/debug"
-    health_url = f"http://{cfg.server.host}:{cfg.server.health_port}/health"
-
-    def _read_json(url: str) -> dict[str, Any]:
-        with urlopen(url, timeout=1.5) as response:  # noqa: S310 - localhost only
-            payload = response.read().decode("utf-8")
-        loaded = json.loads(payload)
-        return loaded if isinstance(loaded, dict) else {}
-
-    try:
-        return _read_json(debug_url), _read_json(health_url), "remote"
-    except (OSError, TimeoutError, ValueError, URLError, json.JSONDecodeError):
-        state = get_state().to_dict()
-        health = get_state().to_health_dict()
-        return state, health, "in_process"
+    debug, source = fetch_runtime_debug_state(cfg)
+    if debug:
+        return debug, health_dict_from_debug(debug), source
+    state = get_state()
+    return state.to_dict(), state.to_health_dict(), "in_process"
 
 
 def _current_price_at_or_after(
@@ -527,6 +515,29 @@ def build_launch_readiness(
     packet = build_regime_packet(account_id=account_id, lookback_days=14, store=store, config=cfg)
     state, health, state_source = _load_runtime_state(cfg)
     morning_candidate = packet["morning_meta"]["summary"]
+    account = state.get("account") if isinstance(state.get("account"), dict) else {}
+    broker_truth = (
+        state.get("broker_truth") if isinstance(state.get("broker_truth"), dict) else {}
+    )
+    current_broker_truth = (
+        broker_truth.get("current") if isinstance(broker_truth.get("current"), dict) else {}
+    )
+    contradictions = (
+        broker_truth.get("contradictions")
+        if isinstance(broker_truth.get("contradictions"), dict)
+        else {}
+    )
+    current_position = (
+        current_broker_truth.get("position")
+        if isinstance(current_broker_truth.get("position"), dict)
+        else {}
+    )
+    lifecycle = state.get("lifecycle") if isinstance(state.get("lifecycle"), dict) else {}
+    recovery_verified = bool(
+        lifecycle.get("recovery_verified")
+        or lifecycle.get("restart_verified")
+        or lifecycle.get("recover_verified")
+    )
     ready_checks = {
         "launch_gate_enabled": bool(cfg.strategy.launch_gate_enabled),
         "pre_open_live": "Pre-Open" in (cfg.strategy.live_entry_zones or []),
@@ -535,9 +546,17 @@ def build_launch_readiness(
         "bridge_disabled_by_default": True,
         "recent_morning_sample_positive": bool(morning_candidate.get("count"))
         and morning_candidate.get("total_pnl", 0.0) > 0,
-        "runtime_reachable": state_source == "remote",
+        "runtime_reachable": state_source in ("sqlite", "status_file")
+        or (state_source == "in_process" and bool(state.get("running"))),
         "runtime_running": bool(state.get("running")),
         "runtime_healthy": str(health.get("status") or "").lower() == "healthy",
+        "funded_account_selected": bool(account.get("id")) and account.get("is_practice") is False,
+        "broker_truth_available": bool(broker_truth),
+        "broker_truth_flat": bool(broker_truth)
+        and int(current_position.get("quantity", 0) or 0) == 0
+        and int(current_broker_truth.get("open_order_count", 0) or 0) == 0,
+        "broker_truth_no_contradictions": not any(bool(v) for v in contradictions.values()),
+        "recovery_verified": recovery_verified,
     }
     return {
         "generated_at": datetime.now(UTC).isoformat(),

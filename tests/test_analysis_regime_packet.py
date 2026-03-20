@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,20 +8,6 @@ from unittest.mock import patch
 from src.analysis.regime_packet import build_launch_readiness
 from src.config import load_config, set_config
 from src.observability import get_observability_store
-
-
-class _FakeResponse:
-    def __init__(self, payload: dict):
-        self._payload = json.dumps(payload).encode("utf-8")
-
-    def read(self) -> bytes:
-        return self._payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
 
 
 class LaunchReadinessTests(unittest.TestCase):
@@ -42,7 +27,7 @@ class LaunchReadinessTests(unittest.TestCase):
         self.store.stop()
         self._temp_dir.cleanup()
 
-    def test_launch_readiness_prefers_remote_runtime_state_when_available(self) -> None:
+    def test_launch_readiness_prefers_sqlite_runtime_state_when_available(self) -> None:
         packet = {
             "account_id": "20139389",
             "morning_meta": {"summary": {"count": 3, "total_pnl": 4225.0}},
@@ -60,18 +45,31 @@ class LaunchReadinessTests(unittest.TestCase):
             "status": "healthy",
             "running": True,
             "zone": {"name": "Pre-Open"},
+            "account": {"id": "20139389", "is_practice": False},
+            "broker_truth": {
+                "current": {"position": {"quantity": 0}, "open_order_count": 0},
+                "contradictions": {
+                    "api_flat_with_recent_activity": False,
+                    "api_flat_with_working_history": False,
+                    "focus_timestamp_activity_detected": False,
+                    "focus_timestamp_without_current_open_state": False,
+                },
+            },
+            "lifecycle": {"recovery_verified": True},
         }
-        remote_health = {"status": "healthy"}
-
         with patch("src.analysis.regime_packet.build_regime_packet", return_value=packet):
             with patch(
-                "src.analysis.regime_packet.urlopen",
-                side_effect=[_FakeResponse(remote_debug), _FakeResponse(remote_health)],
+                "src.analysis.regime_packet.fetch_runtime_debug_state",
+                return_value=(remote_debug, "sqlite"),
             ):
                 readiness = build_launch_readiness(store=self.store, config=self.config)
 
         self.assertTrue(readiness["checks"]["runtime_reachable"])
         self.assertTrue(readiness["checks"]["runtime_running"])
         self.assertTrue(readiness["checks"]["runtime_healthy"])
-        self.assertEqual(readiness["runtime_state_source"], "remote")
+        self.assertTrue(readiness["checks"]["funded_account_selected"])
+        self.assertTrue(readiness["checks"]["broker_truth_flat"])
+        self.assertTrue(readiness["checks"]["broker_truth_no_contradictions"])
+        self.assertTrue(readiness["checks"]["recovery_verified"])
+        self.assertEqual(readiness["runtime_state_source"], "sqlite")
         self.assertEqual(readiness["runtime_status"], "healthy")

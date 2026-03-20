@@ -36,6 +36,11 @@ from src.market import get_client
 from src.execution import get_executor
 from src.engine import ReplayRunner, get_scheduler, get_risk_manager, get_trading_engine
 from src.observability import get_observability_store
+from src.observability.taxonomy import (
+    CATEGORY_SYSTEM,
+    EVENT_THREAD_EXCEPTION,
+    EVENT_UNCAUGHT_EXCEPTION,
+)
 from src.observability.provenance import collect_run_provenance
 from src.analysis import (
     build_launch_readiness,
@@ -47,6 +52,18 @@ from src.analysis import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_log_mirror_failure_logger() -> logging.Logger:
+    """Stderr-only logger (not attached to root) so mirror failures stay visible without recursion."""
+    lg = logging.getLogger("es_trade.runtime_log_mirror")
+    if not lg.handlers:
+        h = logging.StreamHandler(sys.stderr)
+        h.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        lg.addHandler(h)
+        lg.propagate = False
+        lg.setLevel(logging.WARNING)
+    return lg
 
 
 class _ConsoleFormatter(logging.Formatter):
@@ -103,7 +120,9 @@ class _ObservabilityLogHandler(logging.Handler):
             }
             get_observability_store().record_runtime_log(payload)
         except Exception:
-            pass
+            _runtime_log_mirror_failure_logger().exception(
+                "Failed to mirror log line to observability SQLite"
+            )
         finally:
             self._local.active = False
 
@@ -113,8 +132,8 @@ def _log_uncaught_exception(exc_type, exc_value, exc_traceback) -> None:
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
     get_observability_store().record_event(
-        category="system",
-        event_type="uncaught_exception",
+        category=CATEGORY_SYSTEM,
+        event_type=EVENT_UNCAUGHT_EXCEPTION,
         source=__name__,
         payload={"exception_type": exc_type.__name__, "message": str(exc_value)},
         action="uncaught_exception",
@@ -130,8 +149,8 @@ def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
     if issubclass(args.exc_type, KeyboardInterrupt):
         return
     get_observability_store().record_event(
-        category="system",
-        event_type="thread_exception",
+        category=CATEGORY_SYSTEM,
+        event_type=EVENT_THREAD_EXCEPTION,
         source=__name__,
         payload={
             "thread_name": args.thread.name if args.thread else "unknown",
@@ -983,7 +1002,9 @@ def start(config: Optional[str]):
         last_start_requested_at=_utc_now().isoformat(),
     )
 
-    click.secho("Runtime status: use `es-trade status`, `es-trade health`, `es-trade debug`.", fg="blue")
+    click.secho(
+        "Runtime status: use `es-trade status`, `es-trade health`, `es-trade debug`.", fg="blue"
+    )
 
     # Update state
     set_state(
@@ -1271,11 +1292,19 @@ def replay(path: str, config: Optional[str]):
 
 @cli.command("replay-topstep")
 @click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to replay")
-@click.option("--days", "days_back", default=30, show_default=True, type=int, help="Days of history to replay")
+@click.option(
+    "--days", "days_back", default=30, show_default=True, type=int, help="Days of history to replay"
+)
 @click.option("--start", "start_date", type=str, help="Start date (YYYY-MM-DD)")
 @click.option("--end", "end_date", type=str, help="End date (YYYY-MM-DD)")
 @click.option("--config", type=click.Path(exists=True), help="Config file path")
-def replay_topstep(symbol: str, days_back: int, start_date: Optional[str], end_date: Optional[str], config: Optional[str]):
+def replay_topstep(
+    symbol: str,
+    days_back: int,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    config: Optional[str],
+):
     """Replay historical Topstep data through the live engine path."""
     config_path = _resolve_config_path(config)
     if config:
@@ -1378,7 +1407,14 @@ def replay_topstep(symbol: str, days_back: int, start_date: Optional[str], end_d
 
 
 @cli.command("fill-quality")
-@click.option("--days", "days_back", default=30, show_default=True, type=int, help="Days of history to analyze")
+@click.option(
+    "--days",
+    "days_back",
+    default=30,
+    show_default=True,
+    type=int,
+    help="Days of history to analyze",
+)
 @click.option(
     "--account-id", type=str, help="Account id override; defaults to the current selected account"
 )
@@ -1402,7 +1438,14 @@ def fill_quality(days_back: int, account_id: Optional[str], source: str):
 
 @cli.command("stress-periods")
 @click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to analyze")
-@click.option("--days", "days_back", default=30, show_default=True, type=int, help="Days of history to analyze")
+@click.option(
+    "--days",
+    "days_back",
+    default=30,
+    show_default=True,
+    type=int,
+    help="Days of history to analyze",
+)
 @click.option(
     "--source",
     type=click.Choice(["topstep", "observability"]),
@@ -1410,8 +1453,12 @@ def fill_quality(days_back: int, account_id: Optional[str], source: str):
     show_default=True,
     help="Data source for stress detection",
 )
-@click.option("--atr-threshold", default=2.0, show_default=True, type=float, help="ATR multiplier threshold")
-@click.option("--spread-threshold", default=5.0, show_default=True, type=float, help="Spread ticks threshold")
+@click.option(
+    "--atr-threshold", default=2.0, show_default=True, type=float, help="ATR multiplier threshold"
+)
+@click.option(
+    "--spread-threshold", default=5.0, show_default=True, type=float, help="Spread ticks threshold"
+)
 def stress_periods(
     symbol: str,
     days_back: int,
@@ -1623,21 +1670,26 @@ def broker_truth(symbol: str, lookback_minutes: int, focus_timestamp: Optional[s
 @click.option("--category", type=str, help="Filter by category")
 @click.option("--event-type", type=str, help="Filter by event type")
 @click.option("--since-minutes", type=int, help="Only include events from the last N minutes")
+@click.option(
+    "--run-id", type=str, help="Filter to a single process run id (same as es-trade db events)"
+)
 @click.option("--search", type=str, help="Search across reasons, payloads, symbols, and sources")
 def events(
     limit: int,
     category: Optional[str],
     event_type: Optional[str],
     since_minutes: Optional[int],
+    run_id: Optional[str],
     search: Optional[str],
 ):
-    """Query recent observability events."""
+    """Query recent observability events (same underlying store as `es-trade db events`)."""
     rows = get_observability_store().query_events(
         limit=limit,
         category=category,
         event_type=event_type,
         since_minutes=since_minutes,
         search=search,
+        run_id=run_id,
     )
     click.echo(json.dumps(rows, indent=2, default=str))
 
@@ -1936,7 +1988,9 @@ def config():
     click.echo(f"  Max Consecutive:     {cfg.risk.max_consecutive_losses}")
     click.echo(f"  Max Trades/Hour:     {cfg.risk.max_trades_per_hour}")
     click.echo("")
-    click.echo("Operator surface: CLI + SQLite (`es-trade status`, `es-trade debug`, `es-trade db`).")
+    click.echo(
+        "Operator surface: CLI + SQLite (`es-trade status`, `es-trade debug`, `es-trade db`)."
+    )
 
 
 @cli.command()

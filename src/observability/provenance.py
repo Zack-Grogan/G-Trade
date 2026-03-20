@@ -22,8 +22,6 @@ def collect_run_provenance(
     log_path: Path,
     sqlite_path: str,
     data_mode: str,
-    health_url: str,
-    debug_url: str,
 ) -> dict[str, Any]:
     resolved_config_path = _resolve_config_path(config_path)
     git_metadata = _read_git_metadata(PROJECT_ROOT)
@@ -38,8 +36,6 @@ def collect_run_provenance(
         "config_hash": _hash_config(config, resolved_config_path),
         "log_path": str(log_path),
         "sqlite_path": str(sqlite_path),
-        "health_url": health_url,
-        "debug_url": debug_url,
         **git_metadata,
     }
 

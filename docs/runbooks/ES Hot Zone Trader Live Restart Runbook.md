@@ -33,17 +33,17 @@ Relevant system event types include:
 
 ## Pre-Restart Checks
 
-From the repo root, verify the current listener and health surfaces:
+From the repo root, verify runtime control files and CLI output (no local HTTP server):
 
 ```bash
-lsof -nP -iTCP:31381 -sTCP:LISTEN
-curl -s http://127.0.0.1:31380/health
-curl -s http://127.0.0.1:31381/debug
+cat logs/runtime/runtime_status.json
+es-trade status
+es-trade debug
 ```
 
-The local operator surfaces are the CLI and the Flask console. `/debug` is the JSON compatibility endpoint for local inspection.
+The local operator surfaces are the CLI and SQLite. `es-trade debug` prints JSON including `_runtime_state_source` (`in_process`, `sqlite`, or `status_file`).
 
-If the debug server is up, inspect the runtime state for:
+Inspect the runtime state for:
 
 - `status`
 - `running`
@@ -64,7 +64,7 @@ Expected behavior:
 - `lifecycle_request.json` is written with the stop request
 - the running process receives `SIGTERM`
 - the engine records `shutdown_requested`
-- the engine stops market/execution/debug services
+- the engine stops market/execution services and flushes observability
 - the engine records `shutdown`
 - `trader.pid` is removed
 - `runtime_status.json` moves to `stopped`
@@ -115,9 +115,8 @@ python3 -m src.cli.commands start --mock
 After a start or restart, verify all of the following:
 
 ```bash
-lsof -nP -iTCP:31381 -sTCP:LISTEN
-curl -s http://127.0.0.1:31380/health
-curl -s http://127.0.0.1:31381/debug
+es-trade status
+es-trade debug
 python3 -m src.cli.commands events --limit 20 --category system
 ```
 
@@ -125,8 +124,7 @@ Healthy restart indicators:
 
 - `runtime_status.json` shows `phase=running`
 - `trader.pid` exists and matches the active Python PID
-- `/health` responds
-- `/debug` shows the current lifecycle metadata
+- `es-trade health` / `es-trade debug` return expected fields (see `_runtime_state_source` in debug output)
 - recent system events include `startup`
 - if this was a restart, the new `startup` payload includes:
   - `requested_action`
@@ -141,8 +139,7 @@ Do not proceed to live operation if any of the following are true:
 - `startup_failed` appears in recent system events
 - `runtime_status.json` remains in `starting`, `stopping`, or `error`
 - the PID file points to a dead process
-- `/health` is unavailable
-- the debug server is not listening on the expected port
+- `es-trade health` fails to return sensible output while the trader should be running
 - recent lifecycle events show repeated shutdown errors
 
 ## Local Forensics Commands
@@ -179,7 +176,7 @@ The local trader migration is complete. This section is retained for future majo
    ```bash
    python3 -m src.cli.commands stop --reason pre_migration_freeze
    ```
-2. **Verify stopped:** Confirm no process is listening on health/debug ports and `logs/runtime/trader.pid` is removed (or points to a dead process that you can clean up).
+2. **Verify stopped:** Confirm `logs/runtime/trader.pid` is removed (or points to a dead process that you can clean up) and `es-trade status` shows the engine is not running.
 3. **State reset (if needed):** If there was an unresolved entry or stuck state before stop:
    - Inspect `logs/runtime/runtime_status.json` and `logs/observability.db` (e.g. `events` table, last `run_id`).
    - Clear any stale `lifecycle_request.json` or `operator_request.json` under `logs/runtime/` so the next start sees a clean request state.

@@ -1,13 +1,12 @@
 # Engineering system overview
 
-This section describes the AI operating layer: how Cursor, Linear, GitHub, and OpenViking fit together, and how docs and generated artifacts are maintained.
+This section describes the AI operating layer: how Cursor, Linear, and GitHub fit together, and how docs and generated artifacts are maintained.
 
 ## Roles
 
 - **Cursor** — Live coding surface and execution engine. Rules in `.cursor/rules/` and the AGENTS.md contract govern behavior.
-- **Linear** — Work and issue/planning source of truth (when used). See [linear-workflow.md](linear-workflow.md). Setup and backfill: [linear-setup.md](linear-setup.md); see also [runbooks/Project-onboarding-Linear-and-OpenViking.md](../runbooks/Project-onboarding-Linear-and-OpenViking.md).
+- **Linear** — Work and issue/planning source of truth (when used). See [linear-workflow.md](linear-workflow.md). Setup and backfill: [linear-setup.md](linear-setup.md); see also [runbooks/Project-onboarding-Linear.md](../runbooks/Project-onboarding-Linear.md).
 - **GitHub** — Code truth, branches, PRs, review workflow. See [github-workflow.md](github-workflow.md).
-- **OpenViking** — Durable repository knowledge and documentation index behind MCP; not an app runtime dependency. See [openviking-integration.md](openviking-integration.md). First-time ingest: run `python scripts/onboard_openviking.py` from G-Trade repo root; see [runbooks/Project-onboarding-Linear-and-OpenViking.md](../runbooks/Project-onboarding-Linear-and-OpenViking.md).
 - **Repo docs** — Human-maintained source of truth. **Generated docs** — Machine-maintained index/maps produced by `scripts/generate_docs_index.py` under `docs/generated/`.
 
 ## Local vs global

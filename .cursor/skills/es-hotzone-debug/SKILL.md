@@ -1,6 +1,6 @@
 ---
 name: es-hotzone-debug
-description: Debug `es-hotzone-trader` runtime, launchd service behavior, local SQLite durability, local Flask console issues, broker truth mismatches, and run/log recovery for this project.
+description: Debug `es-hotzone-trader` runtime, launchd service behavior, local SQLite durability, CLI/runtime inspection issues, broker truth mismatches, and run/log recovery for this project.
 ---
 
 # ES Hot-Zone Debug
@@ -13,7 +13,7 @@ Use this skill for project-specific debugging of the local trader and its local 
    - Local SQLite durability via `es-trade db ...`
    - Local runtime/service state via `es-trade service ...`
    - Local log file and launchd stdout/stderr
-   - Local Flask console state after local runtime and SQLite are clear
+   - `es-trade status` / `es-trade debug` after local runtime and SQLite are clear
 2. Keep the architecture rule intact:
    - Mac executes trades
    - SQLite is authoritative
@@ -34,16 +34,16 @@ Use this skill for project-specific debugging of the local trader and its local 
 3. If local state and broker truth disagree, inspect:
    - `es-trade broker-truth`
    - `es-trade analyze trade-review`
-   - local Flask `/debug` and `/system`
+   - `es-trade debug` and `logs/runtime/runtime_status.json`
 
 ## What to look for
 
 - `launchd` not installed, not loaded, or writing only to stderr
-- Runtime PID/status file says running but local debug endpoints are unavailable
+- Runtime PID/status file says running but `es-trade debug` or SQLite snapshots look stale
 - Local position and broker position disagree
-- Local Flask console is stale or missing data relative to `/debug`
+- CLI status/debug is stale or missing data relative to SQLite snapshots
 - Runtime logs are noisy, missing, or unreadable
-- SQLite contains state the console is not surfacing correctly
+- SQLite contains state the CLI is not surfacing correctly
 
 ## Recovery rules
 
@@ -60,5 +60,5 @@ When using this skill, report:
 1. Local runtime state
 2. Local durability state
 3. Bridge/auth state
-4. Local console visibility state
+4. CLI / SQLite visibility state
 5. Exact recovery action taken or recommended

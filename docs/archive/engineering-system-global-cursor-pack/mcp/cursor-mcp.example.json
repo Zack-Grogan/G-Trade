@@ -17,12 +17,6 @@
       "env": {
         "RAILWAY_TOKEN": "<set in Cursor or env; never commit>"
       }
-    },
-    "openviking": {
-      "url": "https://openviking.example/mcp",
-      "env": {
-        "OPENVIKING_API_KEY": "<set in Cursor or env; never commit>"
-      }
     }
   }
 }

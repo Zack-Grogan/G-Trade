@@ -73,7 +73,7 @@ def write_dependency_map():
         lines.append(f"- {d}")
     lines.append("")
     lines.append("## Local operator stack")
-    lines.append("- click, flask, sqlite3, requests, websockets, pandas, numpy")
+    lines.append("- click, sqlite3, requests, websockets, pandas, numpy")
     lines.append("- Topstep integration runs locally via src/market")
     (GENERATED / "dependency-map.md").write_text("\n".join(lines))
 
@@ -95,14 +95,9 @@ def write_routes_map():
     lines = [
         "# Routes / endpoints map (generated)",
         "",
-        "## Local service",
-        "- GET /health",
-        "- GET /debug (state snapshot)",
-        "- GET / (Flask console)",
-        "- GET /chart",
-        "- GET /trades",
-        "- GET /logs",
-        "- GET /system",
+        "## Local operator surface",
+        "- No in-process HTTP server. Use CLI: `es-trade status`, `es-trade health`, `es-trade debug`.",
+        "- Runtime truth for a separate trader process: SQLite state snapshots in `logs/observability.db` plus `logs/runtime/runtime_status.json`.",
         "",
     ]
     (GENERATED / "routes-map.md").write_text("\n".join(lines))
@@ -155,8 +150,8 @@ def write_change_impact_map():
         "- src/engine/ — trading logic, reconciliation",
         "- src/execution/ — order execution",
         "- src/market/ — Topstep client",
-        "- src/server/ — local Flask console and health/debug surfaces",
-        "- src/bridge/ — legacy bridge code retained for historical recovery only",
+        "- src/runtime/ — in-process trading state and CLI/SQLite inspection helpers",
+        "- docs/archive/railway-sunset/ — retired bridge/outbox history only",
         "- config/default.yaml — config surface",
         "- docs/OPERATOR.md, docs/Compliance-Boundaries.md, docs/runbooks/",
         "",
@@ -174,8 +169,8 @@ def write_service_relationships():
         "Mac (G-Trade)",
         "  CLI → engine → execution, market (Topstep)",
         "  engine → observability (SQLite)",
-        "  Flask console ← observability, logs, broker truth, trade review",
-        "  legacy bridge/outbox retained for historical recovery only",
+        "  CLI ← observability (SQLite), runtime state",
+        "  retired bridge/outbox history archived only",
         "```",
         "",
         "Active runtime is local-only: execution, broker connectivity, observability, and operator tooling stay on the Mac.",

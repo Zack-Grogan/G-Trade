@@ -4,20 +4,20 @@ Canonical architecture doc (lowercase path).
 
 ## One-line summary
 
-**Execution, observability, broker truth, and operator tooling stay on the Mac.** The active stack is Python + CLI + Flask + SQLite + Topstep.
+**Execution, observability, broker truth, and operator tooling stay on the Mac.** The active stack is Python + CLI + SQLite + Topstep.
 
 ## What runs where
 
 | Where | What |
 |-------|------|
-| **Local (Mac)** | Trading engine, order executor, Topstep client, launchd wrapper, Flask console, SQLite observability store, trade review, regime analysis, and all operator workflows. |
+| **Local (Mac)** | Trading engine, order executor, Topstep client, launchd wrapper, SQLite observability store, trade review, regime analysis, and all operator workflows. |
 | **Archive only** | Retired Railway and MCP stack. Historical notes live under `docs/archive/railway-sunset/`. |
 
 ## Active data flow
 
 - **Market and broker state:** Topstep client → local trading engine
 - **Observability:** engine/execution/runtime → local SQLite
-- **Operator visibility:** CLI and local Flask console read from local runtime state and SQLite
+- **Operator visibility:** CLI reads from local runtime state and SQLite (state snapshots, `es-trade status` / `debug`)
 - **Cloud dependency:** none required for trading or debugging
 
 ## Active modules
@@ -29,7 +29,7 @@ Canonical architecture doc (lowercase path).
 | `src/execution/` | Order execution, protection, reconciliation |
 | `src/market/` | Topstep client, broker truth, fills/orders/positions |
 | `src/observability/` | SQLite durability, runtime logs, decision snapshots, trade review data |
-| `src/server/` | Local Flask console, SSE feeds, `/health`, `/debug` |
+| `src/runtime/` | In-process trading state and CLI/SQLite inspection helpers |
 | `src/analysis/` | Regime packet and trade-review analysis |
 
 ## Key docs

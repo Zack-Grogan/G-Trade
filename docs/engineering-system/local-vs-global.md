@@ -10,7 +10,7 @@ Classification of what belongs in the repo (commit) vs user/team config (outside
 ## Global user config
 
 - Cursor settings (e.g. MCP server list, optional hooks). MCP credentials and API keys (never in repo).
-- Linear/GitHub auth tokens and any external service credentials. OpenViking service URL and auth if used.
+- Linear/GitHub auth tokens and any external service credentials.
 
 ## Global team config
 

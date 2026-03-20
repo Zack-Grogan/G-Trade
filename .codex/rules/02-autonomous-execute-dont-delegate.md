@@ -14,11 +14,11 @@ alwaysApply: false
 - When a plan or user says **deploy**, **verify deployment**, or **get ready to deploy** for the local trader, do the concrete local work yourself: verify launchd, ports, logs, health, browser pages, and tests. Do not only write documentation or operator steps for the user to run.
 - When the task involves **Linear** (issues, state, projects): use **Linear MCP** (save_issue, list_issues, etc.). Do not ask for API keys or tell the user to create issues or move state.
 - When the task involves **GitHub** (repos, PRs, branches): use **GitHub MCP**. Do not tell the user to create the repo or push.
-- When the task benefits from **durable or cross-repo context**: use **OpenViking MCP** (openviking_find, openviking_read, openviking_glob, etc.). The rules (e.g. 60, 61) and use-openviking skill exist so you use this; do not skip it and only read local files.
+- When the task benefits from **broad or cross-cutting context**: read `AGENTS.md`, `docs/`, and `docs/generated/` first; use codebase search and optional **`explore`** subagent (set thoroughness) for large or ambiguous questions.
 
 ## Rules and skills are binding
 
-- The .cursor rules and skills are not decorative. Follow them and use the tools they reference. Use OpenViking when the task fits (search, progress, cross-repo). Use Linear and GitHub MCP for issues and code. Work like a developer who has these tools: use them.
+- The .cursor rules and skills are not decorative. Follow them and use the tools they reference. Use Linear and GitHub MCP for issues and code. Work like a developer who has these tools: use them.
 - Only escalate or say "you need to do X" when something **genuinely requires human-only action** (e.g. first-time login in a browser, confirming a destructive production change the user has not approved, or a step that has no tool or CLI).
 
 ## Wrong vs right
@@ -27,7 +27,7 @@ alwaysApply: false
   **Right:** Check launchd status, health endpoints, logs, and runtime state yourself; if a step cannot be done by the agent, say only that one step and why.
 - **Wrong:** "Run a short es-trade start to confirm the full path (optional smoke check)."  
   **Right:** If the plan says verify E2E and you can run the CLI, run it (or run what you can) and report; do not reframe verification as an optional task for the user.
-- **Wrong:** Answering from local files only when OpenViking could add context.  
-  **Right:** Use openviking_find or openviking_read when the task benefits from durable search or indexed docs; then answer.
+- **Wrong:** Guessing project status without reading `docs/Current-State.md` or key docs.  
+  **Right:** Read authoritative repo docs and use **explore** when you need systematic coverage across the codebase; cite file paths as evidence.
 - **Wrong:** Treating "don't delegate" as "never use subagents."  
   **Right:** Delegate to **subagents** (mcp_task: explore, shell, etc.) when the task fits—e.g. broad exploration, shell commands, specialized review. That is you executing, not handing work to the user.

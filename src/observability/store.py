@@ -1002,6 +1002,9 @@ class ObservabilityStore:
     def get_run_id(self) -> str:
         return self._run_id
 
+    def get_dropped_event_count(self) -> int:
+        return self._dropped_events
+
     def record_account_trade(
         self, trade: dict[str, Any], *, run_id: Optional[str] = None, source: str = "broker_history"
     ) -> bool:

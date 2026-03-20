@@ -11,6 +11,5 @@ Reusable step-by-step playbooks. Use as reference; adapt to your repo and toolin
 - **opening-a-pr.md** — Use template, link issue, summarize changes and testing.
 - **validating-before-merge.md** — Tests, lint, docs check, human review when needed.
 - **refreshing-generated-docs.md** — Run generate_docs_index script; commit or CI.
-- **refreshing-openviking.md** — When and how to re-ingest (if using OpenViking).
 - **incident-or-debugging.md** — Collect context, locate modules, document findings, recommend issue.
 - **deciding-local-vs-global.md** — Use local-vs-global checklist; put secrets and auth in global only.

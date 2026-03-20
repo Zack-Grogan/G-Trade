@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import os
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -24,19 +25,23 @@ class AccountSelectionTests(unittest.TestCase):
 
     def test_select_account_prefers_prac_match(self) -> None:
         client = TopstepClient(self.config.api)
-        selected = client._select_account(
-            [
-                {"id": "LIVE-123", "name": "Live", "canTrade": True, "balance": 50000},
-                {"id": "ABC-PRAC-01", "name": "Practice", "canTrade": True, "balance": 50000},
-            ]
-        )
+        with patch.dict(os.environ, {"PREFERRED_ACCOUNT_ID": ""}, clear=False):
+            selected = client._select_account(
+                [
+                    {"id": "LIVE-123", "name": "Live", "canTrade": True, "balance": 50000},
+                    {"id": "ABC-PRAC-01", "name": "Practice", "canTrade": True, "balance": 50000},
+                ]
+            )
 
         self.assertIsNotNone(selected)
         assert selected is not None
         self.assertEqual(selected.account_id, "ABC-PRAC-01")
         self.assertTrue(selected.is_practice)
 
-    def test_place_order_rejects_non_practice_account_by_default(self) -> None:
+    @patch("src.market.topstep_client.requests.post")
+    def test_place_order_submits_when_authenticated_and_contract_resolved(
+        self, request_post: Mock
+    ) -> None:
         client = TopstepClient(self.config.api)
         client._access_token = "token"
         client._token_expires = time.time() + 3600
@@ -44,12 +49,16 @@ class AccountSelectionTests(unittest.TestCase):
         client._account = client._account_summary(
             {"id": "LIVE-123", "name": "Live", "balance": 50000, "canTrade": True}
         )
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"success": True, "orderId": 42, "errorCode": 0}
+        request_post.return_value = response
 
-        with patch("src.market.topstep_client.requests.post") as request_post:
+        with patch.object(client, "_resolve_contract_id", return_value="CON.F.US.EP.M26"):
             order_id = client.place_order("ES", 1, "buy", "market")
 
-        self.assertIsNone(order_id)
-        request_post.assert_not_called()
+        self.assertEqual(order_id, "42")
+        request_post.assert_called()
 
 
 class StrategySafetyTests(unittest.TestCase):

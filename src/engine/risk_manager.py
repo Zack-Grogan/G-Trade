@@ -498,7 +498,7 @@ class RiskManager:
         """Record a completed trade and update metrics."""
         if not trade.account_id:
             try:
-                from src.server import get_state
+                from src.runtime import get_state
 
                 state = get_state()
                 trade.account_id = state.account_id or ""

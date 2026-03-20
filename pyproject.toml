@@ -13,7 +13,6 @@ authors = [
     {name = "Trader", email = "trader@example.com"}
 ]
 dependencies = [
-    "Flask>=3.0.0",
     "pyyaml>=6.0",
     "requests>=2.31.0",
     "websockets>=12.0",

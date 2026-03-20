@@ -9,7 +9,6 @@ Copy the .cursor/rules from a repo that uses this operating layer (e.g. G-Trade)
 - 30-testing-discipline.mdc — Run tests; do not remove without reason.
 - 40-issue-branch-pr-discipline.mdc — Reference issue in branch/commit/PR when present.
 - 50-safety-and-non-destructive-behavior.mdc — No secrets; safe defaults; flag sensitive files.
-- 60-openviking-knowledge-usage.mdc — Prefer repo docs; use OpenViking when helpful.
 - 70-provider-and-infra-guardrails.mdc — (If using a managed provider) keep deploy rules conservative and explicit.
 - 80-reusable-template-boundary.mdc — Keep templates reusable across repos.
 
