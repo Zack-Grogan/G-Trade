@@ -1051,6 +1051,17 @@ def start(config: Optional[str]):
     try:
         engine.start()
         started_engine = True
+        # Re-record run manifest now that engine has populated account info
+        if getattr(cfg.observability, "capture_run_provenance", True):
+            debug_state = _fetch_remote_debug_state(cfg) or {}
+            account_payload = debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
+            if account_payload:
+                observability.record_run_manifest({
+                    "run_id": observability.get_run_id(),
+                    "account_id": account_payload.get("id"),
+                    "account_name": account_payload.get("name"),
+                    "account_is_practice": account_payload.get("is_practice"),
+                })
     except Exception as exc:
         logger.exception("Engine startup failed")
         _record_system_event(

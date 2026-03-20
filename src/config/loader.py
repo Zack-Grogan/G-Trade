@@ -59,7 +59,7 @@ class StrategyConfig:
     mr_band_deviation: float = 2.0
     mr_time_stop_minutes: int = 20
     mr_exit_at_vwap: bool = True
-    trade_outside_hotzones: bool = False
+    trade_outside_hotzones: bool = True
     launch_gate_enabled: bool = False
     live_entry_zones: list[str] = field(default_factory=list)
     shadow_entry_zones: list[str] = field(default_factory=list)

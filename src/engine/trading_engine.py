@@ -1565,6 +1565,14 @@ class TradingEngine:
 
     def _record_matrix_state(self, decision: MatrixDecision) -> None:
         snapshot = decision.feature_snapshot
+        logger.info(
+            "matrix_state zone=%s long=%.4f short=%.4f flat=%.4f vetoes=%s",
+            decision.zone_name,
+            decision.long_score,
+            decision.short_score,
+            decision.flat_bias,
+            decision.active_vetoes,
+        )
         set_state(
             current_strategy="WEIGHTED_SCORE_MATRIX",
             long_score=decision.long_score,
@@ -2248,6 +2256,8 @@ class TradingEngine:
                 "feed": self._watchdog_state.last_feed_time.isoformat() if self._watchdog_state.last_feed_time else None,
                 "broker_ack": self.executor.get_last_ack_time().isoformat() if self.executor.get_last_ack_time() else None,
                 "fail_safe_lockout": self._watchdog_state.fail_safe_lockout,
+                "fail_safe": self._watchdog_state.fail_safe_lockout,
+                "decisions_last_min": self._decision_events_since_heartbeat,
                 "feed_stale": self._watchdog_state.feed_stale,
                 "broker_ack_stale": self._watchdog_state.broker_ack_stale,
                 "protection_timeout": self._watchdog_state.protection_timeout,

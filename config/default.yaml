@@ -60,7 +60,7 @@ strategy:
   mr_band_deviation: 2.0
   mr_time_stop_minutes: 20
   mr_exit_at_vwap: true
-  trade_outside_hotzones: false
+  trade_outside_hotzones: true
   launch_gate_enabled: true
   live_entry_zones:
     - "Pre-Open"
