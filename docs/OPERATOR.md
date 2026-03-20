@@ -38,6 +38,8 @@ Chart notes:
 - In live mode, `/chart` can attempt a bounded historical 1-minute bar backfill from the TopstepX/ProjectX history API when the requested lookback window has an older gap and credentials are available.
 - Replay writes its feed into the same local `market_tape`, so `/chart` can show replay candles and the same indicator overlays without a separate chart path.
 - The plotted VWAP/band overlays are derived from stored candles, and alpha lines are carried forward from recorded decision snapshots instead of being rendered as flat current-state lines.
+- The chart now defaults to a **7d** window and exposes a `24h` / `48h` / `7d` selector in the page so operators can inspect longer retained history without editing the URL by hand.
+- Candlesticks are the primary price layer; the redundant close-only price overlay is suppressed so the chart does not read like indicators-only rendering.
 
 Default local ports are pinned to a high, memorable pair so they do not collide with typical dev services:
 - `31380` — `/health`

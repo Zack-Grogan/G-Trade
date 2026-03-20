@@ -5,7 +5,9 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
 from src.config import load_config, set_config
+from src.indicators import session_vwap_bands
 from src.observability import get_observability_store
 from src.server.flask_console import _decision_markers
 from src.server.debug_server import create_app, set_state
@@ -303,6 +305,9 @@ class FlaskConsoleTests(unittest.TestCase):
         home = self.client.get("/").get_data(as_text=True)
         self.assertIn("Trades today 1", home)
         self.assertIn("Losses 0", home)
+        chart_page = self.client.get("/chart").get_data(as_text=True)
+        self.assertIn("Window", chart_page)
+        self.assertIn(">7d<", chart_page)
 
     def test_chart_api_exposes_candles_and_levels(self) -> None:
         response = self.client.get("/api/chart")
@@ -311,12 +316,13 @@ class FlaskConsoleTests(unittest.TestCase):
         self.assertGreaterEqual(len(payload["candles"]), 1)
         self.assertIn("series", payload)
         self.assertIn("levels", payload)
-        self.assertEqual(len(payload["series"]["price"]), len(payload["candles"]))
+        self.assertEqual(payload["summary"]["lookback_hours"], 168)
+        self.assertEqual(payload["series"]["price"], [])
         self.assertEqual(len(payload["series"]["vwap"]), len(payload["candles"]))
         if len(payload["candles"]) > 1:
             self.assertNotEqual(
-                payload["series"]["price"][0]["value"],
-                payload["series"]["price"][-1]["value"],
+                payload["candles"][0]["close"],
+                payload["candles"][-1]["close"],
             )
 
     def test_decision_markers_accept_legacy_action_names(self) -> None:
@@ -350,6 +356,31 @@ class FlaskConsoleTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["candles"][0]["time"], int(earlier.timestamp() // 60) * 60)
 
+    def test_chart_api_supports_week_window(self) -> None:
+        week_old = datetime.now(UTC) - timedelta(days=6, hours=12)
+        self.store.record_market_tick(
+            {
+                "run_id": "history-run",
+                "symbol": "ES",
+                "captured_at": week_old,
+                "last": 6598.5,
+                "volume": 9,
+                "source": "HistoryBar",
+                "open": 6597.0,
+                "high": 6600.0,
+                "low": 6596.5,
+                "close": 6598.5,
+                "historical": True,
+            }
+        )
+        self.store.force_flush()
+        payload = self.client.get("/api/chart?lookback_hours=168").get_json()
+        self.assertLessEqual(
+            datetime.fromisoformat(payload["history"]["coverage_start"]),
+            week_old + timedelta(minutes=1),
+        )
+        self.assertEqual(payload["summary"]["lookback_hours"], 168)
+
     def test_chart_api_builds_candle_from_history_bar_payload(self) -> None:
         historical_time = datetime.now(UTC) - timedelta(hours=9, minutes=30)
         self.store.record_market_tick(
@@ -377,6 +408,128 @@ class FlaskConsoleTests(unittest.TestCase):
         self.assertEqual(candle["high"], 6614.5)
         self.assertEqual(candle["low"], 6608.25)
         self.assertEqual(candle["close"], 6611.0)
+
+    def test_history_bar_overrides_same_bucket_tick_candle(self) -> None:
+        bucket_time = datetime.now(UTC) - timedelta(hours=4)
+        self.store.record_market_tick(
+            {
+                "run_id": self.run_id,
+                "symbol": "ES",
+                "captured_at": bucket_time,
+                "last": 6612.0,
+                "volume": 3,
+            }
+        )
+        self.store.record_market_tick(
+            {
+                "run_id": "history-run",
+                "symbol": "ES",
+                "captured_at": bucket_time,
+                "last": 6613.0,
+                "volume": 17,
+                "source": "HistoryBar",
+                "open": 6611.0,
+                "high": 6615.0,
+                "low": 6610.5,
+                "close": 6613.0,
+                "historical": True,
+            }
+        )
+        self.store.force_flush()
+        payload = self.client.get("/api/chart?lookback_hours=168").get_json()
+        candle_bucket = int(bucket_time.timestamp() // 60) * 60
+        candle = next(item for item in payload["candles"] if item["time"] == candle_bucket)
+        self.assertEqual(candle["open"], 6611.0)
+        self.assertEqual(candle["high"], 6615.0)
+        self.assertEqual(candle["low"], 6610.5)
+        self.assertEqual(candle["close"], 6613.0)
+
+    def test_chart_vwap_series_matches_session_math(self) -> None:
+        start = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(hours=2)
+        rows = [
+            (6620.0, 6622.0, 6619.5, 6621.0, 10),
+            (6621.0, 6623.5, 6620.5, 6623.0, 14),
+            (6623.0, 6625.0, 6622.5, 6624.5, 16),
+        ]
+        for idx, (o, h, l, c, v) in enumerate(rows):
+            self.store.record_market_tick(
+                {
+                    "run_id": "history-run",
+                    "symbol": "ES",
+                    "captured_at": start + timedelta(minutes=idx),
+                    "last": c,
+                    "volume": v,
+                    "source": "HistoryBar",
+                    "open": o,
+                    "high": h,
+                    "low": l,
+                    "close": c,
+                    "historical": True,
+                }
+            )
+        self.store.force_flush()
+        payload = self.client.get("/api/chart?lookback_hours=168").get_json()
+        target_candles = payload["candles"][-3:]
+        frame = pd.DataFrame(
+            {
+                "open": [row["open"] for row in target_candles],
+                "high": [row["high"] for row in target_candles],
+                "low": [row["low"] for row in target_candles],
+                "close": [row["close"] for row in target_candles],
+                "volume": [row["volume"] for row in target_candles],
+            },
+            index=pd.to_datetime([row["time"] for row in target_candles], unit="s", utc=True).tz_convert(
+                self.config.sessions.timezone
+            ),
+        )
+        expected = session_vwap_bands(
+            frame,
+            self.config.sessions.eth_reset_hour,
+            self.config.sessions.eth_reset_minute,
+            self.config.strategy.vwap_source,
+        )
+        actual_last = payload["series"]["vwap"][-1]["value"]
+        self.assertAlmostEqual(actual_last, float(expected.vwap.iloc[-1]), places=6)
+
+    def test_chart_alpha_series_carries_forward_between_decisions(self) -> None:
+        base = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(hours=3)
+        for idx in range(4):
+            self.store.record_market_tick(
+                {
+                    "run_id": "history-run",
+                    "symbol": "ES",
+                    "captured_at": base + timedelta(minutes=idx),
+                    "last": 6610.0 + idx,
+                    "volume": 5 + idx,
+                    "source": "HistoryBar",
+                    "open": 6610.0 + idx,
+                    "high": 6610.5 + idx,
+                    "low": 6609.75 + idx,
+                    "close": 6610.25 + idx,
+                    "historical": True,
+                }
+            )
+        self.store.record_decision_snapshot(
+            {
+                "run_id": self.run_id,
+                "decision_id": "carry-1",
+                "decided_at": base,
+                "symbol": "ES",
+                "zone": "Pre-Open",
+                "action": "LONG",
+                "reason": "carry_forward",
+                "outcome": "submit_order",
+                "outcome_reason": "carry_forward",
+                "long_score": 5.5,
+                "short_score": 1.5,
+                "flat_bias": 0.4,
+            }
+        )
+        self.store.force_flush()
+        payload = self.client.get("/api/chart?lookback_hours=168").get_json()
+        alpha_points = [point for point in payload["series"]["alpha_long"] if point["time"] >= int(base.timestamp())]
+        self.assertGreaterEqual(len(alpha_points), 4)
+        self.assertTrue(all(point["value"] == 5.5 for point in alpha_points[:4]))
 
     def test_trades_and_logs_apis_are_filtered_for_operator_use(self) -> None:
         trades = self.client.get("/api/trades")

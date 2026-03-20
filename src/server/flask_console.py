@@ -25,9 +25,14 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
-CHART_DEFAULT_LOOKBACK_HOURS = 48
+CHART_DEFAULT_LOOKBACK_HOURS = 24 * 7
 CHART_MIN_LOOKBACK_HOURS = 1
 CHART_MAX_LOOKBACK_HOURS = 24 * 14
+CHART_LOOKBACK_OPTIONS = (
+    (24, "24h"),
+    (48, "48h"),
+    (24 * 7, "7d"),
+)
 CHART_BACKFILL_MIN_GAP_MINUTES = 3
 CHART_BACKFILL_SUCCESS_COOLDOWN_SECONDS = 60
 CHART_BACKFILL_FAILURE_COOLDOWN_SECONDS = 300
@@ -1307,13 +1312,37 @@ def _recent_market_rows(
     limit: int = 25000,
 ) -> list[dict[str, Any]]:
     start_time = _utcnow() - timedelta(hours=hours)
-    _ = run_id
-    return store.query_market_tape(
+    max_history_rows = min(max(int(hours * 65), 500), 25000)
+    history_rows = store.query_market_tape(
+        limit=max_history_rows,
+        ascending=True,
+        symbol=symbol,
+        source="HistoryBar",
+        start_time=start_time,
+    )
+    recent_tick_start = max(start_time, _utcnow() - timedelta(hours=24))
+    recent_tick_rows = store.query_market_tape(
         limit=limit,
         ascending=True,
         symbol=symbol,
-        start_time=start_time,
+        start_time=recent_tick_start,
     )
+    if not history_rows:
+        return store.query_market_tape(
+            limit=limit,
+            ascending=True,
+            symbol=symbol,
+            start_time=start_time,
+        )
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[Any] = set()
+    for row in history_rows + recent_tick_rows:
+        row_id = row.get("id")
+        if row_id in seen_ids:
+            continue
+        seen_ids.add(row_id)
+        merged.append(row)
+    return merged
 
 
 def _latest_run_id(store, state: TradingState) -> Optional[str]:
@@ -1366,17 +1395,15 @@ def _build_candles(
         bar_low = _coerce_float(payload.get("low"))
         bar_close = _coerce_float(payload.get("close"))
         if all(value is not None and value > 0 for value in (bar_open, bar_high, bar_low, bar_close)):
-            buckets.setdefault(
-                bucket,
-                {
-                    "time": bucket,
-                    "open": bar_open,
-                    "high": bar_high,
-                    "low": bar_low,
-                    "close": bar_close,
-                    "volume": _coerce_int(payload.get("volume") or row.get("volume")) or 0,
-                },
-            )
+            buckets[bucket] = {
+                "time": bucket,
+                "open": bar_open,
+                "high": bar_high,
+                "low": bar_low,
+                "close": bar_close,
+                "volume": _coerce_int(payload.get("volume") or row.get("volume")) or 0,
+                "_from_history_bar": True,
+            }
             continue
 
         price = _series_price(row)
@@ -1391,8 +1418,11 @@ def _build_candles(
                 "low": price,
                 "close": price,
                 "volume": 0,
+                "_from_history_bar": False,
             },
         )
+        if candle.get("_from_history_bar"):
+            continue
         candle["high"] = max(candle["high"], price)
         candle["low"] = min(candle["low"], price)
         candle["close"] = price
@@ -1403,7 +1433,11 @@ def _build_candles(
                 candle["volume"] = volume
             else:
                 candle["volume"] += volume
-    candles = [buckets[key] for key in sorted(buckets)]
+    candles = []
+    for key in sorted(buckets):
+        candle = dict(buckets[key])
+        candle.pop("_from_history_bar", None)
+        candles.append(candle)
     return candles[-max(max_candles, 1) :]
 
 
@@ -1944,7 +1978,6 @@ def _build_chart_model(
     last_price = _coerce_float(state.last_price)
     if last_price is None and candles:
         last_price = _coerce_float(candles[-1].get("close"))
-    price_series = _close_series(candles)
     alpha_long_series = _clip_series_to_candle_window(
         _decision_step_series(decisions, candles, "long_score"), candles
     )
@@ -1972,7 +2005,7 @@ def _build_chart_model(
         "symbol": symbol,
         "candles": candles,
         "series": {
-            "price": price_series,
+            "price": [],
             "vwap": vwap_series,
             "upper_band": upper_series,
             "lower_band": lower_series,
@@ -2008,6 +2041,10 @@ def _build_chart_model(
             "lookback_hours": lookback_hours,
             "window_start": window_start.isoformat(),
             "window_end": _utcnow().isoformat(),
+            "options": [
+                {"hours": hours, "label": label, "selected": hours == lookback_hours}
+                for hours, label in CHART_LOOKBACK_OPTIONS
+            ],
         },
         "history": {
             "coverage_start": coverage_start.isoformat() if coverage_start is not None else None,

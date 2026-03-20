@@ -18,6 +18,18 @@
 
   <section class="chart-layout chart-layout-stacked">
     <article class="panel chart-panel">
+      <div class="panel-head">
+        <h2>Price chart</h2>
+        <form method="get" action="/chart" class="chart-lookback-form">
+          <label for="lookback-hours">Window</label>
+          <select id="lookback-hours" name="lookback_hours" onchange="this.form.submit()">
+            {% for option in model.chart_window.options %}
+              <option value="{{ option.hours }}" {% if option.selected %}selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <noscript><button type="submit">Apply</button></noscript>
+        </form>
+      </div>
       <div class="chart-legend" aria-label="Chart indicators">
         <span class="chart-chip chart-chip-long">Alpha Long</span>
         <span class="chart-chip chart-chip-short">Alpha Short</span>

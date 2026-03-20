@@ -270,11 +270,6 @@
       wickDownColor: "#ef4444",
     });
 
-    const priceSeries = addSeriesCompat("LineSeries", {
-      color: "#5dd4ff",
-      lineWidth: 2,
-    });
-
     const vwapSeries = addSeriesCompat("LineSeries", {
       color: "#f59e0b",
       lineWidth: 1,
@@ -368,7 +363,6 @@
       if (!data) return;
       const candles = Array.isArray(data.candles) ? data.candles : [];
       candleSeries.setData(candles);
-      priceSeries.setData(Array.isArray(data.series?.price) ? data.series.price : []);
       vwapSeries.setData(Array.isArray(data.series?.vwap) ? data.series.vwap : []);
       upperSeries.setData(Array.isArray(data.series?.upper_band) ? data.series.upper_band : []);
       lowerSeries.setData(Array.isArray(data.series?.lower_band) ? data.series.lower_band : []);
@@ -386,9 +380,6 @@
       if (!data || !isInitialized) return;
       if (Array.isArray(data.candles) && data.candles.length) {
         candleSeries.update(data.candles[data.candles.length - 1]);
-      }
-      if (Array.isArray(data.series?.price) && data.series.price.length) {
-        priceSeries.update(data.series.price[data.series.price.length - 1]);
       }
       if (Array.isArray(data.series?.vwap) && data.series.vwap.length) {
         vwapSeries.update(data.series.vwap[data.series.vwap.length - 1]);
