@@ -52,10 +52,30 @@ class ReplayRunner:
 
         processed = 0
         for event in events:
+            self.engine.observability.record_market_tick(
+                {
+                    "run_id": self.engine.observability.get_run_id(),
+                    "symbol": event.symbol,
+                    "bid": event.bid,
+                    "ask": event.ask,
+                    "last": event.last,
+                    "volume": event.volume,
+                    "bid_size": event.bid_size,
+                    "ask_size": event.ask_size,
+                    "last_size": event.last_size,
+                    "volume_is_cumulative": event.volume_is_cumulative,
+                    "quote_is_synthetic": event.quote_is_synthetic,
+                    "trade_side": event.trade_side,
+                    "latency_ms": event.latency_ms,
+                    "source": "ReplayEvent",
+                    "timestamp": event.timestamp,
+                }
+            )
             self.engine.on_market_data(event)
             processed += 1
 
         self.engine.flush_pending_bar()
+        self.engine.observability.force_flush()
 
         matrix_trades = list(self.engine.risk_manager.get_trade_history())
         bars = self.engine._bars.copy()  # noqa: SLF001 - replay needs the finalized shared engine state.

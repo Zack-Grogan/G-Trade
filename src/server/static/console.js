@@ -366,32 +366,19 @@
 
     const renderFull = (data) => {
       if (!data) return;
-      if (Array.isArray(data.candles) && data.candles.length) {
-        candleSeries.setData(data.candles);
+      const candles = Array.isArray(data.candles) ? data.candles : [];
+      candleSeries.setData(candles);
+      priceSeries.setData(Array.isArray(data.series?.price) ? data.series.price : []);
+      vwapSeries.setData(Array.isArray(data.series?.vwap) ? data.series.vwap : []);
+      upperSeries.setData(Array.isArray(data.series?.upper_band) ? data.series.upper_band : []);
+      lowerSeries.setData(Array.isArray(data.series?.lower_band) ? data.series.lower_band : []);
+      alphaLongSeries.setData(Array.isArray(data.series?.alpha_long) ? data.series.alpha_long : []);
+      alphaShortSeries.setData(Array.isArray(data.series?.alpha_short) ? data.series.alpha_short : []);
+      alphaFlatSeries.setData(Array.isArray(data.series?.alpha_flat) ? data.series.alpha_flat : []);
+      applyMarkers(data);
+      if (!isInitialized && candles.length) {
         chart.timeScale().fitContent();
       }
-      if (Array.isArray(data.series?.price) && data.series.price.length) {
-        priceSeries.setData(data.series.price);
-      }
-      if (Array.isArray(data.series?.vwap) && data.series.vwap.length) {
-        vwapSeries.setData(data.series.vwap);
-      }
-      if (Array.isArray(data.series?.upper_band) && data.series.upper_band.length) {
-        upperSeries.setData(data.series.upper_band);
-      }
-      if (Array.isArray(data.series?.lower_band) && data.series.lower_band.length) {
-        lowerSeries.setData(data.series.lower_band);
-      }
-      if (Array.isArray(data.series?.alpha_long) && data.series.alpha_long.length) {
-        alphaLongSeries.setData(data.series.alpha_long);
-      }
-      if (Array.isArray(data.series?.alpha_short) && data.series.alpha_short.length) {
-        alphaShortSeries.setData(data.series.alpha_short);
-      }
-      if (Array.isArray(data.series?.alpha_flat) && data.series.alpha_flat.length) {
-        alphaFlatSeries.setData(data.series.alpha_flat);
-      }
-      applyMarkers(data);
       isInitialized = true;
     };
 
@@ -431,7 +418,7 @@
       ? `/stream/chart?lookback_hours=${encodeURIComponent(String(lookbackHours))}`
       : "/stream/chart";
     connectStream(streamUrl, (next) => {
-      renderIncremental(next);
+      renderFull(next);
     });
 
     let resizeTimeout;

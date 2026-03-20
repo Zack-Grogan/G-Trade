@@ -23,6 +23,10 @@
         <span class="chart-chip chart-chip-short">Alpha Short</span>
         <span class="chart-chip chart-chip-flat">Alpha Flat</span>
         <span class="chart-chip">Lookback {{ model.summary.lookback_hours|integer }}h</span>
+        <span class="chart-chip">Coverage {{ model.history.coverage_start|dt }} - {{ model.history.coverage_end|dt }}</span>
+        {% if model.history.backfill and (model.history.backfill.bars_imported or 0) > 0 %}
+          <span class="chart-chip">Backfill +{{ model.history.backfill.bars_imported|integer }} bars</span>
+        {% endif %}
         <span class="chart-chip">Decision markers {{ model.marker_sets.decision|length if model.marker_sets else 0 }}</span>
         <span class="chart-chip">Execution markers {{ model.marker_sets.execution|length if model.marker_sets else 0 }}</span>
       </div>
@@ -42,6 +46,8 @@
         <div><dt>Position</dt><dd>{{ model.summary.position }}</dd></div>
         <div><dt>Status</dt><dd>{{ model.summary.status }}</dd></div>
         <div><dt>Lookback</dt><dd>{{ model.summary.lookback_hours|integer }}h</dd></div>
+        <div><dt>Coverage start</dt><dd>{{ model.history.coverage_start|dt }}</dd></div>
+        <div><dt>Coverage end</dt><dd>{{ model.history.coverage_end|dt }}</dd></div>
         <div><dt>Daily P&amp;L</dt><dd class="{{ 'pos' if (model.summary.daily_pnl or 0) >= 0 else 'neg' }}">{{ model.summary.daily_pnl|money }}</dd></div>
       </div>
     </article>

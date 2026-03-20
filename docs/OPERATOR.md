@@ -33,6 +33,12 @@ The console is local-only and serves these pages:
 - `/system` — config, health, and launch readiness
 - `/health` and `/debug` — JSON compatibility endpoints for the CLI and service checks
 
+Chart notes:
+- `/chart` reads retained local `market_tape` across runs so price history does not disappear just because the current runtime restarted.
+- In live mode, `/chart` can attempt a bounded historical 1-minute bar backfill from the TopstepX/ProjectX history API when the requested lookback window has an older gap and credentials are available.
+- Replay writes its feed into the same local `market_tape`, so `/chart` can show replay candles and the same indicator overlays without a separate chart path.
+- The plotted VWAP/band overlays are derived from stored candles, and alpha lines are carried forward from recorded decision snapshots instead of being rendered as flat current-state lines.
+
 Default local ports are pinned to a high, memorable pair so they do not collide with typical dev services:
 - `31380` — `/health`
 - `31381` — console UI and `/debug`

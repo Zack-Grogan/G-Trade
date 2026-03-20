@@ -310,6 +310,59 @@ class FlaskConsoleTests(unittest.TestCase):
         self.assertGreaterEqual(len(payload["candles"]), 1)
         self.assertIn("series", payload)
         self.assertIn("levels", payload)
+        self.assertEqual(len(payload["series"]["price"]), len(payload["candles"]))
+        self.assertEqual(len(payload["series"]["vwap"]), len(payload["candles"]))
+        self.assertGreaterEqual(len(payload["marker_sets"]["decision"]), 1)
+        if len(payload["candles"]) > 1:
+            self.assertNotEqual(
+                payload["series"]["price"][0]["value"],
+                payload["series"]["price"][-1]["value"],
+            )
+
+    def test_chart_api_keeps_market_history_across_runs(self) -> None:
+        earlier = datetime.now(UTC) - timedelta(hours=10)
+        self.store.record_market_tick(
+            {
+                "run_id": "older-run",
+                "symbol": "ES",
+                "captured_at": earlier,
+                "last": 6601.25,
+                "volume": 4,
+            }
+        )
+        self.store.force_flush()
+        response = self.client.get("/api/chart?lookback_hours=12")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["candles"][0]["time"], int(earlier.timestamp() // 60) * 60)
+
+    def test_chart_api_builds_candle_from_history_bar_payload(self) -> None:
+        historical_time = datetime.now(UTC) - timedelta(hours=9, minutes=30)
+        self.store.record_market_tick(
+            {
+                "run_id": "history-run",
+                "symbol": "ES",
+                "captured_at": historical_time,
+                "last": 6611.0,
+                "volume": 21,
+                "source": "HistoryBar",
+                "open": 6610.0,
+                "high": 6614.5,
+                "low": 6608.25,
+                "close": 6611.0,
+                "historical": True,
+            }
+        )
+        self.store.force_flush()
+        response = self.client.get("/api/chart?lookback_hours=12")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        bucket_time = int(historical_time.timestamp() // 60) * 60
+        candle = next(item for item in payload["candles"] if item["time"] == bucket_time)
+        self.assertEqual(candle["open"], 6610.0)
+        self.assertEqual(candle["high"], 6614.5)
+        self.assertEqual(candle["low"], 6608.25)
+        self.assertEqual(candle["close"], 6611.0)
 
     def test_trades_and_logs_apis_are_filtered_for_operator_use(self) -> None:
         trades = self.client.get("/api/trades")

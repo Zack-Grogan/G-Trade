@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
+import pandas as pd
 from flask import Flask, Response, abort, jsonify, render_template, request, stream_with_context
 from werkzeug.serving import make_server
 
 from src.config import Config, ServerConfig, get_config
+from src.indicators import session_vwap_bands
+from src.market import get_client
 from src.observability import get_observability_store
 
 logger = logging.getLogger(__name__)
@@ -25,6 +28,9 @@ PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
 CHART_DEFAULT_LOOKBACK_HOURS = 48
 CHART_MIN_LOOKBACK_HOURS = 1
 CHART_MAX_LOOKBACK_HOURS = 24 * 14
+CHART_BACKFILL_MIN_GAP_MINUTES = 3
+CHART_BACKFILL_SUCCESS_COOLDOWN_SECONDS = 60
+CHART_BACKFILL_FAILURE_COOLDOWN_SECONDS = 300
 NOISE_LOGGERS = {"werkzeug"}
 NOISE_LOG_FRAGMENTS = (
     ' "GET / HTTP/1.1"',
@@ -207,6 +213,9 @@ SVG_ICON_PATHS: dict[str, str] = {
     "shield": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>',
     "briefcase": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>',
 }
+
+_CHART_BACKFILL_LOCK = threading.Lock()
+_CHART_BACKFILL_CACHE: dict[str, dict[str, Any]] = {}
 
 
 class TradingState:
@@ -945,6 +954,114 @@ def _constant_series(candles: list[dict[str, Any]], value: Optional[float]) -> l
     return [{"time": candle["time"], "value": value} for candle in candles]
 
 
+def _chart_symbol(state: TradingState) -> str:
+    last_signal = state.last_signal if isinstance(state.last_signal, dict) else {}
+    configured = get_config().symbols[0] if get_config().symbols else "ES"
+    return str(last_signal.get("symbol") or configured or "ES")
+
+
+def _chart_backfill_cache_key(symbol: str, lookback_hours: int) -> str:
+    return f"{symbol.upper()}:{lookback_hours}"
+
+
+def _market_time_bounds(rows: list[dict[str, Any]]) -> tuple[Optional[datetime], Optional[datetime]]:
+    if not rows:
+        return None, None
+    timestamps = [_parse_dt(row.get("captured_at")) for row in rows]
+    parsed = [value for value in timestamps if value is not None]
+    if not parsed:
+        return None, None
+    return min(parsed), max(parsed)
+
+
+def _maybe_backfill_chart_history(
+    store,
+    state: TradingState,
+    *,
+    symbol: str,
+    lookback_hours: int,
+    market_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    window_start = _utcnow() - timedelta(hours=lookback_hours)
+    oldest, newest = _market_time_bounds(market_rows)
+    coverage_sufficient = oldest is not None and oldest <= (
+        window_start + timedelta(minutes=CHART_BACKFILL_MIN_GAP_MINUTES)
+    )
+    default_result = {
+        "attempted": False,
+        "bars_imported": 0,
+        "coverage_start": oldest.isoformat() if oldest is not None else None,
+        "coverage_end": newest.isoformat() if newest is not None else None,
+    }
+    if coverage_sufficient or str(state.data_mode or "").lower() != "live":
+        return default_result
+
+    key = _chart_backfill_cache_key(symbol, lookback_hours)
+    now = time.time()
+    with _CHART_BACKFILL_LOCK:
+        cached = _CHART_BACKFILL_CACHE.get(key)
+        if cached and now < float(cached.get("next_allowed_at", 0)):
+            return dict(cached.get("result") or default_result)
+        _CHART_BACKFILL_CACHE[key] = {
+            "next_allowed_at": now + CHART_BACKFILL_FAILURE_COOLDOWN_SECONDS,
+            "result": default_result,
+        }
+
+    client = get_client()
+    if not client.has_credentials() and not client._access_token:
+        return {**default_result, "reason": "missing_credentials"}
+
+    backfill_end = (oldest - timedelta(minutes=1)) if oldest is not None else _utcnow()
+    if backfill_end <= window_start:
+        return default_result
+
+    result = client.backfill_market_history(
+        symbol,
+        start_time=window_start,
+        end_time=backfill_end,
+        run_id=state.run_id or store.get_run_id(),
+        source="HistoryBar",
+        unit="minute",
+        unit_number=1,
+        include_partial_bar=False,
+    )
+    if result.get("attempted"):
+        store.record_event(
+            category="market",
+            event_type="chart_history_backfill",
+            source=__name__,
+            payload=result,
+            event_time=_utcnow(),
+            symbol=symbol,
+            action="chart_backfill",
+            reason="chart_window_gap",
+        )
+    refreshed_rows = _recent_market_rows(
+        store,
+        run_id=state.run_id,
+        symbol=symbol,
+        hours=lookback_hours,
+        limit=_chart_market_limit(lookback_hours),
+    )
+    refreshed_oldest, refreshed_newest = _market_time_bounds(refreshed_rows)
+    enriched = {
+        **result,
+        "coverage_start": refreshed_oldest.isoformat() if refreshed_oldest is not None else None,
+        "coverage_end": refreshed_newest.isoformat() if refreshed_newest is not None else None,
+    }
+    cooldown = (
+        CHART_BACKFILL_SUCCESS_COOLDOWN_SECONDS
+        if int(enriched.get("bars_imported", 0) or 0) > 0
+        else CHART_BACKFILL_FAILURE_COOLDOWN_SECONDS
+    )
+    with _CHART_BACKFILL_LOCK:
+        _CHART_BACKFILL_CACHE[key] = {
+            "next_allowed_at": now + cooldown,
+            "result": enriched,
+        }
+    return enriched
+
+
 def _resolve_chart_lookback_hours(value: Any) -> int:
     parsed = _coerce_int(value)
     if parsed is None:
@@ -971,6 +1088,22 @@ def _compact_marker_text(prefix: str, detail: Any, max_len: int = 20) -> str:
     return f"{prefix} {text}".strip()
 
 
+def _normalize_decision_action(value: Any) -> str:
+    text = str(value or "").strip().replace("-", "_").replace(" ", "_").upper()
+    aliases = {
+        "ENTER_LONG": "LONG",
+        "GO_LONG": "LONG",
+        "BUY": "LONG",
+        "ENTER_SHORT": "SHORT",
+        "GO_SHORT": "SHORT",
+        "SELL": "SHORT",
+        "EXIT_LONG": "EXIT",
+        "EXIT_SHORT": "EXIT",
+        "FLATTEN": "EXIT",
+    }
+    return aliases.get(text, text)
+
+
 def _decision_score_series(decisions: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     buckets: dict[int, float] = {}
     for row in decisions:
@@ -982,13 +1115,32 @@ def _decision_score_series(decisions: list[dict[str, Any]], key: str) -> list[di
     return [{"time": ts, "value": buckets[ts]} for ts in sorted(buckets)]
 
 
+def _decision_step_series(
+    decisions: list[dict[str, Any]], candles: list[dict[str, Any]], key: str
+) -> list[dict[str, Any]]:
+    values_by_time = {
+        point["time"]: point["value"] for point in _decision_score_series(decisions, key)
+    }
+    if not values_by_time or not candles:
+        return []
+    active_value: Optional[float] = None
+    series: list[dict[str, Any]] = []
+    for candle in candles:
+        candle_time = int(candle.get("time", 0) or 0)
+        if candle_time in values_by_time:
+            active_value = values_by_time[candle_time]
+        if active_value is not None:
+            series.append({"time": candle_time, "value": active_value})
+    return series
+
+
 def _decision_markers(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     markers: list[dict[str, Any]] = []
     for row in decisions:
         bucket = _bucket_minute_epoch(row.get("decided_at"))
         if bucket is None:
             continue
-        action = str(row.get("action") or "").upper()
+        action = _normalize_decision_action(row.get("action"))
         outcome = str(row.get("outcome") or "").lower()
         reason = row.get("reason") or row.get("outcome_reason") or ""
         if action == "LONG":
@@ -1155,31 +1307,13 @@ def _recent_market_rows(
     limit: int = 25000,
 ) -> list[dict[str, Any]]:
     start_time = _utcnow() - timedelta(hours=hours)
-    rows = store.query_market_tape(
+    _ = run_id
+    return store.query_market_tape(
         limit=limit,
-        ascending=False,
-        run_id=run_id,
+        ascending=True,
         symbol=symbol,
         start_time=start_time,
     )
-    if run_id and len(rows) < 200:
-        fallback_rows = store.query_market_tape(
-            limit=limit,
-            ascending=False,
-            symbol=symbol,
-            start_time=start_time,
-        )
-        if len(fallback_rows) > len(rows) * 2:
-            logger.warning(
-                "Market tape has only %d rows for run_id=%s in %dh window; "
-                "including %d rows from other runs",
-                len(rows),
-                run_id,
-                hours,
-                len(fallback_rows),
-            )
-            rows = fallback_rows
-    return rows
 
 
 def _latest_run_id(store, state: TradingState) -> Optional[str]:
@@ -1223,10 +1357,31 @@ def _build_candles(
         latency_ms = _coerce_int(row.get("latency_ms"))
         if timestamp is not None and latency_ms is not None and 0 < latency_ms < 5000:
             timestamp = timestamp - timedelta(milliseconds=latency_ms)
-        price = _series_price(row)
-        if timestamp is None or price is None:
+        if timestamp is None:
             continue
         bucket = int(timestamp.timestamp() // 60) * 60
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        bar_open = _coerce_float(payload.get("open"))
+        bar_high = _coerce_float(payload.get("high"))
+        bar_low = _coerce_float(payload.get("low"))
+        bar_close = _coerce_float(payload.get("close"))
+        if all(value is not None and value > 0 for value in (bar_open, bar_high, bar_low, bar_close)):
+            buckets.setdefault(
+                bucket,
+                {
+                    "time": bucket,
+                    "open": bar_open,
+                    "high": bar_high,
+                    "low": bar_low,
+                    "close": bar_close,
+                    "volume": _coerce_int(payload.get("volume") or row.get("volume")) or 0,
+                },
+            )
+            continue
+
+        price = _series_price(row)
+        if price is None:
+            continue
         candle = buckets.setdefault(
             bucket,
             {
@@ -1250,6 +1405,79 @@ def _build_candles(
                 candle["volume"] += volume
     candles = [buckets[key] for key in sorted(buckets)]
     return candles[-max(max_candles, 1) :]
+
+
+def _close_series(candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"time": candle["time"], "value": candle["close"]}
+        for candle in candles
+        if _coerce_float(candle.get("close")) is not None
+    ]
+
+
+def _candles_frame(candles: list[dict[str, Any]]) -> pd.DataFrame:
+    if not candles:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    cfg = get_config()
+    index = pd.to_datetime([candle["time"] for candle in candles], unit="s", utc=True)
+    frame = pd.DataFrame(
+        {
+            "open": [float(candle["open"]) for candle in candles],
+            "high": [float(candle["high"]) for candle in candles],
+            "low": [float(candle["low"]) for candle in candles],
+            "close": [float(candle["close"]) for candle in candles],
+            "volume": [float(candle.get("volume") or 0) for candle in candles],
+        },
+        index=index.tz_convert(cfg.sessions.timezone),
+    )
+    return frame
+
+
+def _series_from_pandas(candles: list[dict[str, Any]], values: pd.Series) -> list[dict[str, Any]]:
+    if not candles or values.empty:
+        return []
+    points: list[dict[str, Any]] = []
+    for candle, value in zip(candles, values.tolist(), strict=False):
+        number = _coerce_float(value)
+        if number is None:
+            continue
+        points.append({"time": candle["time"], "value": number})
+    return points
+
+
+def _chart_active_session(state: TradingState) -> str:
+    active_session = str(state.active_session or "").upper()
+    if active_session in {"ETH", "RTH"}:
+        return active_session
+    return "ETH" if str(state.current_zone or "") == "Pre-Open" else "RTH"
+
+
+def _vwap_overlay_series(
+    candles: list[dict[str, Any]], state: TradingState
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    frame = _candles_frame(candles)
+    if frame.empty:
+        return [], [], []
+    cfg = get_config()
+    if _chart_active_session(state) == "ETH":
+        metrics = session_vwap_bands(
+            frame,
+            cfg.sessions.eth_reset_hour,
+            cfg.sessions.eth_reset_minute,
+            cfg.strategy.vwap_source,
+        )
+    else:
+        metrics = session_vwap_bands(
+            frame,
+            cfg.sessions.rth_start_hour,
+            cfg.sessions.rth_start_minute,
+            cfg.strategy.vwap_source,
+        )
+    return (
+        _series_from_pandas(candles, metrics.vwap),
+        _series_from_pandas(candles, metrics.upper_1),
+        _series_from_pandas(candles, metrics.lower_1),
+    )
 
 
 def _trade_marker_direction(direction: Any) -> str:
@@ -1631,14 +1859,31 @@ def _build_chart_model(
 ) -> dict[str, Any]:
     lookback_hours = _resolve_chart_lookback_hours(lookback_hours)
     run_id = _latest_run_id(store, state)
+    symbol = _chart_symbol(state)
     market_rows = _recent_market_rows(
         store,
         run_id=run_id,
-        symbol=None,
+        symbol=symbol,
         hours=lookback_hours,
         limit=_chart_market_limit(lookback_hours),
     )
-    max_candles = min(5000, max(500, (lookback_hours * 60) + 120))
+    backfill = _maybe_backfill_chart_history(
+        store,
+        state,
+        symbol=symbol,
+        lookback_hours=lookback_hours,
+        market_rows=market_rows,
+    )
+    if int(backfill.get("bars_imported", 0) or 0) > 0:
+        market_rows = _recent_market_rows(
+            store,
+            run_id=run_id,
+            symbol=symbol,
+            hours=lookback_hours,
+            limit=_chart_market_limit(lookback_hours),
+        )
+
+    max_candles = min(25000, max(500, (lookback_hours * 60) + 120))
     candles = _build_candles(market_rows, max_candles=max_candles)
     if not candles:
         current = _coerce_float(state.last_price)
@@ -1660,6 +1905,7 @@ def _build_chart_model(
         limit=decision_limit,
         ascending=True,
         run_id=run_id,
+        symbol=symbol,
         start_time=window_start,
         end_time=_utcnow(),
     )
@@ -1691,33 +1937,24 @@ def _build_chart_model(
         )
     )
 
-    session_context = state.to_dict().get("session_context", {})
-    anchored_vwaps = (
-        session_context.get("anchored_vwaps") if isinstance(session_context, dict) else {}
-    )
-    vwap_bands = session_context.get("vwap_bands") if isinstance(session_context, dict) else {}
-    session_vwap = _first_numeric(anchored_vwaps, ["vwap", "session", "eth", "rth"])
-    rth_sigma = _first_numeric(vwap_bands, ["rth_sigma"])
-    eth_sigma = _first_numeric(vwap_bands, ["eth_sigma"])
-    sigma = rth_sigma if rth_sigma is not None else eth_sigma
-    upper_band = (session_vwap + sigma) if session_vwap is not None and sigma is not None else None
-    lower_band = (session_vwap - sigma) if session_vwap is not None and sigma is not None else None
+    vwap_series, upper_series, lower_series = _vwap_overlay_series(candles, state)
+    session_vwap = _coerce_float(vwap_series[-1]["value"]) if vwap_series else None
+    upper_band = _coerce_float(upper_series[-1]["value"]) if upper_series else None
+    lower_band = _coerce_float(lower_series[-1]["value"]) if lower_series else None
     last_price = _coerce_float(state.last_price)
     if last_price is None and candles:
         last_price = _coerce_float(candles[-1].get("close"))
-    price_series = _constant_series(candles, last_price)
-    vwap_series = _constant_series(candles, session_vwap)
-    upper_series = _constant_series(candles, upper_band)
-    lower_series = _constant_series(candles, lower_band)
+    price_series = _close_series(candles)
     alpha_long_series = _clip_series_to_candle_window(
-        _decision_score_series(decisions, "long_score"), candles
+        _decision_step_series(decisions, candles, "long_score"), candles
     )
     alpha_short_series = _clip_series_to_candle_window(
-        _decision_score_series(decisions, "short_score"), candles
+        _decision_step_series(decisions, candles, "short_score"), candles
     )
     alpha_flat_series = _clip_series_to_candle_window(
-        _decision_score_series(decisions, "flat_bias"), candles
+        _decision_step_series(decisions, candles, "flat_bias"), candles
     )
+    coverage_start, coverage_end = _market_time_bounds(market_rows)
     indicators = {
         "long_score": state.long_score,
         "short_score": state.short_score,
@@ -1732,7 +1969,7 @@ def _build_chart_model(
     }
     return {
         "run_id": run_id,
-        "symbol": (state.last_signal or {}).get("symbol") or "ES",
+        "symbol": symbol,
         "candles": candles,
         "series": {
             "price": price_series,
@@ -1771,6 +2008,11 @@ def _build_chart_model(
             "lookback_hours": lookback_hours,
             "window_start": window_start.isoformat(),
             "window_end": _utcnow().isoformat(),
+        },
+        "history": {
+            "coverage_start": coverage_start.isoformat() if coverage_start is not None else None,
+            "coverage_end": coverage_end.isoformat() if coverage_end is not None else None,
+            "backfill": backfill,
         },
         "recent_trades": account_trades[:5],
     }
