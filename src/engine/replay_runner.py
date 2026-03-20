@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import logging
 import math
 from pathlib import Path
 from statistics import mean, pstdev
@@ -23,7 +24,8 @@ from src.strategies.flatten_strategy import FlattenStrategy
 from src.strategies.orb_strategy import ORBStrategy
 from src.strategies.vwap_mr import VWAPMeanReversionStrategy
 from src.strategies.vwap_trend import VWAPTrendStrategy
-from src.market import MarketData as TopstepMarketData
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

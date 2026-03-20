@@ -1,13 +1,12 @@
 """Tests for fill quality analysis."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from src.analysis.fill_quality import (
     FillAnalysis,
     FillQualityAnalyzer,
     FillQualityReport,
     FillScorecard,
-    FillQualityAnalyzer as Analyzer,
     build_fill_quality_report,
 )
 

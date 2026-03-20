@@ -529,7 +529,11 @@ class DecisionMatrixEvaluator:
                 "value_rejection": value_rejection_long,
                 "ofi_zscore": max(flow_snapshot.ofi_zscore, -2.0),
                 "quote_rate_state": flow_snapshot.quote_rate_state,
-                "spread_regime": flow_snapshot.spread_regime or spread_proxy,
+                "spread_regime": (
+                    flow_snapshot.spread_regime
+                    if flow_snapshot.spread_regime is not None
+                    else spread_proxy
+                ),
                 "volume_pace": flow_snapshot.volume_pace,
             },
             short_features={
@@ -556,7 +560,11 @@ class DecisionMatrixEvaluator:
                 "value_rejection": value_rejection_short,
                 "ofi_zscore": max(-flow_snapshot.ofi_zscore, -2.0),
                 "quote_rate_state": flow_snapshot.quote_rate_state,
-                "spread_regime": flow_snapshot.spread_regime or spread_proxy,
+                "spread_regime": (
+                    flow_snapshot.spread_regime
+                    if flow_snapshot.spread_regime is not None
+                    else spread_proxy
+                ),
                 "volume_pace": flow_snapshot.volume_pace,
             },
             flat_features={
@@ -566,7 +574,14 @@ class DecisionMatrixEvaluator:
                 "range_state": abs(range_state),
                 "trend_state": _clip(2.0 - max(trend_long, trend_short)),
                 "spread_regime": _clip(
-                    2.0 - max(flow_snapshot.spread_regime or spread_proxy, -2.0)
+                    2.0 - max(
+                        (
+                            flow_snapshot.spread_regime
+                            if flow_snapshot.spread_regime is not None
+                            else spread_proxy
+                        ),
+                        -2.0,
+                    )
                 ),
                 "regime_stress": 0.0,
             },

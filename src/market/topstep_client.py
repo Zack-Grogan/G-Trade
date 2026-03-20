@@ -208,6 +208,7 @@ class TopstepClient:
         return bool(account.get("simulated"))
 
     def _practice_account_required(self) -> bool:
+        """Used only when PREFERRED_ACCOUNT_ID is unset (fallback account pick)."""
         return bool(
             getattr(self.safety_config, "prac_only", False)
             or self.account_config.require_preferred_account
@@ -278,25 +279,24 @@ class TopstepClient:
         )
 
     def _select_account(self, accounts: list[Dict[str, Any]]) -> Optional[Account]:
-        """Choose the safest/default tradable account."""
+        """Select exactly one tradable account: PREFERRED_ACCOUNT_ID when set, else legacy fallback."""
         tradable_accounts = [acc for acc in accounts if acc.get("canTrade")]
         if not tradable_accounts:
             return None
 
-        require_practice = self._practice_account_required()
-        practice_accounts = [acc for acc in tradable_accounts if self._is_practice_account(acc)]
-
-        preferred_account_id = os.getenv("PREFERRED_ACCOUNT_ID")
+        preferred_account_id = os.getenv("PREFERRED_ACCOUNT_ID", "").strip()
         if preferred_account_id:
             for acc in tradable_accounts:
                 if str(acc.get("id")) == preferred_account_id:
-                    if require_practice and not self._is_practice_account(acc):
-                        logger.error(
-                            "Configured PREFERRED_ACCOUNT_ID=%s is not a practice account; refusing startup.",
-                            preferred_account_id,
-                        )
-                        return None
                     return self._account_summary(acc)
+            logger.error(
+                "PREFERRED_ACCOUNT_ID=%s not found among tradable accounts; refusing startup.",
+                preferred_account_id,
+            )
+            return None
+
+        require_practice = self._practice_account_required()
+        practice_accounts = [acc for acc in tradable_accounts if self._is_practice_account(acc)]
 
         if practice_accounts:
             return self._account_summary(practice_accounts[0])
@@ -870,9 +870,7 @@ class TopstepClient:
             )
             return []
 
-    def select_account(
-        self, account_id: str | int, *, enforce_practice: Optional[bool] = None
-    ) -> Optional[Account]:
+    def select_account(self, account_id: str | int) -> Optional[Account]:
         """Select an account by ID and make it active for subsequent broker operations."""
         if not self._ensure_auth():
             return None
@@ -888,17 +886,6 @@ class TopstepClient:
             if account_match is None:
                 logger.error(
                     "Requested account %s not found in account search response.", target_account_id
-                )
-                return None
-            require_practice = (
-                self._practice_account_required()
-                if enforce_practice is None
-                else bool(enforce_practice)
-            )
-            if require_practice and not self._is_practice_account(account_match):
-                logger.error(
-                    "Refusing non-practice account switch to %s while practice-only policy is enabled.",
-                    target_account_id,
                 )
                 return None
 
@@ -1887,17 +1874,6 @@ class TopstepClient:
                 logger.error("No account ID available")
                 return None
 
-        if (
-            self._practice_account_required()
-            and self._account is not None
-            and not self._account.is_practice
-        ):
-            logger.error(
-                "Refusing order placement on non-practice account %s while practice-only safety is enabled.",
-                self._account.account_id,
-            )
-            return None
-
         # Map order types to API enums
         type_map = {"limit": 1, "market": 2, "stoplimit": 3, "stop": 4}
         side_map = {"buy": 0, "sell": 1, "bid": 0, "ask": 1}
@@ -1957,9 +1933,20 @@ class TopstepClient:
                 )
                 return order_id
             else:
+                error_code = data.get("errorCode")
+                error_message = str(data.get("errorMessage", "Unknown error"))
+                fallback_reason = "broker_order_submit_failed"
+                fallback_event_type = "broker_order_submit_failed"
+                try:
+                    normalized_error_code = int(error_code or 0)
+                except (TypeError, ValueError):
+                    normalized_error_code = 0
+                if normalized_error_code == 5 or "outside trading hours" in error_message.lower():
+                    fallback_reason = "broker_outside_trading_hours"
+                    fallback_event_type = "broker_order_outside_trading_hours"
                 logger.error(
                     "broker_order_submit_failed error=%s side=%s quantity=%s symbol=%s order_type=%s limit_price=%s stop_price=%s account_id=%s",
-                    data.get("errorMessage", "Unknown error"),
+                    error_message,
                     side,
                     quantity,
                     symbol,
@@ -1970,9 +1957,10 @@ class TopstepClient:
                 )
                 self._record_event(
                     category="execution",
-                    event_type="broker_order_submit_failed",
+                    event_type=fallback_event_type,
                     payload={
-                        "error": data.get("errorMessage", "Unknown error"),
+                        "error": error_message,
+                        "error_code": error_code,
                         "side": side,
                         "quantity": quantity,
                         "symbol": symbol,
@@ -1984,7 +1972,7 @@ class TopstepClient:
                     event_time=datetime.now(timezone.utc),
                     symbol=symbol,
                     action="submit_order",
-                    reason="broker_order_submit_failed",
+                    reason=fallback_reason,
                 )
                 return None
 
@@ -2027,10 +2015,32 @@ class TopstepClient:
 
         try:
             url = f"{self.base_url}/api/Order/cancel"
-            self._post_with_retry(
+            response = self._post_with_retry(
                 url,
                 {"orderId": int(order_id), "accountId": self._account_id},
             )
+            data = response.json()
+            if not data.get("success"):
+                logger.error(
+                    "broker_order_cancel_failed order_id=%s account_id=%s error=%s",
+                    order_id,
+                    self._account_id,
+                    data.get("errorMessage", "Unknown error"),
+                )
+                self._record_event(
+                    category="execution",
+                    event_type="broker_order_cancel_failed",
+                    payload={
+                        "account_id": self._account_id,
+                        "error": data.get("errorMessage", "Unknown error"),
+                    },
+                    event_time=datetime.now(timezone.utc),
+                    symbol=self._stream_symbol,
+                    action="cancel_order",
+                    reason="broker_order_cancel_failed",
+                    order_id=order_id,
+                )
+                return False
 
             logger.info(
                 "broker_order_cancelled order_id=%s account_id=%s", order_id, self._account_id
@@ -2177,11 +2187,32 @@ class TopstepClient:
             payload = self._coerce_signalr_payload(arguments[1])
             symbol_name = str(payload.get("symbolName", payload.get("symbol", "ES")) or "ES")
             root_symbol = self._normalize_symbol(symbol_name or payload.get("symbol", "ES"))
+
+            # Extract and validate price fields - reject malformed quotes
+            bid_raw = payload.get("bestBid", payload.get("bid"))
+            ask_raw = payload.get("bestAsk", payload.get("ask"))
+            last_raw = payload.get("lastPrice", payload.get("last"))
+
+            bid = float(bid_raw) if bid_raw is not None else 0.0
+            ask = float(ask_raw) if ask_raw is not None else 0.0
+            last = float(last_raw) if last_raw is not None else 0.0
+
+            # Reject quotes with no valid price data
+            # Need at least: last non-zero, OR both bid and ask non-zero (for valid mid)
+            has_valid_last = last != 0.0
+            has_valid_mid = bid != 0.0 and ask != 0.0
+            if not has_valid_last and not has_valid_mid:
+                logger.warning(
+                    "Rejecting malformed GatewayQuote for %s: bid=%s ask=%s last=%s",
+                    root_symbol, bid_raw, ask_raw, last_raw,
+                )
+                return
+
             quote = MarketData(
                 symbol=root_symbol,
-                bid=float(payload.get("bestBid", payload.get("bid", 0)) or 0),
-                ask=float(payload.get("bestAsk", payload.get("ask", 0)) or 0),
-                last=float(payload.get("lastPrice", payload.get("last", 0)) or 0),
+                bid=bid,
+                ask=ask,
+                last=last,
                 volume=int(payload.get("volume", 0) or 0),
                 bid_size=float(payload.get("bidSize", 0) or 0),
                 ask_size=float(payload.get("askSize", 0) or 0),
@@ -2253,11 +2284,22 @@ class TopstepClient:
             )
             root_symbol = prior.symbol if prior is not None else self._normalize_symbol(symbol_id)
             prior = prior or MarketData(symbol=root_symbol)
+
+            # Extract trade price - reject if missing
+            trade_price_raw = payload.get("price")
+            if trade_price_raw is None:
+                logger.warning("Rejecting GatewayTrade for %s: missing price", root_symbol)
+                return
+            trade_price = float(trade_price_raw)
+            if trade_price == 0.0:
+                logger.warning("Rejecting GatewayTrade for %s: zero price", root_symbol)
+                return
+
             quote = MarketData(
                 symbol=root_symbol or prior.symbol,
                 bid=prior.bid,
                 ask=prior.ask,
-                last=float(payload.get("price", prior.last or 0) or 0),
+                last=trade_price,
                 volume=int(payload.get("volume", prior.volume or 0) or 0),
                 bid_size=prior.bid_size,
                 ask_size=prior.ask_size,

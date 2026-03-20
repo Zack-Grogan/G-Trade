@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from statistics import mean, stdev
+from statistics import mean
 from typing import Any, Optional
 
 import pandas as pd

@@ -64,10 +64,10 @@ strategy:
   launch_gate_enabled: true
   live_entry_zones:
     - "Pre-Open"
+    - "Outside"
   shadow_entry_zones:
     - "Post-Open"
     - "Midday"
-    - "Outside"
   breakeven_trigger_atr: 0.5
   profit_lock_atr: 0.5
   trailing_stop_atr: 1.0
@@ -76,6 +76,15 @@ strategy:
   session_exit_checkpoint_time: "10:00"
   session_exit_hard_flat_time: "11:30"
   session_exit_timezone: "America/Los_Angeles"
+  market_hours_guard_enabled: true
+  market_hours_timezone: "America/Chicago"
+  market_hours_daily_maintenance_start: "16:00"
+  market_hours_daily_maintenance_end: "17:00"
+  market_hours_weekend_close_day: "Friday"
+  market_hours_weekend_close_time: "16:00"
+  market_hours_weekend_open_day: "Sunday"
+  market_hours_weekend_open_time: "17:00"
+  market_hours_holiday_dates: []
 
 alpha:
   matrix_version: "hotzone-v3"
@@ -169,6 +178,19 @@ alpha:
         event_state: 1.0
         execution_state: 1.0
         regime_stress: 1.0
+    Outside:
+      long:
+        trend_state: 1.2
+        execution_state: 0.8
+        spread_regime: 0.4
+      short:
+        trend_state: 1.2
+        execution_state: 0.8
+        spread_regime: 0.4
+      flat:
+        event_state: 1.0
+        execution_state: 0.9
+        regime_stress: 0.8
   zone_vetoes:
     Pre-Open:
       max_atr_accel: 0.75
@@ -195,6 +217,11 @@ alpha:
         - "STRESS"
     Close-Scalp:
       flatten_only: true
+    Outside:
+      max_spread_ticks: 4
+      require_execution_tradeable: true
+      blocked_regimes:
+        - "STRESS"
 
 risk:
   max_daily_loss: 600
@@ -287,7 +314,6 @@ validation:
 safety:
   prac_only: true
   preferred_account_match: "PRAC"
-  allow_non_prac_override_env: "ALLOW_NON_PRAC_ACCOUNT"
 
 event_provider:
   provider: "local_file"
@@ -319,10 +345,21 @@ replay:
   fallback_granularity: "1m_bars"
   segment_size: 2500
 
-server:
-  health_port: 31380
-  debug_port: 31381
-  host: "127.0.0.1"
+# Local macOS text-to-speech via `say` (no network). Set enabled: true to hear order updates.
+operator_tts:
+  enabled: false
+  voice: null
+  rate: null
+  max_queue: 2
+  speak_in_mock_mode: false
+  include_trade_time_in_speech: true
+  events:
+    - filled
+    - partially_filled
+    - rejected
+    - cancelled
+    - submit_failed
+    - realized_pnl
 
 logging:
   level: "INFO"
