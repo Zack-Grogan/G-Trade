@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import plistlib
 import sqlite3
 import tempfile
@@ -9,8 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.bridge.outbox import RailwayOutbox
-from src.bridge.railway_bridge import rebuild_outbox_from_observability
 from src.cli.commands import _fetch_broker_truth, _sync_account_trade_history
 from src.cli.launchd import LAUNCHD_LABEL, render_launchd_plist
 from src.config import get_config, load_config, set_config
@@ -28,7 +25,6 @@ class RuntimeOpsTests(unittest.TestCase):
         config = load_config()
         config.observability.enabled = True
         config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
-        config.observability.outbox_path = str(Path(temp_dir) / "railway_outbox.db")
         config.logging.file = str(Path(temp_dir) / "trading.log")
         set_config(config)
         return config
@@ -121,8 +117,7 @@ class RuntimeOpsTests(unittest.TestCase):
             config = self._build_config(temp_dir)
             db_path = Path(config.observability.sqlite_path)
             with sqlite3.connect(db_path) as conn:
-                conn.execute(
-                    """
+                conn.execute("""
                     CREATE TABLE completed_trades (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         run_id TEXT NOT NULL,
@@ -147,8 +142,7 @@ class RuntimeOpsTests(unittest.TestCase):
                         payload_json TEXT NOT NULL,
                         UNIQUE(run_id, exit_time, direction, contracts, entry_price, exit_price, pnl, zone, strategy)
                     )
-                    """
-                )
+                    """)
                 conn.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
                 conn.execute(
                     "INSERT INTO metadata(key, value) VALUES (?, ?)",
@@ -161,7 +155,9 @@ class RuntimeOpsTests(unittest.TestCase):
             store.stop()
 
             with sqlite3.connect(db_path) as conn:
-                columns = [row[1] for row in conn.execute("PRAGMA table_info(completed_trades)").fetchall()]
+                columns = [
+                    row[1] for row in conn.execute("PRAGMA table_info(completed_trades)").fetchall()
+                ]
             self.assertIn("account_id", columns)
             self.assertIn("account_name", columns)
             self.assertIn("account_mode", columns)
@@ -239,7 +235,14 @@ class RuntimeOpsTests(unittest.TestCase):
                 self.authenticate_calls += 1
                 return True
 
-            def get_broker_truth_bundle(self, symbol: str, *, lookback_minutes: int, focus_timestamp: str | None, include_history: bool):
+            def get_broker_truth_bundle(
+                self,
+                symbol: str,
+                *,
+                lookback_minutes: int,
+                focus_timestamp: str | None,
+                include_history: bool,
+            ):
                 self.last_args = {
                     "symbol": symbol,
                     "lookback_minutes": lookback_minutes,
@@ -271,64 +274,6 @@ class RuntimeOpsTests(unittest.TestCase):
             },
         )
 
-    def test_outbox_tracks_permanent_failures_and_delivery_cursor(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            outbox = RailwayOutbox(str(Path(temp_dir) / "outbox.db"))
-            try:
-                outbox.enqueue("events", {"events": [{"id": 1}]}, batch_id="events_1")
-                batch = outbox.dequeue_batch(limit=10)[0]
-                outbox.mark_failed(batch["id"], "HTTP 401", permanent=True)
-
-                self.assertEqual(outbox.dequeue_batch(limit=10), [])
-                pending = outbox.query_pending(limit=10, include_permanent=True)
-                self.assertEqual(len(pending), 1)
-                self.assertEqual(pending[0]["permanent_failure"], 1)
-
-                outbox.update_delivery_cursor("events", 99, last_batch_id="events_99")
-                state = outbox.get_delivery_state("events")
-                self.assertEqual(state["events"]["cursor_value"], 99)
-                self.assertEqual(state["events"]["last_batch_id"], "events_99")
-            finally:
-                outbox.close()
-
-    def test_rebuild_outbox_from_observability_enqueues_unsent_records(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = self._build_config(temp_dir)
-            store = get_observability_store(force_recreate=True, config=config)
-            store.start()
-            store.record_event(
-                category="system",
-                event_type="startup",
-                source="tests.runtime",
-                payload={"value": 1},
-                action="start",
-                reason="test",
-            )
-            store.record_runtime_log(
-                {
-                    "logger_name": "tests.runtime",
-                    "level": "INFO",
-                    "process_id": 42,
-                    "service_name": "es-hotzone-trader",
-                    "source": "local-runtime",
-                    "line_hash": "def456",
-                    "thread_name": "MainThread",
-                    "message": "runtime online",
-                }
-            )
-            store.force_flush()
-            outbox = RailwayOutbox(config.observability.outbox_path)
-            try:
-                counts = rebuild_outbox_from_observability(outbox, include_sent=False)
-                self.assertEqual(counts["events"], 1)
-                self.assertEqual(counts["runtime_logs"], 1)
-                pending = outbox.query_pending(limit=10)
-                self.assertTrue(any(row["kind"] == "events" for row in pending))
-                self.assertTrue(any(row["kind"] == "runtime_logs" for row in pending))
-            finally:
-                outbox.close()
-                store.stop()
-
     def test_render_launchd_plist_embeds_cli_start(self) -> None:
         payload = render_launchd_plist("/tmp/gtrade-config.yaml")
         parsed = plistlib.loads(payload)
@@ -336,8 +281,7 @@ class RuntimeOpsTests(unittest.TestCase):
         self.assertIn("src.cli", parsed["ProgramArguments"])
         self.assertIn("--config", parsed["ProgramArguments"])
 
-    def test_render_launchd_plist_embeds_internal_auth_token(self) -> None:
-        with patch.dict(os.environ, {"GTRADE_INTERNAL_API_TOKEN": "test-internal-token"}, clear=False):
-            payload = render_launchd_plist()
+    def test_render_launchd_plist_sets_python_unbuffered_env(self) -> None:
+        payload = render_launchd_plist()
         parsed = plistlib.loads(payload)
-        self.assertEqual(parsed["EnvironmentVariables"]["GTRADE_INTERNAL_API_TOKEN"], "test-internal-token")
+        self.assertEqual(parsed["EnvironmentVariables"]["PYTHONUNBUFFERED"], "1")

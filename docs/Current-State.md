@@ -15,7 +15,7 @@ Operational view: what is in place, what has been validated, and what is not yet
 | **Order executor** | Operational | Orders, protection, reconciliation. Topstep API and execution stay on Mac only. |
 | **Local Flask console** | Operational | Browser-based local operator surface on `127.0.0.1`. Serves `/`, `/chart`, `/trades`, `/trades/<id>`, `/logs`, `/system`, plus `/health` and `/debug` JSON. |
 | **Observability store** | Operational | SQLite: events, runs, completed trades, state snapshots, decision snapshots, market tape, order lifecycle, bridge health, runtime logs, account trade history. Source of truth for replay/recovery. |
-| **Data bridge + outbox** | Legacy-only | Code may still exist locally for historical recovery, but it is not part of the active operator workflow. |
+| **Data bridge + outbox** | Removed | Railway bridge/outbox runtime code has been removed from the active codebase; historical context remains in `docs/archive/railway-sunset/`. |
 | **Config** | In place | Launch-gate defaults are Pre-Open live with later zones shadow-only. SQLite and local runtime config are the active contract. |
 | **Runtime artifacts** | In place | `logs/runtime/trader.pid`, `runtime_status.json`, `lifecycle_request.json`, local launchd plist/log paths, local outbox delivery cursors. |
 

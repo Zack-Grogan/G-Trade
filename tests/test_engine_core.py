@@ -1,4 +1,5 @@
 """Core engine and safety tests."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -70,9 +71,11 @@ class StrategySafetyTests(unittest.TestCase):
             index=index,
         )
 
-        with patch("src.strategies.vwap_mr.atr") as mock_atr, patch(
-            "src.strategies.vwap_mr.vwap"
-        ) as mock_vwap, patch("src.strategies.vwap_mr.rsi") as mock_rsi:
+        with (
+            patch("src.strategies.vwap_mr.atr") as mock_atr,
+            patch("src.strategies.vwap_mr.vwap") as mock_vwap,
+            patch("src.strategies.vwap_mr.rsi") as mock_rsi,
+        ):
             mock_atr.return_value = pd.Series([1.0] * len(df), index=df.index)
             mock_vwap.return_value = pd.Series([100.0] * len(df), index=df.index)
             mock_rsi.return_value = pd.Series([20.0] * len(df), index=df.index)
@@ -97,9 +100,11 @@ class StrategySafetyTests(unittest.TestCase):
         )
         strategy._entry_bar_time = df.index[-5]
 
-        with patch("src.strategies.vwap_mr.atr") as mock_atr, patch(
-            "src.strategies.vwap_mr.vwap"
-        ) as mock_vwap, patch("src.strategies.vwap_mr.rsi") as mock_rsi:
+        with (
+            patch("src.strategies.vwap_mr.atr") as mock_atr,
+            patch("src.strategies.vwap_mr.vwap") as mock_vwap,
+            patch("src.strategies.vwap_mr.rsi") as mock_rsi,
+        ):
             mock_atr.return_value = pd.Series([1.0] * len(df), index=df.index)
             mock_vwap.return_value = pd.Series([99.5] * len(df), index=df.index)
             mock_rsi.return_value = pd.Series([55.0] * len(df), index=df.index)
@@ -183,7 +188,9 @@ class RiskManagerTests(unittest.TestCase):
         entry_time = pytz.timezone("America/Chicago").localize(datetime(2026, 3, 13, 12, 1))
         exit_time = pytz.timezone("America/Chicago").localize(datetime(2026, 3, 13, 12, 9))
 
-        risk_manager.open_position(contracts=1, entry_price=100, direction=1, zone="Midday", current_time=entry_time)
+        risk_manager.open_position(
+            contracts=1, entry_price=100, direction=1, zone="Midday", current_time=entry_time
+        )
         trade = risk_manager.close_position(101, current_time=exit_time)
 
         self.assertIsNotNone(trade)
@@ -222,7 +229,9 @@ class RiskManagerTests(unittest.TestCase):
         entry_time = pytz.timezone("America/Chicago").localize(datetime(2026, 3, 13, 12, 0))
         stale_time = entry_time
         current_time = stale_time + timedelta(seconds=self.config.watchdog.feed_stale_seconds + 5)
-        risk_manager.open_position(contracts=1, entry_price=100, direction=1, zone="Midday", current_time=entry_time)
+        risk_manager.open_position(
+            contracts=1, entry_price=100, direction=1, zone="Midday", current_time=entry_time
+        )
         risk_manager.observe_market_price(95.0, stale_time)
 
         should_flatten, reason = risk_manager.should_flatten_position(current_time=current_time)
@@ -254,7 +263,9 @@ class TransportSafetyTests(unittest.TestCase):
         client._ws_thread = Mock()
 
         future = Mock()
-        with patch("src.market.topstep_client.asyncio.run_coroutine_threadsafe", return_value=future) as close_call:
+        with patch(
+            "src.market.topstep_client.asyncio.run_coroutine_threadsafe", return_value=future
+        ) as close_call:
             client.stop_market_stream()
 
         close_call.assert_called_once()
@@ -312,7 +323,9 @@ class BrokerTruthBundleTests(unittest.TestCase):
                                 }
                             ],
                         ):
-                            bundle = client.get_broker_truth_bundle("ES", focus_timestamp=focus_timestamp)
+                            bundle = client.get_broker_truth_bundle(
+                                "ES", focus_timestamp=focus_timestamp
+                            )
 
         self.assertEqual(bundle["history"]["recent_order_count"], 0)
         self.assertEqual(bundle["history"]["recent_trade_count"], 0)
@@ -339,7 +352,9 @@ class BrokerTruthBundleTests(unittest.TestCase):
                         ],
                     ):
                         with patch.object(client, "search_trades", return_value=[]):
-                            bundle = client.get_broker_truth_bundle("ES", focus_timestamp=focus_dt.isoformat())
+                            bundle = client.get_broker_truth_bundle(
+                                "ES", focus_timestamp=focus_dt.isoformat()
+                            )
 
         self.assertFalse(bundle["contradictions"]["focus_timestamp_activity_detected"])
         self.assertFalse(bundle["contradictions"]["api_flat_with_recent_activity"])

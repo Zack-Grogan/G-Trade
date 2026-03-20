@@ -1,4 +1,5 @@
 """Weighted score matrix alpha engine."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -106,7 +107,15 @@ class DecisionMatrixEvaluator:
         "spread_regime",
         "volume_pace",
     }
-    FLAT_FEATURES = {"atr_state", "event_state", "execution_state", "range_state", "trend_state", "spread_regime", "regime_stress"}
+    FLAT_FEATURES = {
+        "atr_state",
+        "event_state",
+        "execution_state",
+        "range_state",
+        "trend_state",
+        "spread_regime",
+        "regime_stress",
+    }
     SUPPORTED_VETO_KEYS = {
         "max_atr_accel",
         "max_spread_ticks",
@@ -144,8 +153,12 @@ class DecisionMatrixEvaluator:
         return ZoneInfo(
             name="Outside",
             state=ZoneState.ACTIVE,
-            start_time=(current_time - pd.Timedelta(minutes=self._zone_hold_limit("Outside"))).to_pydatetime(),
-            end_time=(current_time + pd.Timedelta(minutes=self._zone_hold_limit("Outside"))).to_pydatetime(),
+            start_time=(
+                current_time - pd.Timedelta(minutes=self._zone_hold_limit("Outside"))
+            ).to_pydatetime(),
+            end_time=(
+                current_time + pd.Timedelta(minutes=self._zone_hold_limit("Outside"))
+            ).to_pydatetime(),
             minutes_remaining=float(self._zone_hold_limit("Outside")),
             is_first_bar=False,
             is_last_bar=False,
@@ -157,8 +170,12 @@ class DecisionMatrixEvaluator:
                 supported = self.FLAT_FEATURES if side == "flat" else self.LONG_SHORT_FEATURES
                 unknown = set(features) - supported
                 if unknown:
-                    raise ValueError(f"Unsupported alpha feature(s) for {zone_name}/{side}: {sorted(unknown)}")
-                if side in {"long", "short"} and len(features) > max(int(self.validation.max_features_per_side), 1):
+                    raise ValueError(
+                        f"Unsupported alpha feature(s) for {zone_name}/{side}: {sorted(unknown)}"
+                    )
+                if side in {"long", "short"} and len(features) > max(
+                    int(self.validation.max_features_per_side), 1
+                ):
                     raise ValueError(
                         f"Too many weighted features for {zone_name}/{side}: {len(features)} > {self.validation.max_features_per_side}"
                     )
@@ -167,7 +184,9 @@ class DecisionMatrixEvaluator:
             if unknown:
                 raise ValueError(f"Unsupported veto key(s) for {zone_name}: {sorted(unknown)}")
 
-    def _session_slice(self, bars: pd.DataFrame, start_hour: int, start_minute: int) -> pd.DataFrame:
+    def _session_slice(
+        self, bars: pd.DataFrame, start_hour: int, start_minute: int
+    ) -> pd.DataFrame:
         if bars.empty:
             return bars
         labels = session_labels(pd.DatetimeIndex(bars.index), start_hour, start_minute)
@@ -210,10 +229,14 @@ class DecisionMatrixEvaluator:
 
         if len(bars) >= self.strategy.atr_length:
             atr_series = atr(high, low, close, self.strategy.atr_length)
-            atr_value = _safe_float(atr_series.iloc[-1], default=max((high.iloc[-1] - low.iloc[-1]), 0.25))
+            atr_value = _safe_float(
+                atr_series.iloc[-1], default=max((high.iloc[-1] - low.iloc[-1]), 0.25)
+            )
             atr_window = atr_series.dropna().tail(50)
         else:
-            atr_series = pd.Series([high.iloc[-1] - low.iloc[-1]], index=[bars.index[-1]], dtype=float)
+            atr_series = pd.Series(
+                [high.iloc[-1] - low.iloc[-1]], index=[bars.index[-1]], dtype=float
+            )
             atr_value = max(_safe_float(high.iloc[-1] - low.iloc[-1], 0.25), 0.25)
             atr_window = atr_series
 
@@ -221,24 +244,64 @@ class DecisionMatrixEvaluator:
         if not atr_window.empty and atr_value > 0:
             atr_percentile = float((atr_window <= atr_value).sum()) / float(len(atr_window))
         atr_non_na = atr_series.dropna()
-        prev_atr = _safe_float(atr_non_na.iloc[-2], atr_value) if len(atr_non_na) >= 2 else atr_value
+        prev_atr = (
+            _safe_float(atr_non_na.iloc[-2], atr_value) if len(atr_non_na) >= 2 else atr_value
+        )
         atr_accel = ((atr_value - prev_atr) / prev_atr) if prev_atr else 0.0
         atr_ratio = atr_value / max(_safe_float(atr_window.mean(), atr_value), 0.25)
 
-        rth_bars = self._session_slice(bars, self.sessions.rth_start_hour, self.sessions.rth_start_minute)
-        eth_bars = self._session_slice(bars, self.sessions.eth_reset_hour, self.sessions.eth_reset_minute)
+        rth_bars = self._session_slice(
+            bars, self.sessions.rth_start_hour, self.sessions.rth_start_minute
+        )
+        eth_bars = self._session_slice(
+            bars, self.sessions.eth_reset_hour, self.sessions.eth_reset_minute
+        )
         active_session = "ETH" if zone_name == "Pre-Open" else "RTH"
         active_session_bars = eth_bars if active_session == "ETH" else rth_bars
 
-        rth_metrics = session_vwap_bands(rth_bars, self.sessions.rth_start_hour, self.sessions.rth_start_minute, self.strategy.vwap_source)
-        eth_metrics = session_vwap_bands(eth_bars, self.sessions.eth_reset_hour, self.sessions.eth_reset_minute, self.strategy.vwap_source)
+        rth_metrics = session_vwap_bands(
+            rth_bars,
+            self.sessions.rth_start_hour,
+            self.sessions.rth_start_minute,
+            self.strategy.vwap_source,
+        )
+        eth_metrics = session_vwap_bands(
+            eth_bars,
+            self.sessions.eth_reset_hour,
+            self.sessions.eth_reset_minute,
+            self.strategy.vwap_source,
+        )
 
-        rth_vwap = _safe_float(rth_metrics.vwap.iloc[-1], current_price) if not rth_metrics.vwap.empty else current_price
-        eth_vwap = _safe_float(eth_metrics.vwap.iloc[-1], current_price) if not eth_metrics.vwap.empty else current_price
-        rth_prev = _safe_float(rth_metrics.vwap.iloc[-2], rth_vwap) if len(rth_metrics.vwap) >= 2 else rth_vwap
-        eth_prev = _safe_float(eth_metrics.vwap.iloc[-2], eth_vwap) if len(eth_metrics.vwap) >= 2 else eth_vwap
-        rth_sigma = max(_safe_float(rth_metrics.sigma.iloc[-1], atr_value / 2.0), 0.25) if not rth_metrics.sigma.empty else max(atr_value / 2.0, 0.25)
-        eth_sigma = max(_safe_float(eth_metrics.sigma.iloc[-1], atr_value / 2.0), 0.25) if not eth_metrics.sigma.empty else max(atr_value / 2.0, 0.25)
+        rth_vwap = (
+            _safe_float(rth_metrics.vwap.iloc[-1], current_price)
+            if not rth_metrics.vwap.empty
+            else current_price
+        )
+        eth_vwap = (
+            _safe_float(eth_metrics.vwap.iloc[-1], current_price)
+            if not eth_metrics.vwap.empty
+            else current_price
+        )
+        rth_prev = (
+            _safe_float(rth_metrics.vwap.iloc[-2], rth_vwap)
+            if len(rth_metrics.vwap) >= 2
+            else rth_vwap
+        )
+        eth_prev = (
+            _safe_float(eth_metrics.vwap.iloc[-2], eth_vwap)
+            if len(eth_metrics.vwap) >= 2
+            else eth_vwap
+        )
+        rth_sigma = (
+            max(_safe_float(rth_metrics.sigma.iloc[-1], atr_value / 2.0), 0.25)
+            if not rth_metrics.sigma.empty
+            else max(atr_value / 2.0, 0.25)
+        )
+        eth_sigma = (
+            max(_safe_float(eth_metrics.sigma.iloc[-1], atr_value / 2.0), 0.25)
+            if not eth_metrics.sigma.empty
+            else max(atr_value / 2.0, 0.25)
+        )
 
         rth_vwap_distance = _clip((current_price - rth_vwap) / rth_sigma)
         eth_vwap_distance = _clip((current_price - eth_vwap) / eth_sigma)
@@ -256,11 +319,31 @@ class DecisionMatrixEvaluator:
         poc_distance_long = _clip((current_price - active_profile.poc) / max(atr_value, 0.25))
         poc_distance_short = _clip((active_profile.poc - current_price) / max(atr_value, 0.25))
 
-        recent_closes = active_session_bars["close"].tail(3) if not active_session_bars.empty else close.tail(3)
-        value_acceptance_long = 1.5 if len(recent_closes) >= 2 and (recent_closes >= active_profile.vah).tail(2).all() else _clip(value_area_position + max(rth_vwap_slope, eth_vwap_slope))
-        value_acceptance_short = 1.5 if len(recent_closes) >= 2 and (recent_closes <= active_profile.val).tail(2).all() else _clip((-value_area_position) + max(-rth_vwap_slope, -eth_vwap_slope))
-        value_rejection_long = 1.2 if _safe_float(low.iloc[-1], current_price) < active_profile.val and current_price > active_profile.val else _clip(-value_area_position)
-        value_rejection_short = 1.2 if _safe_float(high.iloc[-1], current_price) > active_profile.vah and current_price < active_profile.vah else _clip(value_area_position)
+        recent_closes = (
+            active_session_bars["close"].tail(3) if not active_session_bars.empty else close.tail(3)
+        )
+        value_acceptance_long = (
+            1.5
+            if len(recent_closes) >= 2 and (recent_closes >= active_profile.vah).tail(2).all()
+            else _clip(value_area_position + max(rth_vwap_slope, eth_vwap_slope))
+        )
+        value_acceptance_short = (
+            1.5
+            if len(recent_closes) >= 2 and (recent_closes <= active_profile.val).tail(2).all()
+            else _clip((-value_area_position) + max(-rth_vwap_slope, -eth_vwap_slope))
+        )
+        value_rejection_long = (
+            1.2
+            if _safe_float(low.iloc[-1], current_price) < active_profile.val
+            and current_price > active_profile.val
+            else _clip(-value_area_position)
+        )
+        value_rejection_short = (
+            1.2
+            if _safe_float(high.iloc[-1], current_price) > active_profile.vah
+            and current_price < active_profile.vah
+            else _clip(value_area_position)
+        )
 
         ema = close.ewm(span=self.strategy.trend_ma_length, adjust=False).mean()
         ema_value = _safe_float(ema.iloc[-1], current_price)
@@ -277,14 +360,22 @@ class DecisionMatrixEvaluator:
 
         range_window = bars.tail(8)
         bar_ranges = (range_window["high"] - range_window["low"]).replace(0, np.nan)
-        compression_raw = 1.0 - (_safe_float(bar_ranges.mean(), atr_value) / max(atr_value * 1.5, 0.25))
+        compression_raw = 1.0 - (
+            _safe_float(bar_ranges.mean(), atr_value) / max(atr_value * 1.5, 0.25)
+        )
         compression_score = _clip(compression_raw)
         inside_count = 0
         for idx in range(1, len(range_window)):
-            if range_window["high"].iloc[idx] <= range_window["high"].iloc[idx - 1] and range_window["low"].iloc[idx] >= range_window["low"].iloc[idx - 1]:
+            if (
+                range_window["high"].iloc[idx] <= range_window["high"].iloc[idx - 1]
+                and range_window["low"].iloc[idx] >= range_window["low"].iloc[idx - 1]
+            ):
                 inside_count += 1
         inside_bar_density = inside_count / max(len(range_window) - 1, 1)
-        expansion_failure = _clip((_safe_float(bar_ranges.iloc[-1], 0.0) - _safe_float(bar_ranges.mean(), 0.0)) / max(atr_value, 0.25))
+        expansion_failure = _clip(
+            (_safe_float(bar_ranges.iloc[-1], 0.0) - _safe_float(bar_ranges.mean(), 0.0))
+            / max(atr_value, 0.25)
+        )
 
         zone_bars = bars if zone is None else bars.loc[bars.index >= zone.start_time]
         if zone_bars.empty:
@@ -295,42 +386,82 @@ class DecisionMatrixEvaluator:
         orb_span = max(orb_high - orb_low, 0.25)
         orb_mid = (orb_high + orb_low) / 2.0
         orb_position = _clip((current_price - orb_mid) / orb_span * 2.0)
-        orb_break_long = _clip((current_price - orb_high) / max(atr_value, 0.25) + max(ema_slope, 0.0))
-        orb_break_short = _clip((orb_low - current_price) / max(atr_value, 0.25) + max(-ema_slope, 0.0))
-        opening_drive = _clip((current_price - _safe_float(zone_bars["open"].iloc[0], recent_open)) / max(atr_value, 0.25))
+        orb_break_long = _clip(
+            (current_price - orb_high) / max(atr_value, 0.25) + max(ema_slope, 0.0)
+        )
+        orb_break_short = _clip(
+            (orb_low - current_price) / max(atr_value, 0.25) + max(-ema_slope, 0.0)
+        )
+        opening_drive = _clip(
+            (current_price - _safe_float(zone_bars["open"].iloc[0], recent_open))
+            / max(atr_value, 0.25)
+        )
 
         bb_basis = close.rolling(20).mean()
         bb_std = close.rolling(20).std(ddof=0).fillna(0)
-        bb_upper = _safe_float((bb_basis + (bb_std * self.strategy.mr_band_deviation)).iloc[-1], current_price)
-        bb_lower = _safe_float((bb_basis - (bb_std * self.strategy.mr_band_deviation)).iloc[-1], current_price)
+        bb_upper = _safe_float(
+            (bb_basis + (bb_std * self.strategy.mr_band_deviation)).iloc[-1], current_price
+        )
+        bb_lower = _safe_float(
+            (bb_basis - (bb_std * self.strategy.mr_band_deviation)).iloc[-1], current_price
+        )
         rsi_series = rsi(close, self.strategy.mr_rsi_length)
         rsi_value = _safe_float(rsi_series.iloc[-1], 50.0)
         lower_penetration = _clip((bb_lower - current_price) / max(atr_value, 0.25))
         upper_penetration = _clip((current_price - bb_upper) / max(atr_value, 0.25))
         wick_lower = min(recent_open, current_price) - _safe_float(low.iloc[-1], current_price)
         wick_upper = _safe_float(high.iloc[-1], current_price) - max(recent_open, current_price)
-        bar_range = max(_safe_float(high.iloc[-1], current_price) - _safe_float(low.iloc[-1], current_price), 0.25)
+        bar_range = max(
+            _safe_float(high.iloc[-1], current_price) - _safe_float(low.iloc[-1], current_price),
+            0.25,
+        )
         wick_rejection_long = _clip((wick_lower / bar_range) * 2.0)
         wick_rejection_short = _clip((wick_upper / bar_range) * 2.0)
 
-        pullback_long = _clip(max(price_vs_ema, 0.0) + max(rth_vwap_slope, 0.0) - max((current_price - _safe_float(high.tail(4).max(), current_price)) / max(atr_value, 0.25), -2.0))
-        pullback_short = _clip(max(-price_vs_ema, 0.0) + max(-rth_vwap_slope, 0.0) - max((_safe_float(low.tail(4).min(), current_price) - current_price) / max(atr_value, 0.25), -2.0))
+        pullback_long = _clip(
+            max(price_vs_ema, 0.0)
+            + max(rth_vwap_slope, 0.0)
+            - max(
+                (current_price - _safe_float(high.tail(4).max(), current_price))
+                / max(atr_value, 0.25),
+                -2.0,
+            )
+        )
+        pullback_short = _clip(
+            max(-price_vs_ema, 0.0)
+            + max(-rth_vwap_slope, 0.0)
+            - max(
+                (_safe_float(low.tail(4).min(), current_price) - current_price)
+                / max(atr_value, 0.25),
+                -2.0,
+            )
+        )
         breakout_failure_absent = _clip(abs(orb_position) - 0.4)
 
         spread = market_data.spread if market_data else 0.25
         quote_age = 0.0
         if market_data is not None and market_data.timestamp is not None:
             market_ts = pd.Timestamp(market_data.timestamp)
-            market_ts = market_ts.tz_localize("UTC") if market_ts.tzinfo is None else market_ts.tz_convert("UTC")
+            market_ts = (
+                market_ts.tz_localize("UTC")
+                if market_ts.tzinfo is None
+                else market_ts.tz_convert("UTC")
+            )
             current_ts = pd.Timestamp(bars.index[-1])
-            current_ts = current_ts.tz_localize("UTC") if current_ts.tzinfo is None else current_ts.tz_convert("UTC")
+            current_ts = (
+                current_ts.tz_localize("UTC")
+                if current_ts.tzinfo is None
+                else current_ts.tz_convert("UTC")
+            )
             quote_age = max((current_ts - market_ts).total_seconds(), 0.0)
 
         spread_proxy = _clip(2.0 - (spread / 0.25))
         freshness_proxy = _clip(2.0 - (quote_age / 2.0))
         bar_range_spread_ratio = _clip((bar_range / max(spread, 0.25)) / 4.0)
         slippage_proxy = _clip(2.0 - (spread / 0.5))
-        execution_tradeable = spread <= (self.config.order_execution.max_slippage_ticks * 0.25) and quote_age <= 5.0
+        execution_tradeable = (
+            spread <= (self.config.order_execution.max_slippage_ticks * 0.25) and quote_age <= 5.0
+        )
         if market_data is None:
             execution_tradeable = True
             freshness_proxy = 1.0
@@ -343,16 +474,32 @@ class DecisionMatrixEvaluator:
         trend_short = _clip((-price_vs_ema) + (-ema_slope) + (-structure_bias) / 2.0)
         vwap_long = _clip(max(rth_vwap_distance, 0.0) + max(rth_vwap_slope, 0.0))
         vwap_short = _clip(max(-rth_vwap_distance, 0.0) + max(-rth_vwap_slope, 0.0))
-        range_state = _clip((compression_score + inside_bar_density * 2.0 - max(expansion_failure, 0.0)) / 2.0)
+        range_state = _clip(
+            (compression_score + inside_bar_density * 2.0 - max(expansion_failure, 0.0)) / 2.0
+        )
         extension_long = _clip(lower_penetration + max((50.0 - rsi_value) / 12.5, 0.0))
         extension_short = _clip(upper_penetration + max((rsi_value - 50.0) / 12.5, 0.0))
         vwap_distance_long = _clip((rth_vwap - current_price) / max(atr_value, 0.25))
         vwap_distance_short = _clip((current_price - rth_vwap) / max(atr_value, 0.25))
-        event_state = -2.0 if event_context.blackout_active else (0.25 if event_context.post_event_cooling else 0.75)
-        execution_state = _clip((spread_proxy + freshness_proxy + bar_range_spread_ratio + slippage_proxy) / 4.0)
+        event_state = (
+            -2.0
+            if event_context.blackout_active
+            else (0.25 if event_context.post_event_cooling else 0.75)
+        )
+        execution_state = _clip(
+            (spread_proxy + freshness_proxy + bar_range_spread_ratio + slippage_proxy) / 4.0
+        )
 
-        mean_reversion_ready_long = lower_penetration > 0 and rsi_value <= self.strategy.mr_rsi_oversold and wick_rejection_long > 0.25
-        mean_reversion_ready_short = upper_penetration > 0 and rsi_value >= self.strategy.mr_rsi_overbought and wick_rejection_short > 0.25
+        mean_reversion_ready_long = (
+            lower_penetration > 0
+            and rsi_value <= self.strategy.mr_rsi_oversold
+            and wick_rejection_long > 0.25
+        )
+        mean_reversion_ready_short = (
+            upper_penetration > 0
+            and rsi_value >= self.strategy.mr_rsi_overbought
+            and wick_rejection_short > 0.25
+        )
 
         snapshot = FeatureSnapshot(
             zone_name=zone_name,
@@ -418,7 +565,9 @@ class DecisionMatrixEvaluator:
                 "execution_state": -execution_state,
                 "range_state": abs(range_state),
                 "trend_state": _clip(2.0 - max(trend_long, trend_short)),
-                "spread_regime": _clip(2.0 - max(flow_snapshot.spread_regime or spread_proxy, -2.0)),
+                "spread_regime": _clip(
+                    2.0 - max(flow_snapshot.spread_regime or spread_proxy, -2.0)
+                ),
                 "regime_stress": 0.0,
             },
             signed_features={
@@ -478,7 +627,9 @@ class DecisionMatrixEvaluator:
         )
         snapshot.regime_state = regime_snapshot.state.value
         snapshot.regime_reason = regime_snapshot.reason
-        snapshot.flat_features["regime_stress"] = 2.0 if regime_snapshot.state == RegimeState.STRESS else 0.0
+        snapshot.flat_features["regime_stress"] = (
+            2.0 if regime_snapshot.state == RegimeState.STRESS else 0.0
+        )
         return snapshot
 
     def evaluate(
@@ -499,7 +650,9 @@ class DecisionMatrixEvaluator:
         zone = self._effective_zone(zone, bars)
 
         if zone is None:
-            snapshot = self.extract_features(bars, zone, market_data, event_context, flow_snapshot, current_position)
+            snapshot = self.extract_features(
+                bars, zone, market_data, event_context, flow_snapshot, current_position
+            )
             return MatrixDecision(
                 zone_name="Outside",
                 action="FLAT" if current_position else "NO_TRADE",
@@ -512,11 +665,31 @@ class DecisionMatrixEvaluator:
                 execution_tradeable=False,
             )
 
-        snapshot = self.extract_features(bars, zone, market_data, event_context, flow_snapshot, current_position)
+        snapshot = self.extract_features(
+            bars, zone, market_data, event_context, flow_snapshot, current_position
+        )
         weights = self.alpha.zone_weights.get(zone.name, {})
-        long_score = round(sum(snapshot.long_features.get(name, 0.0) * weight for name, weight in weights.get("long", {}).items()), 4)
-        short_score = round(sum(snapshot.short_features.get(name, 0.0) * weight for name, weight in weights.get("short", {}).items()), 4)
-        flat_bias = round(sum(snapshot.flat_features.get(name, 0.0) * weight for name, weight in weights.get("flat", {}).items()), 4)
+        long_score = round(
+            sum(
+                snapshot.long_features.get(name, 0.0) * weight
+                for name, weight in weights.get("long", {}).items()
+            ),
+            4,
+        )
+        short_score = round(
+            sum(
+                snapshot.short_features.get(name, 0.0) * weight
+                for name, weight in weights.get("short", {}).items()
+            ),
+            4,
+        )
+        flat_bias = round(
+            sum(
+                snapshot.flat_features.get(name, 0.0) * weight
+                for name, weight in weights.get("flat", {}).items()
+            ),
+            4,
+        )
 
         # Log diagnostic info for score calculation
         logger.debug(
@@ -539,7 +712,9 @@ class DecisionMatrixEvaluator:
         opposing_score = short_score if dominant_side == "long" else long_score
         score_gap = dominant_score - opposing_score
 
-        if zone.state.value == "flatten_only" or self.alpha.zone_vetoes.get(zone.name, {}).get("flatten_only"):
+        if zone.state.value == "flatten_only" or self.alpha.zone_vetoes.get(zone.name, {}).get(
+            "flatten_only"
+        ):
             action = "FLAT" if current_position else "NO_TRADE"
             reason = "flatten_only_zone"
         elif current_position > 0:
@@ -547,7 +722,10 @@ class DecisionMatrixEvaluator:
             if snapshot.regime_state == RegimeState.STRESS.value:
                 action = "FLAT"
                 reason = "stress_regime"
-            elif dominant_side == "short" and (short_score - long_score) >= self.alpha.reverse_score_gap:
+            elif (
+                dominant_side == "short"
+                and (short_score - long_score) >= self.alpha.reverse_score_gap
+            ):
                 action = "FLAT"
                 reason = "opposite_score_dominance"
             elif long_score < self.alpha.exit_decay_score:
@@ -556,7 +734,11 @@ class DecisionMatrixEvaluator:
             elif held_minutes >= self._zone_hold_limit(zone.name):
                 action = "FLAT"
                 reason = "time_stop"
-            elif zone.is_last_bar or event_context.blackout_active or "risk_circuit_breaker" in vetoes:
+            elif (
+                zone.is_last_bar
+                or event_context.blackout_active
+                or "risk_circuit_breaker" in vetoes
+            ):
                 action = "FLAT"
                 reason = "risk_or_zone_exit"
             else:
@@ -567,7 +749,10 @@ class DecisionMatrixEvaluator:
             if snapshot.regime_state == RegimeState.STRESS.value:
                 action = "FLAT"
                 reason = "stress_regime"
-            elif dominant_side == "long" and (long_score - short_score) >= self.alpha.reverse_score_gap:
+            elif (
+                dominant_side == "long"
+                and (long_score - short_score) >= self.alpha.reverse_score_gap
+            ):
                 action = "FLAT"
                 reason = "opposite_score_dominance"
             elif short_score < self.alpha.exit_decay_score:
@@ -576,7 +761,11 @@ class DecisionMatrixEvaluator:
             elif held_minutes >= self._zone_hold_limit(zone.name):
                 action = "FLAT"
                 reason = "time_stop"
-            elif zone.is_last_bar or event_context.blackout_active or "risk_circuit_breaker" in vetoes:
+            elif (
+                zone.is_last_bar
+                or event_context.blackout_active
+                or "risk_circuit_breaker" in vetoes
+            ):
                 action = "FLAT"
                 reason = "risk_or_zone_exit"
             else:
@@ -621,7 +810,9 @@ class DecisionMatrixEvaluator:
             max_hold_minutes=self._zone_hold_limit(zone.name),
         )
 
-    def _evaluate_vetoes(self, zone: ZoneInfo, snapshot: FeatureSnapshot, blackout_active: bool) -> list[str]:
+    def _evaluate_vetoes(
+        self, zone: ZoneInfo, snapshot: FeatureSnapshot, blackout_active: bool
+    ) -> list[str]:
         """Apply hard entry vetoes for the current zone."""
         vetoes: list[str] = []
         rules = self.alpha.zone_vetoes.get(zone.name, {})
@@ -633,11 +824,15 @@ class DecisionMatrixEvaluator:
             vetoes.append("execution_degraded")
 
         max_spread_ticks = rules.get("max_spread_ticks")
-        if max_spread_ticks is not None and signed.get("spread_ticks", 0.0) > float(max_spread_ticks):
+        if max_spread_ticks is not None and signed.get("spread_ticks", 0.0) > float(
+            max_spread_ticks
+        ):
             vetoes.append("spread_too_wide")
 
         max_atr_percentile = rules.get("max_atr_percentile")
-        if max_atr_percentile is not None and signed.get("atr_percentile", 0.0) > float(max_atr_percentile):
+        if max_atr_percentile is not None and signed.get("atr_percentile", 0.0) > float(
+            max_atr_percentile
+        ):
             vetoes.append("atr_percentile_too_high")
 
         max_atr_accel = rules.get("max_atr_accel")
@@ -653,7 +848,9 @@ class DecisionMatrixEvaluator:
                 vetoes.append("inside_orb_middle")
 
         if zone.name == "Post-Open":
-            if abs(signed.get("rth_vwap_slope", 0.0)) <= float(rules.get("flat_vwap_threshold", 0.08)) and abs(signed.get("ema_slope", 0.0)) <= float(rules.get("flat_ema_threshold", 0.08)):
+            if abs(signed.get("rth_vwap_slope", 0.0)) <= float(
+                rules.get("flat_vwap_threshold", 0.08)
+            ) and abs(signed.get("ema_slope", 0.0)) <= float(rules.get("flat_ema_threshold", 0.08)):
                 vetoes.append("trend_flat")
 
         if zone.name == "Midday":
@@ -661,23 +858,37 @@ class DecisionMatrixEvaluator:
                 vetoes.append("ema_slope_outside_range")
             if zone.minutes_remaining < float(rules.get("min_minutes_remaining", 10)):
                 vetoes.append("zone_too_late")
-            if snapshot.long_features.get("orb_break", 0.0) > 1.0 or snapshot.short_features.get("orb_break", 0.0) > 1.0:
+            if (
+                snapshot.long_features.get("orb_break", 0.0) > 1.0
+                or snapshot.short_features.get("orb_break", 0.0) > 1.0
+            ):
                 vetoes.append("breakout_follow_through_active")
-            if rules.get("require_mean_reversion_confirmation") and not (snapshot.mean_reversion_ready_long or snapshot.mean_reversion_ready_short):
+            if rules.get("require_mean_reversion_confirmation") and not (
+                snapshot.mean_reversion_ready_long or snapshot.mean_reversion_ready_short
+            ):
                 vetoes.append("missing_mean_reversion_confirmation")
 
         return vetoes
 
-    def _risk_targets(self, action: str, snapshot: FeatureSnapshot, zone_name: str) -> tuple[Optional[float], Optional[float]]:
+    def _risk_targets(
+        self, action: str, snapshot: FeatureSnapshot, zone_name: str
+    ) -> tuple[Optional[float], Optional[float]]:
         if action not in {"LONG", "SHORT"}:
             return None, None
         stop_distance = max(snapshot.atr_value * self.alpha.stop_loss_atr, 0.5)
-        take_profit_distance = max(snapshot.atr_value * self.alpha.take_profit_atr.get(zone_name, 1.5), stop_distance)
+        take_profit_distance = max(
+            snapshot.atr_value * self.alpha.take_profit_atr.get(zone_name, 1.5), stop_distance
+        )
         if action == "LONG":
-            return snapshot.current_price - stop_distance, snapshot.current_price + take_profit_distance
+            return (
+                snapshot.current_price - stop_distance,
+                snapshot.current_price + take_profit_distance,
+            )
         return snapshot.current_price + stop_distance, snapshot.current_price - take_profit_distance
 
-    def _held_minutes(self, entry_time: Optional[pd.Timestamp], current_time: pd.Timestamp) -> float:
+    def _held_minutes(
+        self, entry_time: Optional[pd.Timestamp], current_time: pd.Timestamp
+    ) -> float:
         if entry_time is None:
             return 0.0
         current_ts = pd.Timestamp(current_time)

@@ -3,7 +3,6 @@
 ## src
 
 - src.analysis
-- src.bridge
 - src.cli
 - src.config
 - src.engine

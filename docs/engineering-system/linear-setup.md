@@ -13,7 +13,7 @@ How to create a Linear project for this repo and use it with Cursor. No secrets 
 ## 2. Add Linear MCP in Cursor
 
 - In Cursor, enable the Linear MCP server and add your Linear API key in Cursor settings (or in your MCP config). Do not put the key in the repo.
-- Reference: [global-cursor-pack/mcp/README.md](global-cursor-pack/mcp/README.md). Linear is not listed in `.cursor/mcp.json` by default; add it in Cursor's MCP configuration with your API key.
+- Reference: [../archive/engineering-system-global-cursor-pack/mcp/README.md](../archive/engineering-system-global-cursor-pack/mcp/README.md). Linear is not listed in `.cursor/mcp.json` by default; add it in Cursor's MCP configuration with your API key.
 
 ## 3. Branch / commit / PR conventions
 

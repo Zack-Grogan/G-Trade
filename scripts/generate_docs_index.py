@@ -118,7 +118,9 @@ def write_config_matrix():
             if m:
                 lines.append(f"- {m.group(1)}")
     lines.append("")
-    lines.append("Env / overrides: broker auth, account selection, and local port overrides. See docs/ENV.md and docs/OPERATOR.md.")
+    lines.append(
+        "Env / overrides: broker auth, account selection, and local port overrides. See docs/ENV.md and docs/OPERATOR.md."
+    )
     (GENERATED / "config-matrix.md").write_text("\n".join(lines))
 
 
@@ -129,7 +131,9 @@ def write_testing_map():
         for f in sorted(tests_dir.glob("test_*.py")):
             lines.append(f"- {f.name}")
     lines.append("")
-    lines.append("Run: `pytest` from the repo root. Config: pyproject.toml [tool.pytest.ini_options].")
+    lines.append(
+        "Run: `pytest` from the repo root. Config: pyproject.toml [tool.pytest.ini_options]."
+    )
     (GENERATED / "testing-map.md").write_text("\n".join(lines))
 
 

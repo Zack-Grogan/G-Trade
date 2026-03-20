@@ -281,7 +281,6 @@ class TradingState:
         self.config_path: Optional[str] = None
         self.config_hash: Optional[str] = None
         self.observability_db_path: Optional[str] = None
-        self.mcp_url: Optional[str] = None
         self.last_backfill: Optional[dict[str, Any]] = None
         self.lifecycle: dict[str, Any] = {}
 
@@ -374,7 +373,6 @@ class TradingState:
                 "config_path": self.config_path,
                 "config_hash": self.config_hash,
                 "sqlite_path": self.observability_db_path,
-                "mcp_url": self.mcp_url,
                 "last_backfill": self.last_backfill,
             },
         }
@@ -656,7 +654,6 @@ def _compact_log_source(logger_name: Any, source: Any) -> str:
         ("src.server.flask_console", "Console"),
         ("src.server.debug_server", "Health"),
         ("src.cli", "CLI"),
-        ("src.bridge.railway_bridge", "Bridge"),
         ("src.observability.store", "SQLite"),
     )
     for prefix, label in mapping:
@@ -691,7 +688,7 @@ def _format_chip_value(value: str) -> str:
     prefixes = ("blackout_", "matrix_", "failsafe_", "risk_", "zone_")
     for prefix in prefixes:
         if value.startswith(prefix):
-            value = value[len(prefix):]
+            value = value[len(prefix) :]
     return value.replace("_", " ").title()
 
 
@@ -791,8 +788,6 @@ def _compact_log_message(message: Any) -> str:
                 parts.append(f"health {token.split('=', 1)[1]}")
             elif token.startswith("debug_url="):
                 parts.append(f"console {token.split('=', 1)[1]}")
-            elif token.startswith("mcp_url="):
-                parts.append(f"mcp {token.split('=', 1)[1]}")
             elif token.startswith("current_zone="):
                 parts.append(f"zone {token.split('=', 1)[1]}")
             elif token.startswith("zone_state="):
@@ -969,7 +964,9 @@ def _chart_backfill_cache_key(symbol: str, lookback_hours: int) -> str:
     return f"{symbol.upper()}:{lookback_hours}"
 
 
-def _market_time_bounds(rows: list[dict[str, Any]]) -> tuple[Optional[datetime], Optional[datetime]]:
+def _market_time_bounds(
+    rows: list[dict[str, Any]],
+) -> tuple[Optional[datetime], Optional[datetime]]:
     if not rows:
         return None, None
     timestamps = [_parse_dt(row.get("captured_at")) for row in rows]
@@ -1394,7 +1391,9 @@ def _build_candles(
         bar_high = _coerce_float(payload.get("high"))
         bar_low = _coerce_float(payload.get("low"))
         bar_close = _coerce_float(payload.get("close"))
-        if all(value is not None and value > 0 for value in (bar_open, bar_high, bar_low, bar_close)):
+        if all(
+            value is not None and value > 0 for value in (bar_open, bar_high, bar_low, bar_close)
+        ):
             buckets[bucket] = {
                 "time": bucket,
                 "open": bar_open,
@@ -2252,18 +2251,15 @@ def _build_logs_model(state: TradingState, store) -> dict[str, Any]:
 
 def _build_system_model(state: TradingState, store) -> dict[str, Any]:
     recent_runs = store.query_run_manifests(limit=10)
-    bridge_health = store.query_bridge_health(limit=20)
     recent_logs = _filter_operator_logs(store.query_runtime_logs(limit=100, ascending=False))[:25]
     return {
         "state": state.to_dict(),
         "health": state.to_health_dict(),
         "db_path": store.get_db_path(),
         "recent_runs": recent_runs,
-        "bridge_health": bridge_health,
         "recent_logs": recent_logs,
         "summary": {
             "run_count": len(recent_runs),
-            "bridge_health_count": len(bridge_health),
             "log_count": len(recent_logs),
             "observability_enabled": (
                 bool(getattr(store.settings, "enabled", False))
@@ -2396,9 +2392,7 @@ def create_app(config: Optional[Config] = None) -> Flask:
         )
         return jsonify(
             _json_safe(
-                _build_chart_model(
-                    get_state(), _current_store(), lookback_hours=lookback_hours
-                )
+                _build_chart_model(get_state(), _current_store(), lookback_hours=lookback_hours)
             )
         )
 

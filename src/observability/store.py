@@ -25,7 +25,9 @@ class ObservabilityStore:
         self.config = root_config
         self.settings = root_config.observability
         self._db_path = self._resolve_db_path(self.settings.sqlite_path)
-        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(int(self.settings.queue_max_size), 1))
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(
+            maxsize=max(int(self.settings.queue_max_size), 1)
+        )
         self._lock = threading.RLock()
         self._worker: Optional[threading.Thread] = None
         self._conn: Optional[sqlite3.Connection] = None
@@ -52,7 +54,9 @@ class ObservabilityStore:
     def _extract_account_context(self, payload: dict[str, Any]) -> dict[str, Any]:
         account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
         account_id = payload.get("account_id") or account.get("id") or account.get("account_id")
-        account_name = payload.get("account_name") or account.get("name") or account.get("account_name")
+        account_name = (
+            payload.get("account_name") or account.get("name") or account.get("account_name")
+        )
         account_is_practice = payload.get("account_is_practice")
         if account_is_practice is None:
             account_is_practice = account.get("is_practice")
@@ -88,7 +92,9 @@ class ObservabilityStore:
                 self._ensure_schema()
                 self._prune_old_records_locked()
                 self._running = True
-                self._worker = threading.Thread(target=self._worker_loop, name="observability-store", daemon=True)
+                self._worker = threading.Thread(
+                    target=self._worker_loop, name="observability-store", daemon=True
+                )
                 self._worker.start()
                 logger.info("Observability store started at %s", self._db_path)
         except Exception:
@@ -162,25 +168,39 @@ class ObservabilityStore:
                 "reason": reason,
                 "order_id": order_id,
                 "risk_state": risk_state,
-                "payload_json": json.dumps(self._normalize_value(payload or {}), separators=(",", ":"), sort_keys=True),
+                "payload_json": json.dumps(
+                    self._normalize_value(payload or {}), separators=(",", ":"), sort_keys=True
+                ),
             }
             try:
                 self._queue.put_nowait(event)
             except queue.Full:
                 self._dropped_events += 1
                 if self._dropped_events in {1, 10, 100} or self._dropped_events % 1000 == 0:
-                    logger.warning("Observability queue full; dropped %s events", self._dropped_events)
+                    logger.warning(
+                        "Observability queue full; dropped %s events", self._dropped_events
+                    )
         except Exception:
             self._failed = True
-            logger.exception("Failed to record observability event category=%s event_type=%s", category, event_type)
+            logger.exception(
+                "Failed to record observability event category=%s event_type=%s",
+                category,
+                event_type,
+            )
 
-    def record_state_snapshot(self, snapshot: dict[str, Any], event_time: Optional[datetime] = None) -> None:
+    def record_state_snapshot(
+        self, snapshot: dict[str, Any], event_time: Optional[datetime] = None
+    ) -> None:
         if not self.enabled():
             return
         try:
             self.start()
             payload = self._normalize_value(snapshot or {})
-            observability = payload.get("observability") if isinstance(payload.get("observability"), dict) else {}
+            observability = (
+                payload.get("observability")
+                if isinstance(payload.get("observability"), dict)
+                else {}
+            )
             account_context = self._extract_account_context(payload)
             record = {
                 "record_type": "state_snapshot",
@@ -191,20 +211,64 @@ class ObservabilityStore:
                 "status": payload.get("status"),
                 "data_mode": payload.get("data_mode"),
                 "symbol": payload.get("symbol") or (observability.get("symbols") or [None])[0],
-                "zone": (payload.get("zone") or {}).get("name") if isinstance(payload.get("zone"), dict) else payload.get("zone"),
-                "zone_state": (payload.get("zone") or {}).get("state") if isinstance(payload.get("zone"), dict) else payload.get("zone_state"),
-                "position": (payload.get("position") or {}).get("contracts") if isinstance(payload.get("position"), dict) else payload.get("position"),
-                "position_pnl": (payload.get("position") or {}).get("pnl") if isinstance(payload.get("position"), dict) else payload.get("position_pnl"),
-                "daily_pnl": (payload.get("account") or {}).get("daily_pnl") if isinstance(payload.get("account"), dict) else payload.get("daily_pnl"),
-                "risk_state": (payload.get("risk") or {}).get("state") if isinstance(payload.get("risk"), dict) else payload.get("risk_state"),
+                "zone": (
+                    (payload.get("zone") or {}).get("name")
+                    if isinstance(payload.get("zone"), dict)
+                    else payload.get("zone")
+                ),
+                "zone_state": (
+                    (payload.get("zone") or {}).get("state")
+                    if isinstance(payload.get("zone"), dict)
+                    else payload.get("zone_state")
+                ),
+                "position": (
+                    (payload.get("position") or {}).get("contracts")
+                    if isinstance(payload.get("position"), dict)
+                    else payload.get("position")
+                ),
+                "position_pnl": (
+                    (payload.get("position") or {}).get("pnl")
+                    if isinstance(payload.get("position"), dict)
+                    else payload.get("position_pnl")
+                ),
+                "daily_pnl": (
+                    (payload.get("account") or {}).get("daily_pnl")
+                    if isinstance(payload.get("account"), dict)
+                    else payload.get("daily_pnl")
+                ),
+                "risk_state": (
+                    (payload.get("risk") or {}).get("state")
+                    if isinstance(payload.get("risk"), dict)
+                    else payload.get("risk_state")
+                ),
                 "account_id": account_context["account_id"],
                 "account_name": account_context["account_name"],
                 "account_mode": account_context["account_mode"],
                 "account_is_practice": account_context["account_is_practice"],
-                "decision_id": ((payload.get("execution") or {}).get("decision_id") if isinstance(payload.get("execution"), dict) else None) or payload.get("decision_id"),
-                "attempt_id": ((payload.get("execution") or {}).get("attempt_id") if isinstance(payload.get("execution"), dict) else None) or payload.get("attempt_id"),
-                "position_id": ((payload.get("execution") or {}).get("position_id") if isinstance(payload.get("execution"), dict) else None) or payload.get("position_id"),
-                "trade_id": ((payload.get("execution") or {}).get("trade_id") if isinstance(payload.get("execution"), dict) else None) or payload.get("trade_id"),
+                "decision_id": (
+                    (payload.get("execution") or {}).get("decision_id")
+                    if isinstance(payload.get("execution"), dict)
+                    else None
+                )
+                or payload.get("decision_id"),
+                "attempt_id": (
+                    (payload.get("execution") or {}).get("attempt_id")
+                    if isinstance(payload.get("execution"), dict)
+                    else None
+                )
+                or payload.get("attempt_id"),
+                "position_id": (
+                    (payload.get("execution") or {}).get("position_id")
+                    if isinstance(payload.get("execution"), dict)
+                    else None
+                )
+                or payload.get("position_id"),
+                "trade_id": (
+                    (payload.get("execution") or {}).get("trade_id")
+                    if isinstance(payload.get("execution"), dict)
+                    else None
+                )
+                or payload.get("trade_id"),
                 "payload_json": self._json_dumps(payload),
             }
             self._queue.put_nowait(record)
@@ -224,7 +288,12 @@ class ObservabilityStore:
             payload = self._normalize_value(tick or {})
             record = {
                 "record_type": "market_tape",
-                "captured_at": self._coerce_datetime_value(payload.get("captured_at") or payload.get("event_time") or payload.get("timestamp") or datetime.now(UTC)),
+                "captured_at": self._coerce_datetime_value(
+                    payload.get("captured_at")
+                    or payload.get("event_time")
+                    or payload.get("timestamp")
+                    or datetime.now(UTC)
+                ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
                 "process_id": int(payload.get("process_id") or os.getpid()),
@@ -249,7 +318,10 @@ class ObservabilityStore:
         except queue.Full:
             self._dropped_events += 1
             if self._dropped_events in {1, 10, 100} or self._dropped_events % 1000 == 0:
-                logger.warning("Observability queue full after 1s block; dropped %s records", self._dropped_events)
+                logger.warning(
+                    "Observability queue full after 1s block; dropped %s records",
+                    self._dropped_events,
+                )
         except Exception:
             self._failed = True
             logger.exception("Failed to record market tick")
@@ -262,11 +334,16 @@ class ObservabilityStore:
             payload = self._normalize_value(snapshot or {})
             record = {
                 "record_type": "decision_snapshot",
-                "decided_at": self._coerce_datetime_value(payload.get("decided_at") or payload.get("event_time") or datetime.now(UTC)),
+                "decided_at": self._coerce_datetime_value(
+                    payload.get("decided_at") or payload.get("event_time") or datetime.now(UTC)
+                ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
                 "process_id": int(payload.get("process_id") or os.getpid()),
-                "decision_id": str(payload.get("decision_id") or f"{self._run_id}:decision:{int(time.time() * 1000)}"),
+                "decision_id": str(
+                    payload.get("decision_id")
+                    or f"{self._run_id}:decision:{int(time.time() * 1000)}"
+                ),
                 "attempt_id": payload.get("attempt_id"),
                 "symbol": payload.get("symbol"),
                 "zone": payload.get("zone"),
@@ -318,7 +395,9 @@ class ObservabilityStore:
             payload = self._normalize_value(lifecycle or {})
             record = {
                 "record_type": "order_lifecycle",
-                "observed_at": self._coerce_datetime_value(payload.get("observed_at") or payload.get("event_time") or datetime.now(UTC)),
+                "observed_at": self._coerce_datetime_value(
+                    payload.get("observed_at") or payload.get("event_time") or datetime.now(UTC)
+                ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
                 "process_id": int(payload.get("process_id") or os.getpid()),
@@ -364,13 +443,17 @@ class ObservabilityStore:
             payload = self._normalize_value(health or {})
             record = {
                 "record_type": "bridge_health",
-                "observed_at": self._coerce_datetime_value(payload.get("observed_at") or datetime.now(UTC)),
+                "observed_at": self._coerce_datetime_value(
+                    payload.get("observed_at") or datetime.now(UTC)
+                ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
                 "bridge_status": payload.get("bridge_status"),
                 "queue_depth": payload.get("queue_depth"),
                 "last_flush_at": self._coerce_optional_datetime_value(payload.get("last_flush_at")),
-                "last_success_at": self._coerce_optional_datetime_value(payload.get("last_success_at")),
+                "last_success_at": self._coerce_optional_datetime_value(
+                    payload.get("last_success_at")
+                ),
                 "last_error": payload.get("last_error"),
                 "payload_json": self._json_dumps(payload),
             }
@@ -391,7 +474,9 @@ class ObservabilityStore:
             payload = self._normalize_value(entry or {})
             record = {
                 "record_type": "runtime_log",
-                "logged_at": self._coerce_datetime_value(payload.get("logged_at") or payload.get("observed_at") or datetime.now(UTC)),
+                "logged_at": self._coerce_datetime_value(
+                    payload.get("logged_at") or payload.get("observed_at") or datetime.now(UTC)
+                ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
                 "logger_name": payload.get("logger_name"),
@@ -463,7 +548,9 @@ class ObservabilityStore:
                 clauses.append("event_timestamp <= ?")
                 params.append(self._coerce_datetime_value(end_time))
             if search:
-                clauses.append("(reason LIKE ? OR action LIKE ? OR symbol LIKE ? OR zone LIKE ? OR payload_json LIKE ? OR event_type LIKE ? OR source LIKE ?)")
+                clauses.append(
+                    "(reason LIKE ? OR action LIKE ? OR symbol LIKE ? OR zone LIKE ? OR payload_json LIKE ? OR event_type LIKE ? OR source LIKE ?)"
+                )
                 pattern = f"%{search}%"
                 params.extend([pattern, pattern, pattern, pattern, pattern, pattern, pattern])
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -522,7 +609,9 @@ class ObservabilityStore:
                 params.append(self._coerce_datetime_value(end_time))
             if search:
                 pattern = f"%{search}%"
-                clauses.append("(status LIKE ? OR data_mode LIKE ? OR symbol LIKE ? OR zone LIKE ? OR zone_state LIKE ? OR account_name LIKE ? OR payload_json LIKE ?)")
+                clauses.append(
+                    "(status LIKE ? OR data_mode LIKE ? OR symbol LIKE ? OR zone LIKE ? OR zone_state LIKE ? OR account_name LIKE ? OR payload_json LIKE ?)"
+                )
                 params.extend([pattern, pattern, pattern, pattern, pattern, pattern, pattern])
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             order_clause = "ORDER BY id ASC" if ascending else "ORDER BY id DESC"
@@ -585,7 +674,9 @@ class ObservabilityStore:
                 params.append(self._coerce_datetime_value(end_time))
             if search:
                 pattern = f"%{search}%"
-                clauses.append("(symbol LIKE ? OR contract_id LIKE ? OR trade_side LIKE ? OR source LIKE ? OR payload_json LIKE ?)")
+                clauses.append(
+                    "(symbol LIKE ? OR contract_id LIKE ? OR trade_side LIKE ? OR source LIKE ? OR payload_json LIKE ?)"
+                )
                 params.extend([pattern, pattern, pattern, pattern, pattern])
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             order_clause = "ORDER BY id ASC" if ascending else "ORDER BY id DESC"
@@ -643,7 +734,9 @@ class ObservabilityStore:
                 params.append(self._coerce_datetime_value(end_time))
             if search:
                 pattern = f"%{search}%"
-                clauses.append("(decision_id LIKE ? OR action LIKE ? OR reason LIKE ? OR outcome LIKE ? OR zone LIKE ? OR payload_json LIKE ?)")
+                clauses.append(
+                    "(decision_id LIKE ? OR action LIKE ? OR reason LIKE ? OR outcome LIKE ? OR zone LIKE ? OR payload_json LIKE ?)"
+                )
                 params.extend([pattern, pattern, pattern, pattern, pattern, pattern])
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             order_clause = "ORDER BY id ASC" if ascending else "ORDER BY id DESC"
@@ -708,7 +801,9 @@ class ObservabilityStore:
                 params.append(self._coerce_datetime_value(end_time))
             if search:
                 pattern = f"%{search}%"
-                clauses.append("(decision_id LIKE ? OR attempt_id LIKE ? OR order_id LIKE ? OR status LIKE ? OR event_type LIKE ? OR reason LIKE ? OR payload_json LIKE ?)")
+                clauses.append(
+                    "(decision_id LIKE ? OR attempt_id LIKE ? OR order_id LIKE ? OR status LIKE ? OR event_type LIKE ? OR reason LIKE ? OR payload_json LIKE ?)"
+                )
                 params.extend([pattern, pattern, pattern, pattern, pattern, pattern, pattern])
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             order_clause = "ORDER BY id ASC" if ascending else "ORDER BY id DESC"
@@ -815,7 +910,9 @@ class ObservabilityStore:
                 params.append(end_value)
             if search:
                 pattern = f"%{search}%"
-                clauses.append("(logger_name LIKE ? OR message LIKE ? OR exception_text LIKE ? OR source LIKE ? OR service_name LIKE ? OR payload_json LIKE ?)")
+                clauses.append(
+                    "(logger_name LIKE ? OR message LIKE ? OR exception_text LIKE ? OR source LIKE ? OR service_name LIKE ? OR payload_json LIKE ?)"
+                )
                 params.extend([pattern, pattern, pattern, pattern, pattern, pattern])
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             order_clause = "ORDER BY id ASC" if ascending else "ORDER BY id DESC"
@@ -905,14 +1002,18 @@ class ObservabilityStore:
     def get_run_id(self) -> str:
         return self._run_id
 
-    def record_account_trade(self, trade: dict[str, Any], *, run_id: Optional[str] = None, source: str = "broker_history") -> bool:
+    def record_account_trade(
+        self, trade: dict[str, Any], *, run_id: Optional[str] = None, source: str = "broker_history"
+    ) -> bool:
         if not self.enabled():
             return False
         try:
             self.start()
             payload = self._normalize_value(trade or {})
             account_context = self._extract_account_context(payload)
-            broker_trade_id = payload.get("broker_trade_id") or payload.get("trade_id") or payload.get("id")
+            broker_trade_id = (
+                payload.get("broker_trade_id") or payload.get("trade_id") or payload.get("id")
+            )
             occurred_at = (
                 self._coerce_optional_datetime_value(payload.get("occurred_at"))
                 or self._coerce_optional_datetime_value(payload.get("creationTimestamp"))
@@ -925,17 +1026,24 @@ class ObservabilityStore:
                 "run_id": str(run_id or payload.get("run_id") or self._run_id),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "occurred_at": occurred_at,
-                "account_id": account_context["account_id"] or str(payload.get("accountId") or payload.get("account_id") or ""),
+                "account_id": account_context["account_id"]
+                or str(payload.get("accountId") or payload.get("account_id") or ""),
                 "account_name": account_context["account_name"],
                 "account_mode": account_context["account_mode"],
                 "account_is_practice": account_context["account_is_practice"],
                 "broker_trade_id": str(broker_trade_id or ""),
-                "broker_order_id": payload.get("broker_order_id") or payload.get("orderId") or payload.get("order_id"),
+                "broker_order_id": payload.get("broker_order_id")
+                or payload.get("orderId")
+                or payload.get("order_id"),
                 "contract_id": payload.get("contract_id") or payload.get("contractId"),
                 "side": payload.get("side"),
                 "size": payload.get("size"),
                 "price": payload.get("price"),
-                "profit_and_loss": payload.get("profit_and_loss") if "profit_and_loss" in payload else payload.get("profitAndLoss"),
+                "profit_and_loss": (
+                    payload.get("profit_and_loss")
+                    if "profit_and_loss" in payload
+                    else payload.get("profitAndLoss")
+                ),
                 "fees": payload.get("fees"),
                 "voided": self._coerce_bool(payload.get("voided")),
                 "source": source,
@@ -961,7 +1069,11 @@ class ObservabilityStore:
             payload = self._normalize_value(manifest or {})
             account_context = self._extract_account_context(payload)
             run_id = str(payload.get("run_id") or self._run_id)
-            created_at = str(payload.get("started_at") or payload.get("created_at") or self._serialize_datetime(datetime.now(UTC)))
+            created_at = str(
+                payload.get("started_at")
+                or payload.get("created_at")
+                or self._serialize_datetime(datetime.now(UTC))
+            )
             process_id = int(payload.get("process_id") or os.getpid())
             with self._lock:
                 assert self._conn is not None
@@ -1035,7 +1147,9 @@ class ObservabilityStore:
             self._failed = True
             logger.exception("Failed to record run manifest")
 
-    def query_run_manifests(self, *, limit: int = 25, search: Optional[str] = None) -> list[dict[str, Any]]:
+    def query_run_manifests(
+        self, *, limit: int = 25, search: Optional[str] = None
+    ) -> list[dict[str, Any]]:
         if not self.enabled():
             return []
         try:
@@ -1044,7 +1158,9 @@ class ObservabilityStore:
             params: list[Any] = []
             if search:
                 pattern = f"%{search}%"
-                clauses.append("(run_id LIKE ? OR data_mode LIKE ? OR symbol LIKE ? OR account_name LIKE ? OR git_branch LIKE ? OR git_commit LIKE ? OR payload_json LIKE ?)")
+                clauses.append(
+                    "(run_id LIKE ? OR data_mode LIKE ? OR symbol LIKE ? OR account_name LIKE ? OR git_branch LIKE ? OR git_commit LIKE ? OR payload_json LIKE ?)"
+                )
                 params.extend([pattern, pattern, pattern, pattern, pattern, pattern, pattern])
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             with self._lock:
@@ -1164,7 +1280,9 @@ class ObservabilityStore:
                     )
                     return False
                 record["entry_time"] = self._canonicalize_datetime_value(payload.get("entry_time"))
-                record["exit_time"] = self._canonicalize_datetime_value(payload.get("exit_time")) or self._serialize_datetime(datetime.now(UTC))
+                record["exit_time"] = self._canonicalize_datetime_value(
+                    payload.get("exit_time")
+                ) or self._serialize_datetime(datetime.now(UTC))
                 before = self._conn.total_changes
                 self._insert_completed_trade_locked(record)
                 return self._conn.total_changes > before
@@ -1225,19 +1343,19 @@ class ObservabilityStore:
                 params.append(self._coerce_datetime_value(end_time))
             if search:
                 pattern = f"%{search}%"
-                clauses.append("(zone LIKE ? OR strategy LIKE ? OR regime LIKE ? OR payload_json LIKE ? OR event_tags_json LIKE ?)")
+                clauses.append(
+                    "(zone LIKE ? OR strategy LIKE ? OR regime LIKE ? OR payload_json LIKE ? OR event_tags_json LIKE ?)"
+                )
                 params.extend([pattern, pattern, pattern, pattern, pattern])
             if not include_non_authoritative:
-                clauses.append(
-                    """
+                clauses.append("""
                     NOT EXISTS (
                         SELECT 1
                         FROM run_manifests rm
                         WHERE rm.run_id = completed_trades.run_id
                           AND lower(trim(COALESCE(rm.data_mode, ''))) NOT IN ('', 'live')
                     )
-                    """
-                )
+                    """)
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             order_clause = "ORDER BY id ASC" if ascending else "ORDER BY id DESC"
             with self._lock:
@@ -1260,7 +1378,9 @@ class ObservabilityStore:
             logger.exception("Failed to query completed trades")
             return []
 
-    def backfill_completed_trades_from_events(self, *, run_id: Optional[str] = None) -> dict[str, Any]:
+    def backfill_completed_trades_from_events(
+        self, *, run_id: Optional[str] = None
+    ) -> dict[str, Any]:
         if not self.enabled():
             return {"checked": 0, "backfilled": 0, "run_id": run_id}
         try:
@@ -1291,8 +1411,11 @@ class ObservabilityStore:
                         {
                             "run_id": row["run_id"],
                             "inserted_at": self._serialize_datetime(datetime.now(UTC)),
-                            "entry_time": self._canonicalize_datetime_value(payload.get("entry_time")),
-                            "exit_time": self._canonicalize_datetime_value(payload.get("exit_time")) or row["event_timestamp"],
+                            "entry_time": self._canonicalize_datetime_value(
+                                payload.get("entry_time")
+                            ),
+                            "exit_time": self._canonicalize_datetime_value(payload.get("exit_time"))
+                            or row["event_timestamp"],
                             "direction": int(payload.get("direction") or 0),
                             "contracts": int(payload.get("contracts") or 0),
                             "entry_price": float(payload.get("entry_price") or 0.0),
@@ -1301,7 +1424,9 @@ class ObservabilityStore:
                             "zone": row["zone"] or payload.get("zone"),
                             "strategy": payload.get("strategy"),
                             "regime": payload.get("regime"),
-                            "event_tags_json": self._json_dumps(list(payload.get("event_tags") or [])),
+                            "event_tags_json": self._json_dumps(
+                                list(payload.get("event_tags") or [])
+                            ),
                             "source": "event_backfill",
                             "backfilled": 1,
                             "trade_id": payload.get("trade_id"),
@@ -1337,7 +1462,11 @@ class ObservabilityStore:
                     pending.append(self._queue.get_nowait())
             except queue.Empty:
                 pass
-            if pending and (len(pending) >= batch_size or (time.time() - last_flush) >= flush_interval or not self._running):
+            if pending and (
+                len(pending) >= batch_size
+                or (time.time() - last_flush) >= flush_interval
+                or not self._running
+            ):
                 try:
                     with self._lock:
                         self._write_records_locked(pending)
@@ -1372,8 +1501,7 @@ class ObservabilityStore:
 
     def _ensure_schema(self) -> None:
         assert self._conn is not None
-        self._conn.executescript(
-            """
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS metadata (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -1660,8 +1788,7 @@ class ObservabilityStore:
             CREATE INDEX IF NOT EXISTS idx_account_trades_run_id ON account_trades(run_id, occurred_at DESC);
             CREATE INDEX IF NOT EXISTS idx_account_trades_broker_trade_id ON account_trades(broker_trade_id);
 
-            """
-        )
+            """)
         self._ensure_column_locked("state_snapshots", "account_id", "TEXT")
         self._ensure_column_locked("state_snapshots", "account_name", "TEXT")
         self._ensure_column_locked("state_snapshots", "account_mode", "TEXT")
@@ -1691,8 +1818,7 @@ class ObservabilityStore:
     def _ensure_column_locked(self, table_name: str, column_name: str, column_type: str) -> None:
         assert self._conn is not None
         columns = {
-            row["name"]
-            for row in self._conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            row["name"] for row in self._conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         }
         if column_name in columns:
             return
@@ -2149,14 +2275,31 @@ class ObservabilityStore:
             return
         assert self._conn is not None
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
-        self._conn.execute("DELETE FROM events WHERE event_timestamp < ?", (self._serialize_datetime(cutoff),))
-        self._conn.execute("DELETE FROM state_snapshots WHERE captured_at < ?", (self._serialize_datetime(cutoff),))
-        self._conn.execute("DELETE FROM market_tape WHERE captured_at < ?", (self._serialize_datetime(cutoff),))
-        self._conn.execute("DELETE FROM decision_snapshots WHERE decided_at < ?", (self._serialize_datetime(cutoff),))
-        self._conn.execute("DELETE FROM order_lifecycle WHERE observed_at < ?", (self._serialize_datetime(cutoff),))
-        self._conn.execute("DELETE FROM bridge_health WHERE observed_at < ?", (self._serialize_datetime(cutoff),))
-        self._conn.execute("DELETE FROM runtime_logs WHERE logged_at < ?", (self._serialize_datetime(cutoff),))
-        self._conn.execute("DELETE FROM account_trades WHERE occurred_at < ?", (self._serialize_datetime(cutoff),))
+        self._conn.execute(
+            "DELETE FROM events WHERE event_timestamp < ?", (self._serialize_datetime(cutoff),)
+        )
+        self._conn.execute(
+            "DELETE FROM state_snapshots WHERE captured_at < ?", (self._serialize_datetime(cutoff),)
+        )
+        self._conn.execute(
+            "DELETE FROM market_tape WHERE captured_at < ?", (self._serialize_datetime(cutoff),)
+        )
+        self._conn.execute(
+            "DELETE FROM decision_snapshots WHERE decided_at < ?",
+            (self._serialize_datetime(cutoff),),
+        )
+        self._conn.execute(
+            "DELETE FROM order_lifecycle WHERE observed_at < ?", (self._serialize_datetime(cutoff),)
+        )
+        self._conn.execute(
+            "DELETE FROM bridge_health WHERE observed_at < ?", (self._serialize_datetime(cutoff),)
+        )
+        self._conn.execute(
+            "DELETE FROM runtime_logs WHERE logged_at < ?", (self._serialize_datetime(cutoff),)
+        )
+        self._conn.execute(
+            "DELETE FROM account_trades WHERE occurred_at < ?", (self._serialize_datetime(cutoff),)
+        )
         self._conn.commit()
 
     def _normalize_value(self, value: Any) -> Any:
@@ -2200,28 +2343,46 @@ class ObservabilityStore:
     def _decode_run_manifest_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["git_dirty"] = bool(item["git_dirty"]) if item["git_dirty"] is not None else None
-        item["git_available"] = bool(item["git_available"]) if item["git_available"] is not None else None
-        item["account_is_practice"] = bool(item["account_is_practice"]) if item.get("account_is_practice") is not None else None
+        item["git_available"] = (
+            bool(item["git_available"]) if item["git_available"] is not None else None
+        )
+        item["account_is_practice"] = (
+            bool(item["account_is_practice"])
+            if item.get("account_is_practice") is not None
+            else None
+        )
         item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return item
 
     def _decode_state_snapshot_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
-        item["account_is_practice"] = bool(item["account_is_practice"]) if item.get("account_is_practice") is not None else None
+        item["account_is_practice"] = (
+            bool(item["account_is_practice"])
+            if item.get("account_is_practice") is not None
+            else None
+        )
         item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return item
 
     def _decode_market_tape_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
-        item["volume_is_cumulative"] = bool(item["volume_is_cumulative"]) if item["volume_is_cumulative"] is not None else None
-        item["quote_is_synthetic"] = bool(item["quote_is_synthetic"]) if item["quote_is_synthetic"] is not None else None
+        item["volume_is_cumulative"] = (
+            bool(item["volume_is_cumulative"]) if item["volume_is_cumulative"] is not None else None
+        )
+        item["quote_is_synthetic"] = (
+            bool(item["quote_is_synthetic"]) if item["quote_is_synthetic"] is not None else None
+        )
         item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return item
 
     def _decode_decision_snapshot_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
-        item["allow_entries"] = bool(item["allow_entries"]) if item["allow_entries"] is not None else None
-        item["execution_tradeable"] = bool(item["execution_tradeable"]) if item["execution_tradeable"] is not None else None
+        item["allow_entries"] = (
+            bool(item["allow_entries"]) if item["allow_entries"] is not None else None
+        )
+        item["execution_tradeable"] = (
+            bool(item["execution_tradeable"]) if item["execution_tradeable"] is not None else None
+        )
         item["active_vetoes"] = json.loads(item.pop("active_vetoes_json") or "[]")
         item["feature_snapshot"] = json.loads(item.pop("feature_snapshot_json") or "{}")
         item["entry_guard"] = json.loads(item.pop("entry_guard_json") or "{}")
@@ -2233,7 +2394,9 @@ class ObservabilityStore:
 
     def _decode_order_lifecycle_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
-        item["is_protective"] = bool(item["is_protective"]) if item["is_protective"] is not None else None
+        item["is_protective"] = (
+            bool(item["is_protective"]) if item["is_protective"] is not None else None
+        )
         item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return item
 
@@ -2250,7 +2413,11 @@ class ObservabilityStore:
     def _decode_completed_trade_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["backfilled"] = bool(item["backfilled"])
-        item["account_is_practice"] = bool(item["account_is_practice"]) if item.get("account_is_practice") is not None else None
+        item["account_is_practice"] = (
+            bool(item["account_is_practice"])
+            if item.get("account_is_practice") is not None
+            else None
+        )
         item["event_tags"] = json.loads(item.pop("event_tags_json") or "[]")
         item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return item
@@ -2300,7 +2467,11 @@ class ObservabilityStore:
 
     def _decode_account_trade_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
-        item["account_is_practice"] = bool(item["account_is_practice"]) if item.get("account_is_practice") is not None else None
+        item["account_is_practice"] = (
+            bool(item["account_is_practice"])
+            if item.get("account_is_practice") is not None
+            else None
+        )
         item["voided"] = bool(item["voided"]) if item.get("voided") is not None else None
         item["payload"] = json.loads(item.pop("payload_json") or "{}")
         return item
@@ -2309,7 +2480,9 @@ class ObservabilityStore:
         assert self._conn is not None
         normalized = dict(record)
         normalized["entry_time"] = self._canonicalize_datetime_value(normalized.get("entry_time"))
-        normalized["exit_time"] = self._canonicalize_datetime_value(normalized.get("exit_time")) or self._serialize_datetime(datetime.now(UTC))
+        normalized["exit_time"] = self._canonicalize_datetime_value(
+            normalized.get("exit_time")
+        ) or self._serialize_datetime(datetime.now(UTC))
         before = self._conn.total_changes
         self._conn.execute(
             """
@@ -2427,7 +2600,9 @@ class ObservabilityStore:
 _store: Optional[ObservabilityStore] = None
 
 
-def get_observability_store(force_recreate: bool = False, config: Optional[Config] = None) -> ObservabilityStore:
+def get_observability_store(
+    force_recreate: bool = False, config: Optional[Config] = None
+) -> ObservabilityStore:
     global _store
     if force_recreate and _store is not None:
         _store.stop()

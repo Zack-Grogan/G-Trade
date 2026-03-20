@@ -30,7 +30,10 @@ def main():
         print("Error: set LINEAR_API_KEY in the environment.", file=sys.stderr)
         sys.exit(1)
     if not team_id:
-        print("Error: set LINEAR_TEAM_ID in the environment (find in Linear Settings > Team).", file=sys.stderr)
+        print(
+            "Error: set LINEAR_TEAM_ID in the environment (find in Linear Settings > Team).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if not ISSUES_JSON.is_file():
@@ -86,7 +89,9 @@ def main():
             continue
         issue = (data.get("data") or {}).get("issueCreate", {}).get("issue")
         if issue:
-            print(f"Created: {issue.get('identifier', issue.get('id'))} — {title} ({issue.get('url', '')})")
+            print(
+                f"Created: {issue.get('identifier', issue.get('id'))} — {title} ({issue.get('url', '')})"
+            )
         else:
             print(f"No issue returned for '{title}'", file=sys.stderr)
 

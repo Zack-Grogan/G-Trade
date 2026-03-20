@@ -1,4 +1,5 @@
 """Strategies package."""
+
 from .base import BaseStrategy, TradingSignal, SignalDirection, StrategyRegistry
 from .orb_strategy import ORBStrategy
 from .vwap_trend import VWAPTrendStrategy
@@ -20,13 +21,13 @@ def register_default_strategies(config=None) -> None:
 register_default_strategies()
 
 __all__ = [
-    'BaseStrategy',
-    'TradingSignal',
-    'SignalDirection',
-    'StrategyRegistry',
-    'ORBStrategy',
-    'VWAPTrendStrategy',
-    'VWAPMeanReversionStrategy',
-    'FlattenStrategy',
-    'register_default_strategies',
+    "BaseStrategy",
+    "TradingSignal",
+    "SignalDirection",
+    "StrategyRegistry",
+    "ORBStrategy",
+    "VWAPTrendStrategy",
+    "VWAPMeanReversionStrategy",
+    "FlattenStrategy",
+    "register_default_strategies",
 ]

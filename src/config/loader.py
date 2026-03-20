@@ -1,4 +1,5 @@
 """Configuration loader module."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields as dataclass_fields
@@ -264,7 +265,9 @@ class AlphaConfig:
             "Outside": 30,
         }
     )
-    zone_weights: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=_default_zone_weights)
+    zone_weights: Dict[str, Dict[str, Dict[str, float]]] = field(
+        default_factory=_default_zone_weights
+    )
     zone_vetoes: Dict[str, Dict[str, Any]] = field(default_factory=_default_zone_vetoes)
 
 
@@ -351,7 +354,9 @@ def _default_benchmark_zone_strategies() -> Dict[str, str]:
 @dataclass
 class ValidationConfig:
     benchmarks_enabled: bool = True
-    benchmark_zone_strategies: Dict[str, str] = field(default_factory=_default_benchmark_zone_strategies)
+    benchmark_zone_strategies: Dict[str, str] = field(
+        default_factory=_default_benchmark_zone_strategies
+    )
     max_features_per_side: int = 7
     walk_forward_train_bars: int = 120
     walk_forward_test_bars: int = 60
@@ -398,9 +403,6 @@ class ServerConfig:
     health_port: int = 31380
     debug_port: int = 31381
     host: str = "127.0.0.1"
-    mcp_enabled: bool = True
-    mcp_path: str = "/mcp"
-    railway_mcp_url: Optional[str] = None
 
 
 @dataclass
@@ -425,13 +427,6 @@ class ObservabilityConfig:
     backfill_missing_trade_records: bool = True
     sync_account_trade_history_on_startup: bool = True
     account_trade_history_lookback_hours: int = 168
-    internal_api_token: str = ""
-    railway_ingest_url: str = ""
-    railway_ingest_api_key: str = ""
-    bridge_interval_seconds: float = 30.0
-    outbox_path: str = "logs/railway_outbox.db"
-    bridge_retry_attempts: int = 5
-    bridge_retry_base_seconds: float = 2.0
 
 
 @dataclass
@@ -475,6 +470,20 @@ _DEPRECATED_CONFIG_KEYS: dict[type, dict[str, str]] = {
     RiskConfig: {
         "use_volatility_sizing": "ignored; position sizing is driven by ATR, account.risk_per_contract, max_contracts, and risk state.",
         "target_daily_risk_pct": "ignored; daily risk is enforced by max_daily_loss and related risk controls, not a target percentage knob.",
+    },
+    ServerConfig: {
+        "mcp_enabled": "removed; in-process MCP endpoint support was retired from the local runtime.",
+        "mcp_path": "removed; in-process MCP endpoint support was retired from the local runtime.",
+        "railway_mcp_url": "removed; Railway integration is retired from the local runtime.",
+    },
+    ObservabilityConfig: {
+        "internal_api_token": "removed; Railway bridge ingest is retired.",
+        "railway_ingest_url": "removed; Railway bridge ingest is retired.",
+        "railway_ingest_api_key": "removed; Railway bridge ingest is retired.",
+        "bridge_interval_seconds": "removed; Railway bridge ingest is retired.",
+        "outbox_path": "removed; Railway bridge ingest is retired.",
+        "bridge_retry_attempts": "removed; Railway bridge ingest is retired.",
+        "bridge_retry_base_seconds": "removed; Railway bridge ingest is retired.",
     },
 }
 _WARNED_DEPRECATED_CONFIG_KEYS: set[tuple[str, str]] = set()
@@ -543,7 +552,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
         order_flow=_dict_to_dataclass(data.get("order_flow", {}), OrderFlowConfig),
         regime=_dict_to_dataclass(data.get("regime", {}), RegimeConfig),
         watchdog=_dict_to_dataclass(data.get("watchdog", {}), WatchdogConfig),
-        replay_execution=_dict_to_dataclass(data.get("replay_execution", {}), ReplayExecutionConfig),
+        replay_execution=_dict_to_dataclass(
+            data.get("replay_execution", {}), ReplayExecutionConfig
+        ),
         validation=_dict_to_dataclass(data.get("validation", {}), ValidationConfig),
         safety=_dict_to_dataclass(data.get("safety", {}), SafetyConfig),
         event_provider=_dict_to_dataclass(data.get("event_provider", {}), EventProviderConfig),

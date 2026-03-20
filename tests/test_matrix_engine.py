@@ -1,4 +1,5 @@
 """Matrix engine and replay tests."""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 import unittest
+from typing import Optional
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -22,7 +24,18 @@ from src.cli.commands import (
     cli,
 )
 from src.config import BlackoutConfig, Config, EventProviderConfig, HotZoneConfig, set_config
-from src.engine import DecisionMatrixEvaluator, FeatureSnapshot, HotZoneScheduler, MatrixDecision, ReplayRunner, TradingEngine, ZoneInfo, ZoneState, get_risk_manager, get_scheduler
+from src.engine import (
+    DecisionMatrixEvaluator,
+    FeatureSnapshot,
+    HotZoneScheduler,
+    MatrixDecision,
+    ReplayRunner,
+    TradingEngine,
+    ZoneInfo,
+    ZoneState,
+    get_risk_manager,
+    get_scheduler,
+)
 from src.engine.event_provider import EventContext, LocalEventProvider
 from src.engine.market_context import OrderFlowSnapshot
 from src.engine.risk_manager import RiskManager, RiskState, TradeRecord
@@ -30,7 +43,6 @@ from src.execution.executor import Order, OrderExecutor, OrderStatus, get_execut
 from src.indicators.rsi import rsi
 from src.market import Account, MarketData, Position, TopstepClient, get_client
 from src.observability import get_observability_store
-from src.server.mcp_server import MCP_SESSION_HEADER, handle_mcp_http_request, handle_mcp_request, reset_mcp_sessions
 from src.server.debug_server import DebugServer, TradingState
 from src.server import get_state
 
@@ -42,7 +54,13 @@ def build_config() -> Config:
             HotZoneConfig(name="Pre-Open", start="06:30", end="08:30", timezone="America/Chicago"),
             HotZoneConfig(name="Post-Open", start="09:00", end="11:00", timezone="America/Chicago"),
             HotZoneConfig(name="Midday", start="12:00", end="13:00", timezone="America/Chicago"),
-            HotZoneConfig(name="Close-Scalp", start="12:45", end="13:00", timezone="America/Chicago", mode="flatten_only"),
+            HotZoneConfig(
+                name="Close-Scalp",
+                start="12:45",
+                end="13:00",
+                timezone="America/Chicago",
+                mode="flatten_only",
+            ),
         ]
     )
     config.alpha.min_entry_score = 1.25
@@ -82,7 +100,9 @@ def zone(
     )
 
 
-def bars_from_prices(start: str, prices: list[float], timezone: str = "America/Chicago") -> pd.DataFrame:
+def bars_from_prices(
+    start: str, prices: list[float], timezone: str = "America/Chicago"
+) -> pd.DataFrame:
     """Build simple OHLCV bars from close prices."""
     index = pd.date_range(start, periods=len(prices), freq="min", tz=timezone)
     rows = []
@@ -118,7 +138,9 @@ class DecisionMatrixTests(unittest.TestCase):
     def test_session_profile_features_are_populated(self) -> None:
         prices = [100.0 + (i * 0.2) for i in range(30)]
         bars = bars_from_prices("2026-03-13 09:00", prices)
-        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=50, start_time=bars.index[0])
+        current_zone = zone(
+            "Post-Open", bars.index[-1], minutes_remaining=50, start_time=bars.index[0]
+        )
 
         snapshot = self.evaluator.extract_features(
             bars,
@@ -139,7 +161,9 @@ class DecisionMatrixTests(unittest.TestCase):
     def test_pre_open_session_profile_uses_eth_context(self) -> None:
         prices = [100.0 + (i * 0.15) for i in range(30)]
         bars = bars_from_prices("2026-03-13 06:30", prices)
-        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
+        current_zone = zone(
+            "Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0]
+        )
 
         snapshot = self.evaluator.extract_features(
             bars,
@@ -164,8 +188,17 @@ class DecisionMatrixTests(unittest.TestCase):
     def test_pre_open_breakout_scores_long_with_flow_support(self) -> None:
         prices = [100.0 + (i * 0.18) for i in range(15)] + [103.0, 103.5, 104.0, 104.5, 104.9]
         bars = bars_from_prices("2026-03-13 06:30", prices)
-        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0])
-        market_data = MarketData(symbol="ES", bid=104.75, ask=105.0, last=104.9, volume=2000, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        current_zone = zone(
+            "Pre-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0]
+        )
+        market_data = MarketData(
+            symbol="ES",
+            bid=104.75,
+            ask=105.0,
+            last=104.9,
+            volume=2000,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
 
         decision = self.evaluator.evaluate(
             bars,
@@ -188,8 +221,17 @@ class DecisionMatrixTests(unittest.TestCase):
         bars.iloc[-1, bars.columns.get_loc("low")] = 97.6
         bars.iloc[-1, bars.columns.get_loc("close")] = 98.4
         bars.iloc[-1, bars.columns.get_loc("high")] = 98.9
-        current_zone = zone("Midday", bars.index[-1], minutes_remaining=20, start_time=bars.index[0])
-        market_data = MarketData(symbol="ES", bid=98.2, ask=98.45, last=98.4, volume=2500, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        current_zone = zone(
+            "Midday", bars.index[-1], minutes_remaining=20, start_time=bars.index[0]
+        )
+        market_data = MarketData(
+            symbol="ES",
+            bid=98.2,
+            ask=98.45,
+            last=98.4,
+            volume=2500,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
         range_flow = OrderFlowSnapshot(
             ofi=0.0,
             ofi_zscore=0.1,
@@ -218,7 +260,9 @@ class DecisionMatrixTests(unittest.TestCase):
     def test_regime_classifier_marks_trend(self) -> None:
         prices = [100.0 + (i * 0.5) for i in range(20)]
         bars = bars_from_prices("2026-03-13 12:00", prices)
-        current_zone = zone("Midday", bars.index[-1], minutes_remaining=20, start_time=bars.index[0])
+        current_zone = zone(
+            "Midday", bars.index[-1], minutes_remaining=20, start_time=bars.index[0]
+        )
         trend_flow = OrderFlowSnapshot(
             ofi=12.0,
             ofi_zscore=1.3,
@@ -242,11 +286,44 @@ class DecisionMatrixTests(unittest.TestCase):
     def test_close_scalp_is_flatten_only(self) -> None:
         prices = [100.0 + (i * 0.1) for i in range(20)]
         bars = bars_from_prices("2026-03-13 12:45", prices)
-        current_zone = zone("Close-Scalp", bars.index[-1], minutes_remaining=8, state=ZoneState.FLATTEN_ONLY, start_time=bars.index[0])
-        market_data = MarketData(symbol="ES", bid=101.85, ask=102.1, last=102.0, volume=1500, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        current_zone = zone(
+            "Close-Scalp",
+            bars.index[-1],
+            minutes_remaining=8,
+            state=ZoneState.FLATTEN_ONLY,
+            start_time=bars.index[0],
+        )
+        market_data = MarketData(
+            symbol="ES",
+            bid=101.85,
+            ask=102.1,
+            last=102.0,
+            volume=1500,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
 
-        flat_decision = self.evaluator.evaluate(bars, current_zone, market_data, RiskState.NORMAL, False, 0, True, event_context=EventContext(), flow_snapshot=self.healthy_flow)
-        held_decision = self.evaluator.evaluate(bars, current_zone, market_data, RiskState.NORMAL, False, 1, True, event_context=EventContext(), flow_snapshot=self.healthy_flow)
+        flat_decision = self.evaluator.evaluate(
+            bars,
+            current_zone,
+            market_data,
+            RiskState.NORMAL,
+            False,
+            0,
+            True,
+            event_context=EventContext(),
+            flow_snapshot=self.healthy_flow,
+        )
+        held_decision = self.evaluator.evaluate(
+            bars,
+            current_zone,
+            market_data,
+            RiskState.NORMAL,
+            False,
+            1,
+            True,
+            event_context=EventContext(),
+            flow_snapshot=self.healthy_flow,
+        )
 
         self.assertEqual(flat_decision.action, "NO_TRADE")
         self.assertEqual(held_decision.action, "FLAT")
@@ -258,7 +335,14 @@ class DecisionMatrixTests(unittest.TestCase):
         evaluator = DecisionMatrixEvaluator(config)
         prices = [100.0 + (i * 0.2) for i in range(20)]
         bars = bars_from_prices("2026-03-13 14:10", prices)
-        market_data = MarketData(symbol="ES", bid=103.75, ask=104.0, last=103.9, volume=2000, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        market_data = MarketData(
+            symbol="ES",
+            bid=103.75,
+            ask=104.0,
+            last=103.9,
+            volume=2000,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
 
         decision = evaluator.evaluate(
             bars,
@@ -278,8 +362,17 @@ class DecisionMatrixTests(unittest.TestCase):
 
     def test_pre_open_stress_regime_can_still_enter_when_risk_is_normal(self) -> None:
         bars = bars_from_prices("2026-03-13 06:30", [100.0 + (i * 0.1) for i in range(20)])
-        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
-        market_data = MarketData(symbol="ES", bid=101.8, ask=102.0, last=101.9, volume=1200, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        current_zone = zone(
+            "Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0]
+        )
+        market_data = MarketData(
+            symbol="ES",
+            bid=101.8,
+            ask=102.0,
+            last=101.9,
+            volume=1200,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
         snapshot = FeatureSnapshot(
             zone_name="Pre-Open",
             current_price=101.9,
@@ -311,8 +404,17 @@ class DecisionMatrixTests(unittest.TestCase):
 
     def test_pre_open_stress_regime_still_blocks_when_circuit_breaker_active(self) -> None:
         bars = bars_from_prices("2026-03-13 06:30", [100.0 + (i * 0.1) for i in range(20)])
-        current_zone = zone("Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
-        market_data = MarketData(symbol="ES", bid=101.8, ask=102.0, last=101.9, volume=1200, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        current_zone = zone(
+            "Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0]
+        )
+        market_data = MarketData(
+            symbol="ES",
+            bid=101.8,
+            ask=102.0,
+            last=101.9,
+            volume=1200,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
         snapshot = FeatureSnapshot(
             zone_name="Pre-Open",
             current_price=101.9,
@@ -344,8 +446,17 @@ class DecisionMatrixTests(unittest.TestCase):
 
     def test_post_open_stress_regime_remains_hard_veto(self) -> None:
         bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.15) for i in range(20)])
-        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0])
-        market_data = MarketData(symbol="ES", bid=102.7, ask=102.9, last=102.8, volume=1800, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        current_zone = zone(
+            "Post-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0]
+        )
+        market_data = MarketData(
+            symbol="ES",
+            bid=102.7,
+            ask=102.9,
+            last=102.8,
+            volume=1800,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
         snapshot = FeatureSnapshot(
             zone_name="Post-Open",
             current_price=102.8,
@@ -376,10 +487,14 @@ class DecisionMatrixTests(unittest.TestCase):
         self.assertIn("regime_stress", decision.active_vetoes)
 
     def test_outside_hotzones_disabled_keeps_outside_zone_veto(self) -> None:
+        config = build_config()
+        config.strategy.trade_outside_hotzones = False
+        set_config(config)
+        evaluator = DecisionMatrixEvaluator(config)
         prices = [100.0 + (i * 0.2) for i in range(20)]
         bars = bars_from_prices("2026-03-13 14:10", prices)
 
-        decision = self.evaluator.evaluate(
+        decision = evaluator.evaluate(
             bars,
             None,
             None,
@@ -402,8 +517,17 @@ class DecisionMatrixTests(unittest.TestCase):
         evaluator = DecisionMatrixEvaluator(config)
         prices = [100.0 + (i * 0.2) for i in range(20)]
         bars = bars_from_prices("2026-03-13 09:00", prices)
-        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0])
-        wide_market = MarketData(symbol="ES", bid=103.0, ask=104.5, last=104.0, volume=2000, timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime())
+        current_zone = zone(
+            "Post-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0]
+        )
+        wide_market = MarketData(
+            symbol="ES",
+            bid=103.0,
+            ask=104.5,
+            last=104.0,
+            volume=2000,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
 
         decision = evaluator.evaluate(
             bars,
@@ -422,7 +546,9 @@ class DecisionMatrixTests(unittest.TestCase):
     def test_time_stop_exit_path(self) -> None:
         prices = [100.0 + (i * 0.15) for i in range(20)]
         bars = bars_from_prices("2026-03-13 09:00", prices)
-        current_zone = zone("Post-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0])
+        current_zone = zone(
+            "Post-Open", bars.index[-1], minutes_remaining=40, start_time=bars.index[0]
+        )
         decision = self.evaluator.evaluate(
             bars,
             current_zone,
@@ -465,7 +591,10 @@ class StateReportingTests(unittest.TestCase):
         state.status = "running"
         state.running = True
         state.data_mode = "live"
-        state.heartbeat = {"market_stream_connected": False, "market_stream_error": "socket dropped"}
+        state.heartbeat = {
+            "market_stream_connected": False,
+            "market_stream_error": "socket dropped",
+        }
 
         health = state.to_health_dict()
 
@@ -531,7 +660,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
     def test_engine_skips_new_entry_when_active_entry_order_exists(self) -> None:
         executor = self.engine.executor
         executor.enable_mock_mode()
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)]
+        )
         self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
         self.engine._latest_market_data = MarketData(
             symbol="ES",
@@ -549,11 +680,21 @@ class ExecutionLifecycleTests(unittest.TestCase):
             spread_regime=1.4,
             volume_pace=1.0,
         )
-        executor._place_mock_order("ES", 1, "buy", "limit", self.engine._last_price, None, False, "entry")
+        executor._place_mock_order(
+            "ES", 1, "buy", "limit", self.engine._last_price, None, False, "entry"
+        )
 
-        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
             with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
-                with patch.object(executor, "place_order", wraps=executor.place_order) as place_order:
+                with patch.object(
+                    executor, "place_order", wraps=executor.place_order
+                ) as place_order:
                     self.engine._evaluate_current_state(allow_entries=True)
 
         place_order.assert_not_called()
@@ -562,7 +703,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.config.strategy.launch_gate_enabled = True
         self.config.strategy.live_entry_zones = ["Pre-Open"]
         self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)]
+        )
         self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
         self.engine._latest_market_data = MarketData(
             symbol="ES",
@@ -581,9 +724,17 @@ class ExecutionLifecycleTests(unittest.TestCase):
             volume_pace=1.0,
         )
 
-        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
             with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
-                with patch.object(self.engine.executor, "place_order", wraps=self.engine.executor.place_order) as place_order:
+                with patch.object(
+                    self.engine.executor, "place_order", wraps=self.engine.executor.place_order
+                ) as place_order:
                     self.engine._evaluate_current_state(allow_entries=True)
 
         place_order.assert_not_called()
@@ -609,8 +760,16 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.engine._last_position = 1
         self.engine._position_entry_zone = "Pre-Open"
 
-        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
-            with patch.object(self.engine.risk_manager, "should_flatten_position", return_value=(False, None)):
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(
+                self.engine.risk_manager, "should_flatten_position", return_value=(False, None)
+            ):
                 with patch.object(self.engine, "_flatten_position") as flatten:
                     self.engine._evaluate_current_state(allow_entries=True)
 
@@ -620,7 +779,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         executor = self.engine.executor
         executor.reset_state(mock_mode=False)
         self.engine._mock_mode = False
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)]
+        )
         self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
         self.engine._latest_market_data = MarketData(
             symbol="ES",
@@ -639,11 +800,28 @@ class ExecutionLifecycleTests(unittest.TestCase):
             volume_pace=1.0,
         )
 
-        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
             with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
-                with patch.object(self.engine.client, "get_positions_snapshot", return_value=({"ES": type("P", (), {"quantity": 1, "entry_price": 100.0})()}, None)):
-                    with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
-                        with patch.object(executor, "place_order", wraps=executor.place_order) as place_order:
+                with patch.object(
+                    self.engine.client,
+                    "get_positions_snapshot",
+                    return_value=(
+                        {"ES": type("P", (), {"quantity": 1, "entry_price": 100.0})()},
+                        None,
+                    ),
+                ):
+                    with patch.object(
+                        self.engine.client, "get_open_orders_snapshot", return_value=([], None)
+                    ):
+                        with patch.object(
+                            executor, "place_order", wraps=executor.place_order
+                        ) as place_order:
                             self.engine._evaluate_current_state(allow_entries=True)
 
         place_order.assert_not_called()
@@ -654,7 +832,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         executor = self.engine.executor
         executor.reset_state(mock_mode=False)
         self.engine._mock_mode = False
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)]
+        )
         self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
         self.engine._latest_market_data = MarketData(
             symbol="ES",
@@ -673,16 +853,32 @@ class ExecutionLifecycleTests(unittest.TestCase):
             volume_pace=1.0,
         )
 
-        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
             with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
-                with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
-                    with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([{"id": "broker-open-1"}], None)):
-                        with patch.object(executor, "place_order", wraps=executor.place_order) as place_order:
+                with patch.object(
+                    self.engine.client, "get_positions_snapshot", return_value=({}, None)
+                ):
+                    with patch.object(
+                        self.engine.client,
+                        "get_open_orders_snapshot",
+                        return_value=([{"id": "broker-open-1"}], None),
+                    ):
+                        with patch.object(
+                            executor, "place_order", wraps=executor.place_order
+                        ) as place_order:
                             self.engine._evaluate_current_state(allow_entries=True)
 
         place_order.assert_not_called()
         self.assertEqual(self.engine._last_entry_block_reason, "broker_open_orders_present")
-        self.assertEqual(self.engine._last_entry_guard_snapshot["broker_open_order_ids"], ["broker-open-1"])
+        self.assertEqual(
+            self.engine._last_entry_guard_snapshot["broker_open_order_ids"], ["broker-open-1"]
+        )
         self.assertIsNone(self.engine._pending_decision_id)
         self.assertIsNone(self.engine._pending_attempt_id)
         self.assertIsNone(self.engine._pending_position_id)
@@ -693,7 +889,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.engine._unresolved_entry_submission_count = 1
         self.engine._unresolved_entry_side = "buy"
         self.engine._unresolved_entry_order_ids = ["entry-1"]
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)]
+        )
         self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
         self.engine._latest_market_data = MarketData(
             symbol="ES",
@@ -712,10 +910,20 @@ class ExecutionLifecycleTests(unittest.TestCase):
             volume_pace=1.0,
         )
 
-        with patch.object(self.engine.scheduler, "get_current_zone", return_value=zone("Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0])):
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
             with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
-                with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
-                    with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+                with patch.object(
+                    self.engine.client, "get_positions_snapshot", return_value=({}, None)
+                ):
+                    with patch.object(
+                        self.engine.client, "get_open_orders_snapshot", return_value=([], None)
+                    ):
                         self.engine._evaluate_current_state(allow_entries=True)
 
         self.assertTrue(self.engine._watchdog_state.fail_safe_lockout)
@@ -734,7 +942,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.engine._unresolved_entry_side = "buy"
         self.engine._unresolved_entry_order_ids = [order.order_id]
         self.engine._pending_expected_fill_price = 100.0
-        self.engine._pending_entry_submitted_at = pd.Timestamp("2026-03-13T15:00:00Z").to_pydatetime()
+        self.engine._pending_entry_submitted_at = pd.Timestamp(
+            "2026-03-13T15:00:00Z"
+        ).to_pydatetime()
         self.engine._latest_market_data = MarketData(
             symbol="ES",
             bid=100.0,
@@ -765,12 +975,16 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.engine._unresolved_entry_side = "buy"
         self.engine._unresolved_entry_order_ids = ["oid-1"]
         with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
-            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+            with patch.object(
+                self.engine.client, "get_open_orders_snapshot", return_value=([], None)
+            ):
                 self.engine._sync_position_state()
         self.assertEqual(self.engine._unresolved_entry_submission_count, 0)
         self.assertEqual(self.engine._last_reconciliation_reason, "broker_flat_no_orders")
 
-    def test_sync_position_state_broker_truth_clears_stale_local_entry_orders_when_flat(self) -> None:
+    def test_sync_position_state_broker_truth_clears_stale_local_entry_orders_when_flat(
+        self,
+    ) -> None:
         self.engine._mock_mode = False
         self.engine._last_position = 0
         self.engine._unresolved_entry_submission_count = 1
@@ -792,7 +1006,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         )
 
         with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
-            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+            with patch.object(
+                self.engine.client, "get_open_orders_snapshot", return_value=([], None)
+            ):
                 self.engine._sync_position_state()
 
         self.assertFalse(self.engine.executor.has_active_entry_order("ES"))
@@ -801,14 +1017,26 @@ class ExecutionLifecycleTests(unittest.TestCase):
 
     def test_adopt_broker_state_at_startup_adopts_position(self) -> None:
         self.engine._mock_mode = False
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)]
+        )
         self.engine._last_price = 5010.0
         pos = Position(symbol="CON.F.US.EP.M26", quantity=1, entry_price=5005.0)
-        with patch.object(self.engine.client, "_resolve_contract_id", return_value="CON.F.US.EP.M26"):
-            with patch.object(self.engine.client, "get_positions_snapshot", return_value=({"CON.F.US.EP.M26": pos}, None)):
-                with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+        with patch.object(
+            self.engine.client, "_resolve_contract_id", return_value="CON.F.US.EP.M26"
+        ):
+            with patch.object(
+                self.engine.client,
+                "get_positions_snapshot",
+                return_value=({"CON.F.US.EP.M26": pos}, None),
+            ):
+                with patch.object(
+                    self.engine.client, "get_open_orders_snapshot", return_value=([], None)
+                ):
                     with patch.object(self.engine.executor, "mark_position_open"):
-                        with patch.object(self.engine.executor, "ensure_protection") as ensure_protection:
+                        with patch.object(
+                            self.engine.executor, "ensure_protection"
+                        ) as ensure_protection:
                             with patch.object(self.engine.risk_manager, "sync_position"):
                                 self.engine._adopt_broker_state_at_startup()
         self.assertEqual(self.engine._last_position, 1)
@@ -820,7 +1048,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
 
     def test_adopt_broker_state_at_startup_adopts_open_orders(self) -> None:
         self.engine._mock_mode = False
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)]
+        )
         self.engine._last_price = 5010.0
         broker_orders = [
             {
@@ -833,7 +1063,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         ]
 
         with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
-            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=(broker_orders, None)):
+            with patch.object(
+                self.engine.client, "get_open_orders_snapshot", return_value=(broker_orders, None)
+            ):
                 self.engine._adopt_broker_state_at_startup()
 
         self.assertTrue(self.engine.executor.has_active_entry_order("ES"))
@@ -845,7 +1077,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
 
     def test_sync_position_state_clears_stale_position_before_adopting_broker_orders(self) -> None:
         self.engine._mock_mode = False
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [5000.0 + i * 0.25 for i in range(20)]
+        )
         self.engine._last_price = 5010.0
         self.engine._last_position = -1
         self.engine._position_sync_requested = True
@@ -862,7 +1096,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         ]
 
         with patch.object(self.engine.client, "get_positions_snapshot", return_value=({}, None)):
-            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=(broker_orders, None)):
+            with patch.object(
+                self.engine.client, "get_open_orders_snapshot", return_value=(broker_orders, None)
+            ):
                 self.engine._sync_position_state()
 
         self.assertEqual(self.engine._last_position, 0)
@@ -878,7 +1114,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.engine._stop_loss = 98.0
         self.engine._position_high_water = 102.0
         self.engine._last_price = 102.0
-        self.engine._bars = bars_from_prices("2026-03-13 09:00", [99.0 + i * 0.2 for i in range(20)])
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 09:00", [99.0 + i * 0.2 for i in range(20)]
+        )
         with patch.object(self.engine, "_calculate_current_atr", return_value=1.0):
             with patch.object(self.engine.executor, "ensure_protection"):
                 with self.engine._lock:
@@ -890,7 +1128,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.engine._position_sync_requested = False
         path = self.engine._operator_request_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"action": "force_reconcile", "source": "test"}), encoding="utf-8")
+        path.write_text(
+            json.dumps({"action": "force_reconcile", "source": "test"}), encoding="utf-8"
+        )
         try:
             self.engine._process_operator_request()
             self.assertTrue(self.engine._position_sync_requested)
@@ -905,7 +1145,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.engine._unresolved_entry_order_ids = ["o1"]
         path = self.engine._operator_request_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"action": "clear_unresolved", "source": "test"}), encoding="utf-8")
+        path.write_text(
+            json.dumps({"action": "clear_unresolved", "source": "test"}), encoding="utf-8"
+        )
         try:
             self.engine._process_operator_request()
             self.assertEqual(self.engine._unresolved_entry_submission_count, 0)
@@ -928,7 +1170,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         executor = self.engine.executor
         executor.reset_state(mock_mode=False)
 
-        with patch.object(executor.client, "place_order", side_effect=[None, "fallback-market-id"]) as place_order:
+        with patch.object(
+            executor.client, "place_order", side_effect=[None, "fallback-market-id"]
+        ) as place_order:
             order = executor.place_order("ES", 1, "buy", "limit", 100.0)
 
         assert order is not None
@@ -942,7 +1186,9 @@ class ExecutionLifecycleTests(unittest.TestCase):
         executor = self.engine.executor
         executor.enable_mock_mode()
         order = executor._place_mock_order("ES", 1, "buy", "limit", 100.0, None, False, "entry")
-        order.created_time = order.created_time - timedelta(seconds=self.config.watchdog.stale_order_seconds + 5)
+        order.created_time = order.created_time - timedelta(
+            seconds=self.config.watchdog.stale_order_seconds + 5
+        )
 
         cancelled = executor.reconcile_pending_orders()
 
@@ -987,26 +1233,46 @@ class ReplayRunnerTests(unittest.TestCase):
         self.engine = TradingEngine(self.config)
 
     def test_live_and_replay_share_engine_handler(self) -> None:
-        with patch.object(self.engine, "_evaluate_current_state", wraps=self.engine._evaluate_current_state) as wrapped:
+        with patch.object(
+            self.engine, "_evaluate_current_state", wraps=self.engine._evaluate_current_state
+        ) as wrapped:
             self.engine.reset_runtime_state()
             self.engine._mock_mode = True
             self.engine.client.enable_mock_mode()
             self.engine.executor.enable_mock_mode()
-            first = MarketData(symbol="ES", bid=100.0, ask=100.25, last=100.1, volume=100, timestamp=pd.Timestamp("2026-03-13 14:30:01Z").to_pydatetime())
-            second = MarketData(symbol="ES", bid=100.6, ask=100.85, last=100.7, volume=180, timestamp=pd.Timestamp("2026-03-13 14:31:01Z").to_pydatetime())
+            first = MarketData(
+                symbol="ES",
+                bid=100.0,
+                ask=100.25,
+                last=100.1,
+                volume=100,
+                timestamp=pd.Timestamp("2026-03-13 14:30:01Z").to_pydatetime(),
+            )
+            second = MarketData(
+                symbol="ES",
+                bid=100.6,
+                ask=100.85,
+                last=100.7,
+                volume=180,
+                timestamp=pd.Timestamp("2026-03-13 14:31:01Z").to_pydatetime(),
+            )
             self.engine.on_market_data(first)
             self.engine.on_market_data(second)
             self.assertGreaterEqual(wrapped.call_count, 1)
 
         with tempfile.NamedTemporaryFile("w+", suffix=".csv", delete=False) as handle:
-            handle.write("timestamp,bid,ask,last,volume,bid_size,ask_size,last_size,trade_side,latency_ms\n")
+            handle.write(
+                "timestamp,bid,ask,last,volume,bid_size,ask_size,last_size,trade_side,latency_ms\n"
+            )
             handle.write("2026-03-13T14:30:01Z,100.0,100.25,100.1,100,5,5,2,buy,25\n")
             handle.write("2026-03-13T14:31:01Z,100.6,100.85,100.7,180,5,5,2,buy,25\n")
             handle.flush()
             replay_path = handle.name
 
         runner = ReplayRunner(config=self.config, engine=self.engine)
-        with patch.object(self.engine, "_evaluate_current_state", wraps=self.engine._evaluate_current_state) as wrapped:
+        with patch.object(
+            self.engine, "_evaluate_current_state", wraps=self.engine._evaluate_current_state
+        ) as wrapped:
             result = runner.run(replay_path)
             self.assertGreaterEqual(wrapped.call_count, 1)
             self.assertEqual(result.events, 2)
@@ -1019,7 +1285,9 @@ class ReplayRunnerTests(unittest.TestCase):
             replay_path = handle.name
 
         runner = ReplayRunner(config=self.config, engine=self.engine)
-        with patch.object(self.engine, "enable_mock_mode", wraps=self.engine.enable_mock_mode) as enable_mock:
+        with patch.object(
+            self.engine, "enable_mock_mode", wraps=self.engine.enable_mock_mode
+        ) as enable_mock:
             runner.run(replay_path)
 
         enable_mock.assert_called_once()
@@ -1157,7 +1425,11 @@ class ReplayRunnerTests(unittest.TestCase):
                 },
             },
             benchmark_cost_summary={"net_pnl": 50.0, "stressed_net_pnl": 0.0, "trade_count": 1},
-            walk_forward=[{"matrix_positive": True}, {"matrix_positive": False}, {"matrix_positive": True}],
+            walk_forward=[
+                {"matrix_positive": True},
+                {"matrix_positive": False},
+                {"matrix_positive": True},
+            ],
             synthetic_quotes_detected=False,
         )
 
@@ -1232,7 +1504,9 @@ class EngineRiskExecutionTests(unittest.TestCase):
         self.engine._last_position = 1
         self.engine._position_sync_requested = True
 
-        with patch.object(self.engine.client, "get_positions_snapshot", return_value=(None, "boom")):
+        with patch.object(
+            self.engine.client, "get_positions_snapshot", return_value=(None, "boom")
+        ):
             self.engine._sync_position_state()
 
         self.assertEqual(self.engine._last_position, 1)
@@ -1245,7 +1519,9 @@ class EngineRiskExecutionTests(unittest.TestCase):
         self.engine._last_position = 1
         self.engine._position_sync_requested = True
 
-        with patch.object(self.engine.client, "get_positions_snapshot", return_value=(None, "boom")):
+        with patch.object(
+            self.engine.client, "get_positions_snapshot", return_value=(None, "boom")
+        ):
             self.engine._sync_position_state()
 
         self.assertEqual(self.engine._last_position, 1)
@@ -1262,14 +1538,18 @@ class EngineRiskExecutionTests(unittest.TestCase):
             "get_positions_snapshot",
             return_value=({"ES": Position(symbol="ES", quantity=1, entry_price=100.0)}, None),
         ):
-            with patch.object(self.engine.client, "get_open_orders_snapshot", return_value=([], None)):
+            with patch.object(
+                self.engine.client, "get_open_orders_snapshot", return_value=([], None)
+            ):
                 self.engine._sync_position_state()
 
         self.assertFalse(self.engine._position_sync_requested)
         self.assertEqual(self.engine._last_reconciliation_reason, "position_sync")
 
     def test_watchdog_locks_out_after_stale_feed(self) -> None:
-        self.engine._watchdog_state.last_feed_time = pd.Timestamp("2026-03-13T15:00:00Z").to_pydatetime()
+        self.engine._watchdog_state.last_feed_time = pd.Timestamp(
+            "2026-03-13T15:00:00Z"
+        ).to_pydatetime()
         self.engine._latest_market_data = MarketData(
             symbol="ES",
             bid=100.0,
@@ -1284,8 +1564,22 @@ class EngineRiskExecutionTests(unittest.TestCase):
         self.assertTrue(self.engine._watchdog_state.fail_safe_lockout)
 
     def test_bar_aggregator_ignores_out_of_order_ticks(self) -> None:
-        first = MarketData(symbol="ES", bid=100.0, ask=100.25, last=100.1, volume=100, timestamp=pd.Timestamp("2026-03-13T15:00:30Z").to_pydatetime())
-        second = MarketData(symbol="ES", bid=100.2, ask=100.45, last=100.3, volume=120, timestamp=pd.Timestamp("2026-03-13T14:59:59Z").to_pydatetime())
+        first = MarketData(
+            symbol="ES",
+            bid=100.0,
+            ask=100.25,
+            last=100.1,
+            volume=100,
+            timestamp=pd.Timestamp("2026-03-13T15:00:30Z").to_pydatetime(),
+        )
+        second = MarketData(
+            symbol="ES",
+            bid=100.2,
+            ask=100.45,
+            last=100.3,
+            volume=120,
+            timestamp=pd.Timestamp("2026-03-13T14:59:59Z").to_pydatetime(),
+        )
 
         self.engine.bar_aggregator.update(first)
         completed = self.engine.bar_aggregator.update(second)
@@ -1408,11 +1702,17 @@ class SchedulerTests(unittest.TestCase):
         ]
         scheduler = HotZoneScheduler(config)
 
-        zone = scheduler.get_current_zone(pd.Timestamp("2026-04-01 00:30", tz="America/Chicago").to_pydatetime())
+        zone = scheduler.get_current_zone(
+            pd.Timestamp("2026-04-01 00:30", tz="America/Chicago").to_pydatetime()
+        )
 
         assert zone is not None
-        self.assertEqual(zone.start_time, pd.Timestamp("2026-03-31 23:00", tz="America/Chicago").to_pydatetime())
-        self.assertEqual(zone.end_time, pd.Timestamp("2026-04-01 01:00", tz="America/Chicago").to_pydatetime())
+        self.assertEqual(
+            zone.start_time, pd.Timestamp("2026-03-31 23:00", tz="America/Chicago").to_pydatetime()
+        )
+        self.assertEqual(
+            zone.end_time, pd.Timestamp("2026-04-01 01:00", tz="America/Chicago").to_pydatetime()
+        )
         self.assertEqual(zone.minutes_remaining, 30.0)
 
     def test_repeated_zone_reads_do_not_advance_bar_counter(self) -> None:
@@ -1440,7 +1740,13 @@ class AccountSafetyTests(unittest.TestCase):
     def test_select_account_refuses_live_only_accounts_when_prac_required(self) -> None:
         selected = self.client._select_account(
             [
-                {"id": "LIVE-1", "name": "LIVE-1", "canTrade": True, "balance": 50000, "simulated": False},
+                {
+                    "id": "LIVE-1",
+                    "name": "LIVE-1",
+                    "canTrade": True,
+                    "balance": 50000,
+                    "simulated": False,
+                },
             ]
         )
 
@@ -1450,8 +1756,20 @@ class AccountSafetyTests(unittest.TestCase):
         with patch.dict(os.environ, {"PREFERRED_ACCOUNT_ID": "LIVE-1"}, clear=False):
             selected = self.client._select_account(
                 [
-                    {"id": "LIVE-1", "name": "LIVE-1", "canTrade": True, "balance": 50000, "simulated": False},
-                    {"id": "PRAC-1", "name": "PRAC-1", "canTrade": True, "balance": 50000, "simulated": True},
+                    {
+                        "id": "LIVE-1",
+                        "name": "LIVE-1",
+                        "canTrade": True,
+                        "balance": 50000,
+                        "simulated": False,
+                    },
+                    {
+                        "id": "PRAC-1",
+                        "name": "PRAC-1",
+                        "canTrade": True,
+                        "balance": 50000,
+                        "simulated": True,
+                    },
                 ]
             )
 
@@ -1461,7 +1779,9 @@ class AccountSafetyTests(unittest.TestCase):
         self.client._access_token = "token"
         self.client._token_expires = float("inf")
         self.client._account_id = 123
-        self.client._account = Account(account_id="123", name="LIVE-1", balance=50000, is_practice=False)
+        self.client._account = Account(
+            account_id="123", name="LIVE-1", balance=50000, is_practice=False
+        )
 
         order_id = self.client.place_order("ES", 1, "buy", "market")
 
@@ -1476,7 +1796,9 @@ class AccountSafetyTests(unittest.TestCase):
         self.assertIn("access_token=jwt-token", hub_url)
 
     def test_decode_signalr_frames_splits_record_separator_payloads(self) -> None:
-        frames = self.client._decode_signalr_frames('{"type":6}\x1e{"type":1,"target":"GatewayQuote","arguments":["CON",{"lastPrice":1.0}]}\x1e')
+        frames = self.client._decode_signalr_frames(
+            '{"type":6}\x1e{"type":1,"target":"GatewayQuote","arguments":["CON",{"lastPrice":1.0}]}\x1e'
+        )
 
         self.assertEqual(len(frames), 2)
         self.assertEqual(frames[1]["target"], "GatewayQuote")
@@ -1514,7 +1836,12 @@ class LoggingBootstrapTests(unittest.TestCase):
             root_logger = logging.getLogger()
 
             self.assertTrue(log_path.exists())
-            self.assertTrue(any(getattr(handler, "baseFilename", None) == str(log_path) for handler in root_logger.handlers))
+            self.assertTrue(
+                any(
+                    getattr(handler, "baseFilename", None) == str(log_path)
+                    for handler in root_logger.handlers
+                )
+            )
 
     def test_configure_logging_supports_console_color_toggle(self) -> None:
         config = build_config()
@@ -1584,9 +1911,14 @@ class CliLifecycleControlTests(unittest.TestCase):
                 log_path,
             )
 
-            with patch("src.cli.commands.get_config", return_value=config), patch(
-                "src.cli.commands._resolve_log_path", return_value=log_path
-            ), patch("src.cli.commands._request_runtime_action", return_value=(None, None, {"action": "stop"})):
+            with (
+                patch("src.cli.commands.get_config", return_value=config),
+                patch("src.cli.commands._resolve_log_path", return_value=log_path),
+                patch(
+                    "src.cli.commands._request_runtime_action",
+                    return_value=(None, None, {"action": "stop"}),
+                ),
+            ):
                 result = runner.invoke(cli, ["stop"])
 
             self.assertEqual(result.exit_code, 0)
@@ -1607,12 +1939,16 @@ class CliLifecycleControlTests(unittest.TestCase):
             def fake_start(config: Optional[str] = None) -> None:
                 invoked["config"] = config
 
-            with patch("src.cli.commands.get_config", return_value=config), patch(
-                "src.cli.commands.set_config"
-            ), patch("src.cli.commands._resolve_log_path", return_value=Path(config.logging.file)), patch(
-                "src.cli.commands._request_runtime_action",
-                return_value=(12345, runtime_status, {"action": "restart"}),
-            ), patch("src.cli.commands.start", new=fake_start):
+            with (
+                patch("src.cli.commands.get_config", return_value=config),
+                patch("src.cli.commands.set_config"),
+                patch("src.cli.commands._resolve_log_path", return_value=Path(config.logging.file)),
+                patch(
+                    "src.cli.commands._request_runtime_action",
+                    return_value=(12345, runtime_status, {"action": "restart"}),
+                ),
+                patch("src.cli.commands.start", new=fake_start),
+            ):
                 result = runner.invoke(cli, ["restart", "--reason", "unit_restart"])
 
             self.assertEqual(result.exit_code, 0)
@@ -1701,7 +2037,9 @@ class ObservabilityStoreTests(unittest.TestCase):
             store.force_flush()
 
             event_rows = store.query_events(limit=2, after_id=0, ascending=True)
-            next_event_rows = store.query_events(limit=2, after_id=event_rows[-1]["id"], ascending=True)
+            next_event_rows = store.query_events(
+                limit=2, after_id=event_rows[-1]["id"], ascending=True
+            )
 
             trades = [
                 TradeRecord(
@@ -1748,7 +2086,9 @@ class ObservabilityStoreTests(unittest.TestCase):
                 store.record_completed_trade(trade)
 
             trade_rows = store.query_completed_trades(limit=2, after_id=0, ascending=True)
-            next_trade_rows = store.query_completed_trades(limit=2, after_id=trade_rows[-1]["id"], ascending=True)
+            next_trade_rows = store.query_completed_trades(
+                limit=2, after_id=trade_rows[-1]["id"], ascending=True
+            )
 
             self.assertTrue(event_rows)
             self.assertEqual([row["id"] for row in event_rows], [1, 2])
@@ -1809,7 +2149,9 @@ class ObservabilityStoreTests(unittest.TestCase):
             self.assertEqual(trades[0]["event_tags"], ["opening_drive"])
             store.stop()
 
-    def test_observability_store_replay_runs_do_not_persist_completed_trades_by_default(self) -> None:
+    def test_observability_store_replay_runs_do_not_persist_completed_trades_by_default(
+        self,
+    ) -> None:
         config = build_config()
         config.observability.enabled = True
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1924,7 +2266,9 @@ class ObservabilityStoreTests(unittest.TestCase):
 
             result = store.backfill_completed_trades_from_events()
             trades = store.query_completed_trades(limit=5)
-            trades_with_replay = store.query_completed_trades(limit=5, include_non_authoritative=True)
+            trades_with_replay = store.query_completed_trades(
+                limit=5, include_non_authoritative=True
+            )
 
             self.assertEqual(result["backfilled"], 0)
             self.assertEqual(len(trades), 0)
@@ -1932,7 +2276,9 @@ class ObservabilityStoreTests(unittest.TestCase):
             self.assertFalse(trades_with_replay[0]["backfilled"])
             store.stop()
 
-    def test_observability_store_canonicalizes_completed_trade_timestamps_to_prevent_duplicate_backfill(self) -> None:
+    def test_observability_store_canonicalizes_completed_trade_timestamps_to_prevent_duplicate_backfill(
+        self,
+    ) -> None:
         config = build_config()
         config.observability.enabled = True
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2097,7 +2443,9 @@ class ObservabilityStoreTests(unittest.TestCase):
             engine = TradingEngine(config)
             engine.reset_runtime_state()
             engine.executor.enable_mock_mode()
-            engine._bars = bars_from_prices("2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)])
+            engine._bars = bars_from_prices(
+                "2026-03-13 09:00", [100.0 + (i * 0.2) for i in range(30)]
+            )
             engine._last_price = float(engine._bars["close"].iloc[-1])
             engine._latest_market_data = MarketData(
                 symbol="ES",
@@ -2140,287 +2488,29 @@ class ObservabilityStoreTests(unittest.TestCase):
                 execution_tradeable=True,
             )
 
-            with patch.object(engine.scheduler, "get_current_zone", return_value=zone("Post-Open", engine._bars.index[-1], start_time=engine._bars.index[0])):
-                with patch.object(engine.event_provider, "get_context", return_value=EventContext()):
-                    with patch.object(engine.risk_manager, "should_flatten_position", return_value=(False, "ok")):
+            with patch.object(
+                engine.scheduler,
+                "get_current_zone",
+                return_value=zone(
+                    "Post-Open", engine._bars.index[-1], start_time=engine._bars.index[0]
+                ),
+            ):
+                with patch.object(
+                    engine.event_provider, "get_context", return_value=EventContext()
+                ):
+                    with patch.object(
+                        engine.risk_manager, "should_flatten_position", return_value=(False, "ok")
+                    ):
                         with patch.object(engine.matrix, "evaluate", return_value=decision):
                             engine._evaluate_current_state(allow_entries=True)
 
             store.force_flush()
-            rows = store.query_events(limit=10, category="decision", event_type="decision_evaluated")
+            rows = store.query_events(
+                limit=10, category="decision", event_type="decision_evaluated"
+            )
 
             self.assertTrue(any(row["action"] == "NO_TRADE" for row in rows))
             self.assertTrue(any(row["payload"]["outcome"] == "no_trade" for row in rows))
-            store.stop()
-
-
-class McpServerTests(unittest.TestCase):
-    def setUp(self) -> None:
-        reset_mcp_sessions()
-
-    def tearDown(self) -> None:
-        reset_mcp_sessions()
-
-    def test_mcp_query_events_tool_returns_structured_content(self) -> None:
-        config = build_config()
-        config.observability.enabled = True
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
-            set_config(config)
-            store = get_observability_store(force_recreate=True, config=config)
-            store.start()
-            store.record_event(
-                category="system",
-                event_type="test_event",
-                source="tests.test_matrix_engine",
-                payload={"value": 9},
-                action="test",
-                reason="mcp_test",
-            )
-            store.force_flush()
-            state = TradingState()
-            state.run_id = store.get_run_id()
-            status, response = handle_mcp_request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "query_events",
-                        "arguments": {"limit": 5, "category": "system", "event_type": "test_event"},
-                    },
-                },
-                lambda: state,
-            )
-
-            self.assertEqual(status, 200)
-            payload = response["result"]["structuredContent"]
-            self.assertEqual(len(payload["events"]), 1)
-            self.assertEqual(payload["events"][0]["payload"]["value"], 9)
-            store.stop()
-
-    def test_mcp_http_initialize_returns_session_header(self) -> None:
-        state = TradingState()
-
-        status, response, headers = handle_mcp_http_request(
-            {
-                "jsonrpc": "2.0",
-                "id": 10,
-                "method": "initialize",
-                "params": {},
-            },
-            lambda: state,
-        )
-
-        self.assertEqual(status, 200)
-        self.assertIn(MCP_SESSION_HEADER, headers)
-        self.assertTrue(headers[MCP_SESSION_HEADER])
-        self.assertEqual(response["result"]["serverInfo"]["name"], "es-hotzone-trader-mcp")
-
-    def test_mcp_http_initialized_notification_requires_valid_session(self) -> None:
-        state = TradingState()
-        _, _, headers = handle_mcp_http_request(
-            {
-                "jsonrpc": "2.0",
-                "id": 11,
-                "method": "initialize",
-                "params": {},
-            },
-            lambda: state,
-        )
-        session_id = headers[MCP_SESSION_HEADER]
-
-        status, response, response_headers = handle_mcp_http_request(
-            {
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-                "params": {},
-            },
-            lambda: state,
-            session_id=session_id,
-        )
-
-        self.assertEqual(status, 202)
-        self.assertIsNone(response)
-        self.assertEqual(response_headers[MCP_SESSION_HEADER], session_id)
-
-    def test_mcp_http_post_initialize_requests_allow_implicit_session_for_read_only_methods(self) -> None:
-        state = TradingState()
-
-        status, response, headers = handle_mcp_http_request(
-            {
-                "jsonrpc": "2.0",
-                "id": 12,
-                "method": "tools/list",
-                "params": {},
-            },
-            lambda: state,
-        )
-
-        self.assertEqual(status, 200)
-        self.assertIn("result", response)
-        self.assertIn("tools", response["result"])
-        self.assertIn(MCP_SESSION_HEADER, headers)
-        self.assertTrue(headers[MCP_SESSION_HEADER])
-
-    def test_mcp_current_run_resource_reads_manifest_and_trade_summary(self) -> None:
-        config = build_config()
-        config.observability.enabled = True
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
-            set_config(config)
-            store = get_observability_store(force_recreate=True, config=config)
-            store.start()
-            store.record_run_manifest(
-                {
-                    "run_id": store.get_run_id(),
-                    "started_at": "2026-03-16T12:00:00+00:00",
-                    "process_id": 42,
-                    "data_mode": "live",
-                    "symbols": ["ES"],
-                    "config_path": "/tmp/config.yaml",
-                    "config_hash": "abc123",
-                    "log_path": "/tmp/trading.log",
-                    "sqlite_path": config.observability.sqlite_path,
-                    "app_version": "0.1.0",
-                }
-            )
-            store.record_completed_trade(
-                TradeRecord(
-                    entry_time=datetime.fromisoformat("2026-03-16T12:01:00+00:00"),
-                    exit_time=datetime.fromisoformat("2026-03-16T12:02:00+00:00"),
-                    direction=1,
-                    contracts=1,
-                    entry_price=100.0,
-                    exit_price=102.0,
-                    pnl=100.0,
-                    zone="Post-Open",
-                    strategy="WEIGHTED_SCORE_MATRIX",
-                    regime="TREND",
-                    event_tags=["opening_drive"],
-                )
-            )
-            state = TradingState()
-            state.run_id = store.get_run_id()
-            status, response = handle_mcp_request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "resources/read",
-                    "params": {"uri": "observability://current-run"},
-                },
-                lambda: state,
-            )
-
-            self.assertEqual(status, 200)
-            content = json.loads(response["result"]["contents"][0]["text"])
-            self.assertEqual(content["run"]["run_id"], store.get_run_id())
-            self.assertEqual(content["performance"]["trade_count"], 1)
-            self.assertEqual(content["performance"]["total_pnl"], 100.0)
-            store.stop()
-
-    def test_mcp_execution_reconstruction_tool_summarizes_attempts_and_transitions(self) -> None:
-        config = build_config()
-        config.observability.enabled = True
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
-            set_config(config)
-            store = get_observability_store(force_recreate=True, config=config)
-            store.start()
-            event_time = datetime.fromisoformat("2026-03-16T12:00:00+00:00")
-            order_id = "order-123"
-            store.record_event(
-                category="decision",
-                event_type="decision_evaluated",
-                source="tests.test_matrix_engine",
-                payload={
-                    "outcome": "entry_submitted",
-                    "outcome_reason": "post_open_long_matrix",
-                    "side": "buy",
-                    "contracts": 1,
-                    "order_type": "limit",
-                    "limit_price": 100.25,
-                },
-                event_time=event_time,
-                symbol="ES",
-                zone="Post-Open",
-                action="LONG",
-                reason="post_open_long_matrix",
-                order_id=order_id,
-            )
-            store.record_event(
-                category="execution",
-                event_type="order_submitted",
-                source="tests.test_matrix_engine",
-                payload={"quantity": 1, "side": "buy", "order_type": "limit", "limit_price": 100.25, "role": "entry"},
-                event_time=event_time,
-                symbol="ES",
-                zone="Post-Open",
-                action="submit_order",
-                reason="entry",
-                order_id=order_id,
-            )
-            store.record_event(
-                category="execution",
-                event_type="order_fill",
-                source="tests.test_matrix_engine",
-                payload={"filled_quantity": 1, "filled_price": 100.25, "remaining_quantity": 0, "role": "entry", "status": "filled"},
-                event_time=event_time + timedelta(seconds=2),
-                symbol="ES",
-                zone="Post-Open",
-                action="fill_order",
-                reason="entry",
-                order_id=order_id,
-            )
-            store.record_event(
-                category="execution",
-                event_type="position_opened",
-                source="tests.test_matrix_engine",
-                payload={"prior_position": 0, "signed_position": 1, "entry_price": 100.25, "transition_price": 100.25, "event_tags": ["opening_drive"]},
-                event_time=event_time + timedelta(seconds=3),
-                symbol="ES",
-                zone="Post-Open",
-                action="entry_fill",
-                reason="post_open_long_matrix",
-            )
-            store.record_event(
-                category="execution",
-                event_type="position_closed",
-                source="tests.test_matrix_engine",
-                payload={"prior_position": 1, "signed_position": 0, "exit_price": 101.0, "transition_price": 101.0, "event_tags": ["opening_drive"]},
-                event_time=event_time + timedelta(minutes=5),
-                symbol="ES",
-                zone="Post-Open",
-                action="exit_fill",
-                reason="take_profit",
-            )
-            store.force_flush()
-            state = TradingState()
-            state.run_id = store.get_run_id()
-
-            status, response = handle_mcp_request(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 3,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "summarize_execution_reconstruction",
-                        "arguments": {"run_id": store.get_run_id(), "limit": 20},
-                    },
-                },
-                lambda: state,
-            )
-
-            self.assertEqual(status, 200)
-            payload = response["result"]["structuredContent"]
-            self.assertEqual(payload["summary"]["entry_attempt_count"], 1)
-            self.assertEqual(payload["summary"]["filled_attempt_count"], 1)
-            self.assertEqual(payload["summary"]["open_position_attempt_count"], 1)
-            self.assertEqual(payload["summary"]["closed_position_attempt_count"], 1)
-            self.assertEqual(payload["entry_attempts"][0]["order_id"], order_id)
-            self.assertEqual(payload["entry_attempts"][0]["filled_quantity"], 1.0)
-            self.assertEqual(payload["entry_attempts"][0]["terminal_event"], "position_closed")
-            self.assertEqual(payload["position_transitions"][0]["event_type"], "position_opened")
             store.stop()
 
 
@@ -2450,7 +2540,12 @@ class ExecutorProtectionTests(unittest.TestCase):
         self.executor.enable_mock_mode()
 
     def test_failed_sibling_cancel_keeps_tracking_record(self) -> None:
-        self.executor._protective_orders["ES"] = {"orders": ["stop", "target"], "direction": 1, "stop_price": 99.0, "take_profit": 101.0}
+        self.executor._protective_orders["ES"] = {
+            "orders": ["stop", "target"],
+            "direction": 1,
+            "stop_price": 99.0,
+            "take_profit": 101.0,
+        }
         with patch.object(self.executor, "cancel_order", side_effect=[False]):
             self.executor._cancel_sibling_protection("ES", "stop")
 
@@ -2508,7 +2603,12 @@ class ExecutorProtectionTests(unittest.TestCase):
 
         self.assertTrue(self.executor.protection_pending_too_long("ES", now, timeout_seconds=5))
 
-        self.executor._protective_orders["ES"] = {"orders": ["stop"], "direction": 1, "stop_price": 99.0, "take_profit": None}
+        self.executor._protective_orders["ES"] = {
+            "orders": ["stop"],
+            "direction": 1,
+            "stop_price": 99.0,
+            "take_profit": None,
+        }
 
         self.assertFalse(self.executor.protection_pending_too_long("ES", now, timeout_seconds=5))
 

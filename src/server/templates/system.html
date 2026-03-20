@@ -13,7 +13,6 @@
         <div><dt>Zone</dt><dd>{{ model.health.zone }}</dd></div>
         <div><dt>SQLite</dt><dd>{{ model.db_path }}</dd></div>
         <div><dt>Run count</dt><dd>{{ model.summary.run_count }}</dd></div>
-        <div><dt>Bridge rows</dt><dd>{{ model.summary.bridge_health_count }}</dd></div>
       </dl>
     </article>
 
@@ -49,27 +48,5 @@
       </div>
     </article>
 
-    <article class="panel panel-secondary">
-      <details class="disclosure">
-        <summary class="disclosure-summary">
-          <span class="disclosure-title">Bridge health</span>
-          <span class="panel-chip">{{ model.bridge_health|length }} rows</span>
-        </summary>
-        <div class="stack disclosure-body">
-          {% for row in model.bridge_health %}
-            <div class="stack-item">
-              <div class="stack-title">{{ row.observed_at|dt }}</div>
-              <div class="stack-subtle">
-                <span class="badge badge-neutral">{{ row.bridge_status or '-' }}</span>
-                <span class="badge badge-neutral">depth {{ row.queue_depth|integer }}</span>
-              </div>
-              <div>{{ row.last_error or '-' }}</div>
-            </div>
-          {% else %}
-            <div class="empty-cell">No bridge health rows available.</div>
-          {% endfor %}
-        </div>
-      </details>
-    </article>
   </section>
 {% endblock %}

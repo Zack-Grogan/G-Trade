@@ -38,7 +38,7 @@ Max 2 subagents at a time. For complex workflows, run sequentially (e.g. shell f
 
 ## Full procedure
 
-- Playbook: `docs/engineering-system/global-cursor-pack/operating-playbooks/starting-work-from-linear-issue.md`.
+- Playbook: `docs/archive/engineering-system-global-cursor-pack/operating-playbooks/starting-work-from-linear-issue.md`.
 - Branch/commit/PR: `docs/engineering-system/github-workflow.md`, `docs/engineering-system/linear-workflow.md`.
 
 Use the playbook for variants (exploratory, backfill issue, review/merge policy).

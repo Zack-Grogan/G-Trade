@@ -12,4 +12,4 @@ alwaysApply: false
 - **If exploratory:** Do not invent an issue; document findings and suggest formalizing (create issue or plan item when ready).
 - Apply the **issue-to-pr** skill (.cursor/skills/issue-to-pr/) when implementing from an issue or ticket.
 
-**Full procedure:** docs/engineering-system/linear-workflow.md, docs/engineering-system/github-workflow.md, global-cursor-pack/operating-playbooks/starting-work-from-linear-issue.md; skill: issue-to-pr.
+**Full procedure:** docs/engineering-system/linear-workflow.md, docs/engineering-system/github-workflow.md, docs/archive/engineering-system-global-cursor-pack/operating-playbooks/starting-work-from-linear-issue.md; skill: issue-to-pr.

@@ -1,4 +1,5 @@
 """Auction-style volume profile helpers."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -40,7 +41,9 @@ def build_volume_profile(
 
     if not bins:
         last_price = _round_to_tick(float(prices.iloc[-1]), tick_size)
-        return VolumeProfile(poc=last_price, vah=last_price, val=last_price, total_volume=0.0, value_area_width=0.0)
+        return VolumeProfile(
+            poc=last_price, vah=last_price, val=last_price, total_volume=0.0, value_area_width=0.0
+        )
 
     sorted_levels = sorted(bins)
     total_volume = sum(bins.values())

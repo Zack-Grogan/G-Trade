@@ -323,9 +323,6 @@ server:
   health_port: 31380
   debug_port: 31381
   host: "127.0.0.1"
-  mcp_enabled: false
-  mcp_path: "/mcp"
-  railway_mcp_url: ""
 
 logging:
   level: "INFO"
@@ -346,10 +343,3 @@ observability:
   backfill_missing_trade_records: true
   sync_account_trade_history_on_startup: true
   account_trade_history_lookback_hours: 168
-  internal_api_token: ""
-  railway_ingest_url: ""
-  railway_ingest_api_key: ""
-  bridge_interval_seconds: 30.0
-  outbox_path: "logs/railway_outbox.db"
-  bridge_retry_attempts: 5
-  bridge_retry_base_seconds: 2.0

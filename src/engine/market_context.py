@@ -1,4 +1,5 @@
 """Market microstructure context derived from top-of-book data."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -55,7 +56,9 @@ class MicrostructureTracker:
             elif self._last_market is None:
                 volume_delta = float(market_data.volume or 0.0)
             else:
-                volume_delta = max(float(market_data.volume or 0.0) - float(self._last_market.volume or 0.0), 0.0)
+                volume_delta = max(
+                    float(market_data.volume or 0.0) - float(self._last_market.volume or 0.0), 0.0
+                )
 
         ofi = 0.0
         if self._last_market is not None:
@@ -70,7 +73,15 @@ class MicrostructureTracker:
             )
 
         spread_ticks = (market_data.spread / 0.25) if market_data.spread else 0.0
-        self._history.append((current_ts, ofi, spread_ticks, volume_delta, float(market_data.last or market_data.mid or 0.0)))
+        self._history.append(
+            (
+                current_ts,
+                ofi,
+                spread_ticks,
+                volume_delta,
+                float(market_data.last or market_data.mid or 0.0),
+            )
+        )
         self._ofi_history.append(ofi)
         self._volume_history.append(volume_delta)
         self._last_market = market_data
@@ -85,7 +96,9 @@ class MicrostructureTracker:
 
         spread_values = [item[2] for item in self._history] or [spread_ticks]
         spread_mean = mean(spread_values)
-        spread_regime = max(-2.0, min(2.0, 2.0 - (spread_mean / max(self.config.stress_spread_ticks, 1.0))))
+        spread_regime = max(
+            -2.0, min(2.0, 2.0 - (spread_mean / max(self.config.stress_spread_ticks, 1.0)))
+        )
 
         volume_values = [value for value in self._volume_history if value > 0]
         volume_baseline = mean(volume_values) if volume_values else max(volume_delta, 1.0)

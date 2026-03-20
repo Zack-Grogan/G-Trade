@@ -36,7 +36,14 @@ class TopstepClientHistoryTests(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.json.return_value = {
             "bars": [
-                {"t": "2026-03-20T14:30:00Z", "o": 6000.25, "h": 6001.0, "l": 5999.5, "c": 6000.75, "v": 18}
+                {
+                    "t": "2026-03-20T14:30:00Z",
+                    "o": 6000.25,
+                    "h": 6001.0,
+                    "l": 5999.5,
+                    "c": 6000.75,
+                    "v": 18,
+                }
             ]
         }
         mock_post.return_value = response

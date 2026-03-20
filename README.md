@@ -14,7 +14,7 @@ The active operator surfaces are the CLI and local Flask console:
 - `es-trade broker-truth --focus-timestamp <iso>` — inspect selected-account broker truth and contradiction flags
 - `es-trade analyze regime-packet|trade-review|launch-readiness` — local analysis against SQLite and broker truth
 - `es-trade service install|uninstall|start|stop|restart|status|logs|doctor` — manage the local `launchd` wrapper
-- `es-trade db runs|events|snapshots|bridge-health|logs|account-trades|sync-account-trades|replay-missing` — inspect the local durability store
+- `es-trade db runs|events|snapshots|bridge-health|logs|account-trades|sync-account-trades` — inspect the local durability store
 
 Default local endpoints:
 

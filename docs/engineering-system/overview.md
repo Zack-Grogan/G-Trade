@@ -32,4 +32,4 @@ By-concern lookup for rules, skills, and docs: [agent-index.md](agent-index.md).
 
 ## Reusable pack and future projects
 
-Templates and global setup live under [global-cursor-pack/](global-cursor-pack/). How to reuse this setup for new repos: [future-project-starter.md](future-project-starter.md).
+Templates and global setup are archived under [../archive/engineering-system-global-cursor-pack/](../archive/engineering-system-global-cursor-pack/). How to reuse this setup for new repos: [future-project-starter.md](future-project-starter.md).

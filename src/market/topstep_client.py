@@ -1,4 +1,5 @@
 """TopstepX API Client."""
+
 import asyncio
 import json
 import logging
@@ -13,7 +14,6 @@ from typing import Optional, Dict, Any, Callable
 import threading
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-import aiohttp
 import requests
 import websockets
 import pandas as pd
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MarketData:
     """Market data snapshot."""
+
     symbol: str
     bid: float = 0
     ask: float = 0
@@ -45,11 +46,11 @@ class MarketData:
     trade_side: str = ""
     latency_ms: int = 0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    
+
     @property
     def mid(self) -> float:
         return (self.bid + self.ask) / 2 if self.bid and self.ask else self.last
-    
+
     @property
     def spread(self) -> float:
         return self.ask - self.bid if self.bid and self.ask else 0
@@ -58,6 +59,7 @@ class MarketData:
 @dataclass
 class Position:
     """Position information."""
+
     symbol: str
     quantity: int = 0
     entry_price: float = 0
@@ -65,11 +67,11 @@ class Position:
     unrealized_pnl: float = 0
     realized_pnl: float = 0
     authoritative: bool = True
-    
+
     @property
     def is_flat(self) -> bool:
         return self.quantity == 0
-    
+
     @property
     def direction(self) -> int:
         return 1 if self.quantity > 0 else (-1 if self.quantity < 0 else 0)
@@ -78,6 +80,7 @@ class Position:
 @dataclass
 class Account:
     """Account information."""
+
     account_id: str
     name: str = ""
     balance: float = 0
@@ -92,7 +95,7 @@ class Account:
 class TopstepClient:
     """
     TopstepX API Client.
-    
+
     Uses ProjectX-style SignalR API for real-time data.
     Handles:
     - Authentication (OAuth/JWT)
@@ -100,7 +103,7 @@ class TopstepClient:
     - Order placement and management
     - Position and account queries
     """
-    
+
     def __init__(self, config: Optional[APIConfig] = None):
         """Initialize TopstepX client."""
         root_config = get_config()
@@ -113,17 +116,17 @@ class TopstepClient:
         # SignalR hubs
         self.user_hub_url = "wss://rtc.topstepx.com/hubs/user"
         self.market_hub_url = "wss://rtc.topstepx.com/hubs/market"
-        
+
         # Auth
         self._access_token: Optional[str] = None
         self._token_expires: float = 0
         self._refresh_token: Optional[str] = None
         self._account_id: Optional[int] = None
-        
+
         # Session
         self._session: Optional[requests.Session] = None
         self._contract_cache: Dict[str, str] = {}
-        
+
         # State
         self._connected: bool = False
         self._mock_mode: bool = False
@@ -136,12 +139,12 @@ class TopstepClient:
         self._next_invocation_id: int = 1
         self._active_contract_id: Optional[str] = None
         self._stream_symbol: str = "ES"
-        
+
         # WebSocket
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ws_thread: Optional[threading.Thread] = None
-        
+
         # Callbacks
         self._on_market_data: Optional[Callable] = None
         self._on_order_update: Optional[Callable] = None
@@ -197,7 +200,9 @@ class TopstepClient:
             account.get("description"),
         ]
 
-        if any(preferred_match in str(value).upper() for value in candidate_fields if value is not None):
+        if any(
+            preferred_match in str(value).upper() for value in candidate_fields if value is not None
+        ):
             return True
 
         return bool(account.get("simulated"))
@@ -224,23 +229,40 @@ class TopstepClient:
             0.0,
         )
         equity = self._coerce_float(
-            account.get("equity", account.get("netLiq", account.get("netLiquidationValue", balance))),
+            account.get(
+                "equity", account.get("netLiq", account.get("netLiquidationValue", balance))
+            ),
             balance,
         )
         available = self._coerce_float(
-            account.get("available", account.get("availableBalance", account.get("availableFunds", balance))),
+            account.get(
+                "available", account.get("availableBalance", account.get("availableFunds", balance))
+            ),
             balance,
         )
         margin_used = self._coerce_float(
-            account.get("marginUsed", account.get("marginRequirement", account.get("initialMargin", 0))),
+            account.get(
+                "marginUsed", account.get("marginRequirement", account.get("initialMargin", 0))
+            ),
             0.0,
         )
         open_pnl = self._coerce_float(
-            account.get("openPnl", account.get("openPnL", account.get("unrealizedPnl", account.get("profitAndLoss", 0)))),
+            account.get(
+                "openPnl",
+                account.get(
+                    "openPnL", account.get("unrealizedPnl", account.get("profitAndLoss", 0))
+                ),
+            ),
             0.0,
         )
         realized_pnl = self._coerce_float(
-            account.get("realizedPnl", account.get("realizedPnL", account.get("closedProfitAndLoss", account.get("realizedProfitAndLoss", 0)))),
+            account.get(
+                "realizedPnl",
+                account.get(
+                    "realizedPnL",
+                    account.get("closedProfitAndLoss", account.get("realizedProfitAndLoss", 0)),
+                ),
+            ),
             0.0,
         )
         return Account(
@@ -303,26 +325,28 @@ class TopstepClient:
                 return self._account_summary(acc)
 
         return self._account_summary(tradable_accounts[0])
-        
-    def authenticate(self, client_id: Optional[str] = None, client_secret: Optional[str] = None) -> bool:
+
+    def authenticate(
+        self, client_id: Optional[str] = None, client_secret: Optional[str] = None
+    ) -> bool:
         """
         Authenticate with TopstepX API.
-        
+
         If no credentials provided, loads from environment variables:
         - EMAIL (used as username)
         - TOPSTEP_API_KEY
-        
+
         Args:
             client_id: Not used (kept for API compatibility)
             client_secret: Not used (kept for API compatibility)
-        
+
         Returns:
             True if authenticated successfully
         """
         # Load from environment
         email = os.getenv("EMAIL")
         api_key = os.getenv("TOPSTEP_API_KEY")
-        
+
         if not email or not api_key:
             logger.error("Missing EMAIL or TOPSTEP_API_KEY in environment")
             self._record_event(
@@ -334,7 +358,7 @@ class TopstepClient:
                 reason="missing_credentials",
             )
             return False
-        
+
         # Use loginKey endpoint with email as username
         try:
             auth_url = f"{self.base_url}/api/Auth/loginKey"
@@ -355,14 +379,14 @@ class TopstepClient:
                         raise
                     time.sleep(min(0.5 * (attempt + 1), 2.0))
             assert response is not None
-            
+
             data = response.json()
             if data.get("success") and data.get("token"):
                 self._mock_mode = False
                 self._access_token = data["token"]
                 # Tokens don't seem to expire in the same way
                 self._token_expires = time.time() + 86400 * 7  # Assume 7 days
-                
+
                 logger.info("Successfully authenticated with TopstepX")
                 self._record_event(
                     category="system",
@@ -377,11 +401,11 @@ class TopstepClient:
                 error_code = data.get("errorCode", -1)
                 error_msgs = {
                     1: "User not found",
-                    2: "Password verification failed", 
+                    2: "Password verification failed",
                     3: "Invalid credentials",
                     4: "App not found",
                     9: "API subscription not found",
-                    10: "API key authentication disabled"
+                    10: "API key authentication disabled",
                 }
                 logger.error(
                     "Authentication failed: %s",
@@ -396,7 +420,7 @@ class TopstepClient:
                     reason=error_msgs.get(error_code, f"Error {error_code}"),
                 )
                 return False
-            
+
         except requests.RequestException as e:
             logger.error("Authentication failed: %s", e)
             self._record_event(
@@ -408,20 +432,17 @@ class TopstepClient:
                 reason="request_exception",
             )
             return False
-    
+
     def _ensure_auth(self) -> bool:
         """Ensure we have valid authentication."""
         if not self._access_token or time.time() > self._token_expires - 60:
             logger.warning("Token expired or missing - re-authentication required")
             return False
         return True
-    
+
     def _headers(self) -> Dict[str, str]:
         """Get auth headers."""
-        return {
-            "Authorization": f"Bearer {self._access_token}",
-            "Content-Type": "application/json"
-        }
+        return {"Authorization": f"Bearer {self._access_token}", "Content-Type": "application/json"}
 
     def _normalize_symbol(self, symbol: str) -> str:
         cleaned = str(symbol or "").strip().upper()
@@ -437,7 +458,12 @@ class TopstepClient:
     def _lookup_market_snapshot(self, key: str) -> Optional[MarketData]:
         normalized = self._normalize_symbol(key)
         with self._state_lock:
-            for candidate in (key, normalized, f"/{normalized}", self._contract_cache.get(normalized, "")):
+            for candidate in (
+                key,
+                normalized,
+                f"/{normalized}",
+                self._contract_cache.get(normalized, ""),
+            ):
                 if candidate and candidate in self._market_data:
                     return self._market_data[candidate]
         return None
@@ -495,7 +521,9 @@ class TopstepClient:
                 rank += 10
             if name.upper().startswith(normalized):
                 rank += 10
-            if normalized == "ES" and ("S&P" in description.upper() or name.upper().startswith("ES")):
+            if normalized == "ES" and (
+                "S&P" in description.upper() or name.upper().startswith("ES")
+            ):
                 rank += 15
             return (active, rank)
 
@@ -722,9 +750,7 @@ class TopstepClient:
                             "high": self._coerce_float(raw.get("h", raw.get("high")), 0.0),
                             "low": self._coerce_float(raw.get("l", raw.get("low")), 0.0),
                             "close": self._coerce_float(raw.get("c", raw.get("close")), 0.0),
-                            "volume": int(
-                                self._coerce_float(raw.get("v", raw.get("volume")), 0.0)
-                            ),
+                            "volume": int(self._coerce_float(raw.get("v", raw.get("volume")), 0.0)),
                             "contract_id": contract_id,
                             "symbol": self._normalize_symbol(symbol),
                         }
@@ -844,7 +870,9 @@ class TopstepClient:
             )
             return []
 
-    def select_account(self, account_id: str | int, *, enforce_practice: Optional[bool] = None) -> Optional[Account]:
+    def select_account(
+        self, account_id: str | int, *, enforce_practice: Optional[bool] = None
+    ) -> Optional[Account]:
         """Select an account by ID and make it active for subsequent broker operations."""
         if not self._ensure_auth():
             return None
@@ -853,13 +881,25 @@ class TopstepClient:
             accounts = self.list_accounts(only_active_accounts=False)
             if not accounts:
                 return None
-            account_match = next((account for account in accounts if str(account.get("id")) == target_account_id), None)
+            account_match = next(
+                (account for account in accounts if str(account.get("id")) == target_account_id),
+                None,
+            )
             if account_match is None:
-                logger.error("Requested account %s not found in account search response.", target_account_id)
+                logger.error(
+                    "Requested account %s not found in account search response.", target_account_id
+                )
                 return None
-            require_practice = self._practice_account_required() if enforce_practice is None else bool(enforce_practice)
+            require_practice = (
+                self._practice_account_required()
+                if enforce_practice is None
+                else bool(enforce_practice)
+            )
             if require_practice and not self._is_practice_account(account_match):
-                logger.error("Refusing non-practice account switch to %s while practice-only policy is enabled.", target_account_id)
+                logger.error(
+                    "Refusing non-practice account switch to %s while practice-only policy is enabled.",
+                    target_account_id,
+                )
                 return None
 
             selected = self._account_summary(account_match)
@@ -904,7 +944,10 @@ class TopstepClient:
             if account is None:
                 return []
             lookup_account_id = int(account.account_id)
-        payload: Dict[str, Any] = {"accountId": lookup_account_id, "startTimestamp": start_timestamp}
+        payload: Dict[str, Any] = {
+            "accountId": lookup_account_id,
+            "startTimestamp": start_timestamp,
+        }
         if end_timestamp:
             payload["endTimestamp"] = end_timestamp
         try:
@@ -930,7 +973,10 @@ class TopstepClient:
             if account is None:
                 return []
             lookup_account_id = int(account.account_id)
-        payload: Dict[str, Any] = {"accountId": lookup_account_id, "startTimestamp": start_timestamp}
+        payload: Dict[str, Any] = {
+            "accountId": lookup_account_id,
+            "startTimestamp": start_timestamp,
+        }
         if end_timestamp:
             payload["endTimestamp"] = end_timestamp
         try:
@@ -945,7 +991,11 @@ class TopstepClient:
         if value in (None, ""):
             return None
         if isinstance(value, datetime):
-            return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            return (
+                value.astimezone(timezone.utc)
+                if value.tzinfo
+                else value.replace(tzinfo=timezone.utc)
+            )
         try:
             parsed = pd.Timestamp(value)
         except Exception:
@@ -958,7 +1008,9 @@ class TopstepClient:
             parsed = parsed.tz_convert(timezone.utc)
         return parsed.to_pydatetime()
 
-    def _record_matches_symbol(self, record: Dict[str, Any], symbol: str, contract_id: Optional[str]) -> bool:
+    def _record_matches_symbol(
+        self, record: Dict[str, Any], symbol: str, contract_id: Optional[str]
+    ) -> bool:
         normalized_symbol = self._normalize_symbol(symbol)
         contract_value = str(record.get("contractId", record.get("contract_id", ""))).upper()
         if contract_id and contract_value == str(contract_id).upper():
@@ -970,7 +1022,10 @@ class TopstepClient:
             record.get("description", ""),
             record.get("name", ""),
         )
-        if any(self._value_matches_symbol(candidate, normalized_symbol) for candidate in candidate_fields):
+        if any(
+            self._value_matches_symbol(candidate, normalized_symbol)
+            for candidate in candidate_fields
+        ):
             return True
         if normalized_symbol == "ES" and contract_value.startswith("CON.F.US.EP."):
             return True
@@ -987,7 +1042,12 @@ class TopstepClient:
             normalized_value = normalized_value[1:]
         if normalized_value == normalized_symbol:
             return True
-        return re.fullmatch(rf"{re.escape(normalized_symbol)}[FGHJKMNQUVXZ]\d{{1,2}}", normalized_value) is not None
+        return (
+            re.fullmatch(
+                rf"{re.escape(normalized_symbol)}[FGHJKMNQUVXZ]\d{{1,2}}", normalized_value
+            )
+            is not None
+        )
 
     @staticmethod
     def _normalize_history_side(value: Any) -> str:
@@ -1073,7 +1133,9 @@ class TopstepClient:
         current_position = Position(symbol=symbol, authoritative=position_error is None)
         for contract_key, position in (positions or {}).items():
             normalized = str(contract_key).upper()
-            if (contract_id and normalized == str(contract_id).upper()) or self._value_matches_symbol(normalized, requested):
+            if (
+                contract_id and normalized == str(contract_id).upper()
+            ) or self._value_matches_symbol(normalized, requested):
                 current_position = position
                 break
             if self._value_matches_symbol(getattr(position, "symbol", ""), requested):
@@ -1104,14 +1166,35 @@ class TopstepClient:
             normalized_open_orders.append(
                 {
                     "order_id": str(order_id),
-                    "status": self._normalize_history_status(order.get("status", order.get("orderStatus", order.get("state")))),
-                    "side": self._normalize_history_side(order.get("side", order.get("orderSide", order.get("type")))),
-                    "size": int(order.get("size", order.get("quantity", order.get("remainingQuantity", 0))) or 0),
-                    "filled_quantity": int(order.get("filledQuantity", order.get("filled_quantity", 0)) or 0),
-                    "limit_price": self._coerce_float(order.get("limitPrice", order.get("limit_price")), 0.0),
-                    "stop_price": self._coerce_float(order.get("stopPrice", order.get("stop_price")), 0.0),
+                    "status": self._normalize_history_status(
+                        order.get("status", order.get("orderStatus", order.get("state")))
+                    ),
+                    "side": self._normalize_history_side(
+                        order.get("side", order.get("orderSide", order.get("type")))
+                    ),
+                    "size": int(
+                        order.get("size", order.get("quantity", order.get("remainingQuantity", 0)))
+                        or 0
+                    ),
+                    "filled_quantity": int(
+                        order.get("filledQuantity", order.get("filled_quantity", 0)) or 0
+                    ),
+                    "limit_price": self._coerce_float(
+                        order.get("limitPrice", order.get("limit_price")), 0.0
+                    ),
+                    "stop_price": self._coerce_float(
+                        order.get("stopPrice", order.get("stop_price")), 0.0
+                    ),
                     "contract_id": str(order.get("contractId", "")),
-                    "timestamp": (self._parse_datetime(order.get("creationTimestamp", order.get("updatedTimestamp", order.get("timestamp")))) or generated_at).isoformat(),
+                    "timestamp": (
+                        self._parse_datetime(
+                            order.get(
+                                "creationTimestamp",
+                                order.get("updatedTimestamp", order.get("timestamp")),
+                            )
+                        )
+                        or generated_at
+                    ).isoformat(),
                 }
             )
         bundle["current"]["open_orders"] = normalized_open_orders
@@ -1150,23 +1233,44 @@ class TopstepClient:
 
         normalized_recent_orders: list[Dict[str, Any]] = []
         for order in recent_orders:
-            order_time = self._parse_datetime(order.get("creationTimestamp", order.get("updatedTimestamp", order.get("timestamp"))))
+            order_time = self._parse_datetime(
+                order.get(
+                    "creationTimestamp", order.get("updatedTimestamp", order.get("timestamp"))
+                )
+            )
             normalized_recent_orders.append(
                 {
-                    "order_id": str(order.get("id", order.get("orderId", order.get("orderID", "")))),
-                    "status": self._normalize_history_status(order.get("status", order.get("orderStatus", order.get("state")))),
-                    "side": self._normalize_history_side(order.get("side", order.get("orderSide", order.get("type")))),
-                    "size": int(order.get("size", order.get("quantity", order.get("remainingQuantity", 0))) or 0),
-                    "filled_quantity": int(order.get("filledQuantity", order.get("filled_quantity", 0)) or 0),
-                    "limit_price": self._coerce_float(order.get("limitPrice", order.get("limit_price")), 0.0),
-                    "stop_price": self._coerce_float(order.get("stopPrice", order.get("stop_price")), 0.0),
+                    "order_id": str(
+                        order.get("id", order.get("orderId", order.get("orderID", "")))
+                    ),
+                    "status": self._normalize_history_status(
+                        order.get("status", order.get("orderStatus", order.get("state")))
+                    ),
+                    "side": self._normalize_history_side(
+                        order.get("side", order.get("orderSide", order.get("type")))
+                    ),
+                    "size": int(
+                        order.get("size", order.get("quantity", order.get("remainingQuantity", 0)))
+                        or 0
+                    ),
+                    "filled_quantity": int(
+                        order.get("filledQuantity", order.get("filled_quantity", 0)) or 0
+                    ),
+                    "limit_price": self._coerce_float(
+                        order.get("limitPrice", order.get("limit_price")), 0.0
+                    ),
+                    "stop_price": self._coerce_float(
+                        order.get("stopPrice", order.get("stop_price")), 0.0
+                    ),
                     "contract_id": str(order.get("contractId", "")),
                     "timestamp": order_time.isoformat() if order_time else None,
                 }
             )
         normalized_recent_trades: list[Dict[str, Any]] = []
         for trade in recent_trades:
-            trade_time = self._parse_datetime(trade.get("creationTimestamp", trade.get("timestamp", trade.get("filledTime"))))
+            trade_time = self._parse_datetime(
+                trade.get("creationTimestamp", trade.get("timestamp", trade.get("filledTime")))
+            )
             normalized_recent_trades.append(
                 {
                     "trade_id": str(trade.get("id", trade.get("tradeId", ""))),
@@ -1174,7 +1278,9 @@ class TopstepClient:
                     "side": self._normalize_history_side(trade.get("side")),
                     "size": int(trade.get("size", trade.get("quantity", 0)) or 0),
                     "price": self._coerce_float(trade.get("price"), 0.0),
-                    "profit_and_loss": self._coerce_float(trade.get("profitAndLoss", trade.get("pnl")), 0.0),
+                    "profit_and_loss": self._coerce_float(
+                        trade.get("profitAndLoss", trade.get("pnl")), 0.0
+                    ),
                     "fees": self._coerce_float(trade.get("fees"), 0.0),
                     "voided": bool(trade.get("voided", False)),
                     "contract_id": str(trade.get("contractId", "")),
@@ -1188,24 +1294,29 @@ class TopstepClient:
         bundle["history"]["recent_trade_count"] = len(normalized_recent_trades)
 
         working_history_present = any(
-            order.get("status") in {"working", "partially_filled"} for order in normalized_recent_orders
+            order.get("status") in {"working", "partially_filled"}
+            for order in normalized_recent_orders
         )
 
         def _near_focus(item: Dict[str, Any]) -> bool:
             item_time = self._parse_datetime(item.get("timestamp"))
             return bool(item_time and abs((item_time - focus_dt).total_seconds()) <= 120)
 
-        focus_activity_detected = any(_near_focus(order) for order in normalized_recent_orders) or any(
-            _near_focus(trade) for trade in normalized_recent_trades
-        )
+        focus_activity_detected = any(
+            _near_focus(order) for order in normalized_recent_orders
+        ) or any(_near_focus(trade) for trade in normalized_recent_trades)
         current_flat = current_position.quantity == 0
         no_open_orders = len(normalized_open_orders) == 0
         recent_activity = focus_activity_detected
         bundle["contradictions"] = {
             "api_flat_with_recent_activity": current_flat and no_open_orders and recent_activity,
-            "api_flat_with_working_history": current_flat and no_open_orders and working_history_present,
+            "api_flat_with_working_history": current_flat
+            and no_open_orders
+            and working_history_present,
             "focus_timestamp_activity_detected": focus_activity_detected,
-            "focus_timestamp_without_current_open_state": focus_activity_detected and current_flat and no_open_orders,
+            "focus_timestamp_without_current_open_state": focus_activity_detected
+            and current_flat
+            and no_open_orders,
         }
         return bundle
 
@@ -1375,7 +1486,12 @@ class TopstepClient:
             ("SubscribePositions", [lookup_account_id]),
             ("SubscribeTrades", [lookup_account_id]),
         ]:
-            inv = {"type": 1, "target": target, "arguments": list(args), "invocationId": str(id(self._user_hub_ws))}
+            inv = {
+                "type": 1,
+                "target": target,
+                "arguments": list(args),
+                "invocationId": str(id(self._user_hub_ws)),
+            }
             await self._user_hub_ws.send(json.dumps(inv) + "\x1e")
         await asyncio.sleep(0.2)
         self._user_hub_connected = True
@@ -1409,7 +1525,9 @@ class TopstepClient:
                     "orderId": order_id,
                     "id": order_id,
                     "status": str(status or "").lower(),
-                    "filledQuantity": payload.get("filledQuantity", payload.get("filled_quantity", 0)),
+                    "filledQuantity": payload.get(
+                        "filledQuantity", payload.get("filled_quantity", 0)
+                    ),
                     "filledPrice": payload.get("filledPrice", payload.get("filled_price", 0.0)),
                 }
                 try:
@@ -1493,7 +1611,9 @@ class TopstepClient:
         self._user_hub_stop_requested = True
         if self._user_hub_ws and self._user_hub_loop and self._user_hub_loop.is_running():
             try:
-                asyncio.run_coroutine_threadsafe(self._user_hub_ws.close(), self._user_hub_loop).result(timeout=5)
+                asyncio.run_coroutine_threadsafe(
+                    self._user_hub_ws.close(), self._user_hub_loop
+                ).result(timeout=5)
             except Exception:
                 pass
         self._user_hub_ws = None
@@ -1522,11 +1642,11 @@ class TopstepClient:
         """Get account information."""
         if not self._ensure_auth():
             return None
-        
+
         try:
             url = f"{self.base_url}/api/Account/search"
             response = self._post_with_retry(url, {})
-            
+
             data = response.json()
             accounts = data.get("accounts", [])
             selected = self._select_account(accounts)
@@ -1554,13 +1674,18 @@ class TopstepClient:
             self._record_event(
                 category="system",
                 event_type="account_selected",
-                payload={"account_id": selected.account_id, "account_name": selected.name, "balance": selected.balance, "practice": selected.is_practice},
+                payload={
+                    "account_id": selected.account_id,
+                    "account_name": selected.name,
+                    "balance": selected.balance,
+                    "practice": selected.is_practice,
+                },
                 event_time=datetime.now(timezone.utc),
                 action="get_account",
                 reason="account_selected",
             )
             return self._account
-            
+
         except requests.RequestException as e:
             logger.error("Failed to get account: %s", e)
             self._record_event(
@@ -1572,7 +1697,7 @@ class TopstepClient:
                 reason="request_exception",
             )
             return None
-    
+
     def get_positions(self) -> Dict[str, Position]:
         """Get current positions."""
         positions, _ = self.get_positions_snapshot()
@@ -1582,11 +1707,11 @@ class TopstepClient:
         """Get broker position state with explicit success/failure status."""
         if not self._ensure_auth() or not self._account_id:
             return None, "auth_unavailable"
-        
+
         try:
             url = f"{self.base_url}/api/Position/searchOpen"
             response = self._post_with_retry(url, {"accountId": self._account_id})
-            
+
             data = response.json()
             positions = data.get("positions", [])
             new_positions: Dict[str, Position] = {}
@@ -1605,14 +1730,17 @@ class TopstepClient:
                     symbol=symbol,
                     quantity=signed_size,
                     entry_price=pos.get("averagePrice", 0),
-                    current_price=(snapshot.last if snapshot is not None else pos.get("averagePrice", 0)) or pos.get("averagePrice", 0),
+                    current_price=(
+                        snapshot.last if snapshot is not None else pos.get("averagePrice", 0)
+                    )
+                    or pos.get("averagePrice", 0),
                     unrealized_pnl=pos.get("profitAndLoss", 0),
-                    realized_pnl=0
+                    realized_pnl=0,
                 )
             with self._state_lock:
                 self._positions = new_positions
                 return dict(self._positions), None
-            
+
         except requests.RequestException as e:
             logger.error("Failed to get positions: %s", e)
             self._record_event(
@@ -1620,13 +1748,15 @@ class TopstepClient:
                 event_type="position_lookup_failed",
                 payload={"error": str(e), "account_id": self._account_id},
                 event_time=datetime.now(timezone.utc),
-                symbol=symbol if 'symbol' in locals() else self._stream_symbol,
+                symbol=symbol if "symbol" in locals() else self._stream_symbol,
                 action="get_positions",
                 reason="request_exception",
             )
             return None, str(e)
 
-    def get_open_orders_snapshot(self, symbol: Optional[str] = None) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
+    def get_open_orders_snapshot(
+        self, symbol: Optional[str] = None
+    ) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
         """Get broker open orders with explicit success/failure status."""
         if not self._ensure_auth() or not self._account_id:
             return None, "auth_unavailable"
@@ -1653,7 +1783,11 @@ class TopstepClient:
                         filtered_orders.append(order)
                         continue
                     order_symbol = self._normalize_symbol(
-                        str(order.get("symbol", order.get("symbolName", order.get("contractName", ""))))
+                        str(
+                            order.get(
+                                "symbol", order.get("symbolName", order.get("contractName", ""))
+                            )
+                        )
                     )
                     if order_symbol and order_symbol == normalized:
                         filtered_orders.append(order)
@@ -1683,7 +1817,9 @@ class TopstepClient:
         requested_contract_id = self._resolve_contract_id(symbol)
         for position_contract_id, position in (positions or {}).items():
             normalized = str(position_contract_id).upper()
-            if (requested_contract_id and normalized == str(requested_contract_id).upper()) or self._value_matches_symbol(normalized, requested):
+            if (
+                requested_contract_id and normalized == str(requested_contract_id).upper()
+            ) or self._value_matches_symbol(normalized, requested):
                 return position
             if self._value_matches_symbol(getattr(position, "symbol", ""), requested):
                 return position
@@ -1700,7 +1836,9 @@ class TopstepClient:
                     return replace(cached_positions[symbol], authoritative=False)
                 for position_contract_id, position in cached_positions.items():
                     normalized = str(position_contract_id).upper()
-                    if (requested_contract_id and normalized == str(requested_contract_id).upper()) or self._value_matches_symbol(normalized, requested):
+                    if (
+                        requested_contract_id and normalized == str(requested_contract_id).upper()
+                    ) or self._value_matches_symbol(normalized, requested):
                         return replace(position, authoritative=False)
                     if self._value_matches_symbol(getattr(position, "symbol", ""), requested):
                         return replace(position, authoritative=False)
@@ -1708,11 +1846,15 @@ class TopstepClient:
                         return replace(position, authoritative=False)
                     if requested == "MES" and normalized.startswith("CON.F.US.MEP."):
                         return replace(position, authoritative=False)
-            logger.warning("Position lookup failed for %s with no authoritative broker snapshot: %s", symbol, error)
+            logger.warning(
+                "Position lookup failed for %s with no authoritative broker snapshot: %s",
+                symbol,
+                error,
+            )
             return Position(symbol=symbol, authoritative=False)
 
         return Position(symbol=symbol)
-    
+
     def place_order(
         self,
         symbol: str,
@@ -1721,11 +1863,11 @@ class TopstepClient:
         order_type: str = "limit",  # "limit" or "market"
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
-        time_in_force: str = "day"
+        time_in_force: str = "day",
     ) -> Optional[str]:
         """
         Place an order.
-        
+
         Args:
             symbol: Trading symbol (e.g., "ES" or contract ID)
             quantity: Number of contracts
@@ -1734,7 +1876,7 @@ class TopstepClient:
             limit_price: Limit price (required for limit orders)
             stop_price: Stop price (for stop orders)
             time_in_force: "day", "gtc", "ioc", "fok" (not used in this API)
-        
+
         Returns:
             Order ID if successful, None otherwise
         """
@@ -1745,17 +1887,21 @@ class TopstepClient:
                 logger.error("No account ID available")
                 return None
 
-        if self._practice_account_required() and self._account is not None and not self._account.is_practice:
+        if (
+            self._practice_account_required()
+            and self._account is not None
+            and not self._account.is_practice
+        ):
             logger.error(
                 "Refusing order placement on non-practice account %s while practice-only safety is enabled.",
                 self._account.account_id,
             )
             return None
-        
+
         # Map order types to API enums
         type_map = {"limit": 1, "market": 2, "stoplimit": 3, "stop": 4}
         side_map = {"buy": 0, "sell": 1, "bid": 0, "ask": 1}
-        
+
         contract_id = self._resolve_contract_id(symbol)
         if not contract_id:
             return None
@@ -1765,18 +1911,18 @@ class TopstepClient:
             "contractId": contract_id,
             "type": type_map.get(order_type.lower(), 1),
             "side": side_map.get(side.lower(), 0),
-            "size": abs(quantity)
+            "size": abs(quantity),
         }
-        
+
         if order_type.lower() == "limit" and limit_price:
             order_payload["limitPrice"] = limit_price
         if stop_price:
             order_payload["stopPrice"] = stop_price
-        
+
         try:
             url = f"{self.base_url}/api/Order/place"
             response = self._post_with_retry(url, order_payload)
-            
+
             data = response.json()
             if data.get("success"):
                 order_id = str(data.get("orderId"))
@@ -1794,7 +1940,15 @@ class TopstepClient:
                 self._record_event(
                     category="execution",
                     event_type="broker_order_submit",
-                    payload={"side": side, "quantity": quantity, "symbol": symbol, "order_type": order_type, "limit_price": limit_price, "stop_price": stop_price, "account_id": self._account_id},
+                    payload={
+                        "side": side,
+                        "quantity": quantity,
+                        "symbol": symbol,
+                        "order_type": order_type,
+                        "limit_price": limit_price,
+                        "stop_price": stop_price,
+                        "account_id": self._account_id,
+                    },
                     event_time=datetime.now(timezone.utc),
                     symbol=symbol,
                     action="submit_order",
@@ -1817,14 +1971,23 @@ class TopstepClient:
                 self._record_event(
                     category="execution",
                     event_type="broker_order_submit_failed",
-                    payload={"error": data.get("errorMessage", "Unknown error"), "side": side, "quantity": quantity, "symbol": symbol, "order_type": order_type, "limit_price": limit_price, "stop_price": stop_price, "account_id": self._account_id},
+                    payload={
+                        "error": data.get("errorMessage", "Unknown error"),
+                        "side": side,
+                        "quantity": quantity,
+                        "symbol": symbol,
+                        "order_type": order_type,
+                        "limit_price": limit_price,
+                        "stop_price": stop_price,
+                        "account_id": self._account_id,
+                    },
                     event_time=datetime.now(timezone.utc),
                     symbol=symbol,
                     action="submit_order",
                     reason="broker_order_submit_failed",
                 )
                 return None
-            
+
         except requests.RequestException as e:
             logger.error(
                 "broker_order_submit_failed error=%s side=%s quantity=%s symbol=%s order_type=%s limit_price=%s stop_price=%s account_id=%s",
@@ -1840,27 +2003,38 @@ class TopstepClient:
             self._record_event(
                 category="execution",
                 event_type="broker_order_submit_failed",
-                payload={"error": str(e), "side": side, "quantity": quantity, "symbol": symbol, "order_type": order_type, "limit_price": limit_price, "stop_price": stop_price, "account_id": self._account_id},
+                payload={
+                    "error": str(e),
+                    "side": side,
+                    "quantity": quantity,
+                    "symbol": symbol,
+                    "order_type": order_type,
+                    "limit_price": limit_price,
+                    "stop_price": stop_price,
+                    "account_id": self._account_id,
+                },
                 event_time=datetime.now(timezone.utc),
                 symbol=symbol,
                 action="submit_order",
                 reason="request_exception",
             )
             return None
-    
+
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order."""
         if not self._ensure_auth():
             return False
-        
+
         try:
             url = f"{self.base_url}/api/Order/cancel"
-            response = self._post_with_retry(
+            self._post_with_retry(
                 url,
                 {"orderId": int(order_id), "accountId": self._account_id},
             )
-            
-            logger.info("broker_order_cancelled order_id=%s account_id=%s", order_id, self._account_id)
+
+            logger.info(
+                "broker_order_cancelled order_id=%s account_id=%s", order_id, self._account_id
+            )
             self._record_event(
                 category="execution",
                 event_type="broker_order_cancelled",
@@ -1872,9 +2046,14 @@ class TopstepClient:
                 order_id=order_id,
             )
             return True
-            
+
         except requests.RequestException as e:
-            logger.error("broker_order_cancel_failed order_id=%s account_id=%s error=%s", order_id, self._account_id, e)
+            logger.error(
+                "broker_order_cancel_failed order_id=%s account_id=%s error=%s",
+                order_id,
+                self._account_id,
+                e,
+            )
             self._record_event(
                 category="execution",
                 event_type="broker_order_cancel_failed",
@@ -1886,24 +2065,24 @@ class TopstepClient:
                 order_id=order_id,
             )
             return False
-    
+
     def flatten_all(self, symbol: str = "ES") -> bool:
         """Flatten all positions for symbol."""
         position = self.get_position(symbol)
-        
+
         if position.is_flat:
             return True
-        
+
         side = "sell" if position.quantity > 0 else "buy"
         return self.place_order(symbol, abs(position.quantity), side, "market") is not None
-    
+
     # Market Data Streaming
-    
+
     async def _ws_connect(self):
         """Connect to WebSocket for market data."""
         if not self._ensure_auth():
             raise RuntimeError("Authentication required before starting market stream")
-        
+
         try:
             contract_id = self._resolve_contract_id(self._stream_symbol)
             if not contract_id:
@@ -1955,17 +2134,17 @@ class TopstepClient:
                 reason="websocket_connection_failed",
             )
             raise
-    
+
     async def _ws_listen(self):
         """Listen to WebSocket messages."""
         if not self._ws:
             return
-        
+
         try:
             async for message in self._ws:
                 for frame in self._decode_signalr_frames(message):
                     await self._handle_ws_message(frame)
-                
+
         except Exception as e:
             self._stream_error = str(e)
             self._stream_ready.set()
@@ -1980,7 +2159,7 @@ class TopstepClient:
                 action="listen_stream",
                 reason="websocket_listen_error",
             )
-    
+
     async def _handle_ws_message(self, data: Dict[str, Any]):
         """Handle incoming WebSocket message."""
         if data.get("type") == 6:
@@ -2006,7 +2185,11 @@ class TopstepClient:
                 volume=int(payload.get("volume", 0) or 0),
                 bid_size=float(payload.get("bidSize", 0) or 0),
                 ask_size=float(payload.get("askSize", 0) or 0),
-                timestamp=pd.Timestamp(payload.get("timestamp") or payload.get("lastUpdated") or datetime.now(timezone.utc)).to_pydatetime(warn=False),
+                timestamp=pd.Timestamp(
+                    payload.get("timestamp")
+                    or payload.get("lastUpdated")
+                    or datetime.now(timezone.utc)
+                ).to_pydatetime(warn=False),
             )
             aliases = {contract_id, root_symbol, symbol_name}
             with self._state_lock:
@@ -2033,11 +2216,13 @@ class TopstepClient:
                     "timestamp": quote.timestamp,
                 }
             )
-            
+
             if not self._stream_ready.is_set():
                 self._stream_error = None
                 self._stream_ready.set()
-                logger.info("Received first live quote for %s at %s", root_symbol, quote.last or quote.mid)
+                logger.info(
+                    "Received first live quote for %s at %s", root_symbol, quote.last or quote.mid
+                )
                 self._record_event(
                     category="market",
                     event_type="first_live_quote",
@@ -2063,7 +2248,9 @@ class TopstepClient:
             contract_id = str(arguments[0])
             payload = self._coerce_signalr_payload(arguments[1])
             symbol_id = str(payload.get("symbolId", self._stream_symbol))
-            prior = self._lookup_market_snapshot(contract_id) or self._lookup_market_snapshot(self._stream_symbol)
+            prior = self._lookup_market_snapshot(contract_id) or self._lookup_market_snapshot(
+                self._stream_symbol
+            )
             root_symbol = prior.symbol if prior is not None else self._normalize_symbol(symbol_id)
             prior = prior or MarketData(symbol=root_symbol)
             quote = MarketData(
@@ -2074,9 +2261,13 @@ class TopstepClient:
                 volume=int(payload.get("volume", prior.volume or 0) or 0),
                 bid_size=prior.bid_size,
                 ask_size=prior.ask_size,
-                last_size=float(payload.get("size", payload.get("volume", prior.last_size or 0)) or 0),
+                last_size=float(
+                    payload.get("size", payload.get("volume", prior.last_size or 0)) or 0
+                ),
                 trade_side="buy" if int(payload.get("type", 0) or 0) == 0 else "sell",
-                timestamp=pd.Timestamp(payload.get("timestamp") or datetime.now(timezone.utc)).to_pydatetime(warn=False),
+                timestamp=pd.Timestamp(
+                    payload.get("timestamp") or datetime.now(timezone.utc)
+                ).to_pydatetime(warn=False),
             )
             with self._state_lock:
                 for alias in {contract_id, root_symbol, quote.symbol}:
@@ -2110,7 +2301,11 @@ class TopstepClient:
                 self._record_event(
                     category="market",
                     event_type="first_live_trade",
-                    payload={"price": quote.last, "contract_id": contract_id, "trade_side": quote.trade_side},
+                    payload={
+                        "price": quote.last,
+                        "contract_id": contract_id,
+                        "trade_side": quote.trade_side,
+                    },
                     event_time=quote.timestamp,
                     symbol=quote.symbol,
                     action="receive_trade",
@@ -2119,13 +2314,13 @@ class TopstepClient:
 
             if self._on_market_data:
                 self._on_market_data(quote)
-    
+
     def start_market_stream(
         self,
         symbol: str = "ES",
         on_market_data: Optional[Callable] = None,
         on_order_update: Optional[Callable] = None,
-        on_position_update: Optional[Callable] = None
+        on_position_update: Optional[Callable] = None,
     ):
         """Start market data streaming in background thread."""
         self._on_market_data = on_market_data
@@ -2147,7 +2342,7 @@ class TopstepClient:
                 reason="already_running",
             )
             return
-        
+
         def run_ws():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -2165,8 +2360,10 @@ class TopstepClient:
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                 loop.close()
-        
-        self._ws_thread = threading.Thread(target=run_ws, name=f"market-stream-{symbol.lower()}", daemon=True)
+
+        self._ws_thread = threading.Thread(
+            target=run_ws, name=f"market-stream-{symbol.lower()}", daemon=True
+        )
         self._ws_thread.start()
         self.start_user_hub_listener()
         self._record_event(
@@ -2210,7 +2407,9 @@ class TopstepClient:
                     reason="websocket_close_failed",
                 )
         elif self._ws:
-            logger.warning("Closing websocket without a running stream loop; falling back to local event loop close")
+            logger.warning(
+                "Closing websocket without a running stream loop; falling back to local event loop close"
+            )
             try:
                 asyncio.run(self._ws.close())
             except Exception as exc:
@@ -2246,24 +2445,29 @@ class TopstepClient:
         self._record_event(
             category="market",
             event_type="market_stream_stopped",
-            payload={"symbol": self._stream_symbol, "thread_alive_after_join": thread_alive_after_join},
+            payload={
+                "symbol": self._stream_symbol,
+                "thread_alive_after_join": thread_alive_after_join,
+            },
             event_time=datetime.now(timezone.utc),
             symbol=self._stream_symbol,
             action="stop_stream",
             reason="market_stream_stopped",
         )
-    
+
     def get_market_data(self, symbol: str = "ES") -> Optional[MarketData]:
         """Get current market data for symbol."""
         return self._lookup_market_snapshot(symbol)
-    
+
     # Offline execution (replay and tests only)
 
     def enable_mock_mode(self):
         """Enable offline execution: no real API calls; synthetic account and data. Used only by replay and tests. Practice account = real Topstep PRAC (use start, not this)."""
         logger.info("Offline execution enabled (replay/tests only)")
         self._mock_mode = True
-        self._account = Account(account_id="SIM-PRAC", name="Practice Sim", balance=50000, is_practice=True)
+        self._account = Account(
+            account_id="SIM-PRAC", name="Practice Sim", balance=50000, is_practice=True
+        )
         self._record_event(
             category="system",
             event_type="mock_mode_enabled",
@@ -2282,9 +2486,9 @@ class TopstepClient:
                 bid_size=10,
                 ask_size=10,
                 last_size=1,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
             )
-    
+
     def update_mock_price(self, price: float):
         """Update mock price for testing."""
         with self._state_lock:
@@ -2297,7 +2501,7 @@ class TopstepClient:
                 bid_size=10,
                 ask_size=10,
                 last_size=1,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=datetime.now(timezone.utc),
             )
 
     def reset_mock_state(self):

@@ -1,4 +1,5 @@
 """VWAP and session-context indicators."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +7,6 @@ from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
-
 
 PriceSource = Literal["HLC3", "HL2", "CLOSE"]
 
@@ -53,7 +53,9 @@ def vwap(
     source: PriceSource = "HLC3",
 ) -> pd.Series:
     """Calculate cumulative VWAP across the provided series."""
-    typical_price = _typical_price(high.astype(float), low.astype(float), close.astype(float), source)
+    typical_price = _typical_price(
+        high.astype(float), low.astype(float), close.astype(float), source
+    )
     cumsum_pv = (typical_price * volume.astype(float)).cumsum()
     cumsum_v = volume.astype(float).cumsum()
     return cumsum_pv / cumsum_v.replace(0, np.nan)
@@ -106,13 +108,13 @@ def session_vwap_bands(
 
     labels = session_labels(pd.DatetimeIndex(df.index), session_start_hour, session_start_minute)
     weighted_price = typical_price * volume
-    weighted_square = (typical_price ** 2) * volume
+    weighted_square = (typical_price**2) * volume
     cum_volume = volume.groupby(labels).cumsum().replace(0, np.nan)
     cum_weighted_price = weighted_price.groupby(labels).cumsum()
     cum_weighted_square = weighted_square.groupby(labels).cumsum()
 
     vwap_values = cum_weighted_price / cum_volume
-    variance = (cum_weighted_square / cum_volume) - (vwap_values ** 2)
+    variance = (cum_weighted_square / cum_volume) - (vwap_values**2)
     variance = variance.clip(lower=0.0).fillna(0.0)
     sigma = np.sqrt(variance)
 

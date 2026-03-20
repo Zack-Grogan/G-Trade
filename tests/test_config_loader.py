@@ -11,15 +11,13 @@ from src.config.loader import load_config
 
 class TestConfigLoaderCompatibility(unittest.TestCase):
     def test_load_config_ignores_deprecated_noop_keys_with_warning(self) -> None:
-        config_text = textwrap.dedent(
-            """
+        config_text = textwrap.dedent("""
             strategy:
               vwap_session: "RTH"
             risk:
               use_volatility_sizing: true
               target_daily_risk_pct: 1.0
-            """
-        )
+            """)
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(config_text, encoding="utf-8")

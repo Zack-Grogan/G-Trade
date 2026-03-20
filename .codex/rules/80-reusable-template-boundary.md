@@ -5,7 +5,7 @@ alwaysApply: false
 
 # Reusable template boundary
 
-**When this applies:** Adding or editing templates, playbooks, or global-pack content under docs/engineering-system/global-cursor-pack/.
+**When this applies:** Adding or editing templates, playbooks, or global-pack content under docs/archive/engineering-system-global-cursor-pack/.
 
 **Do this:**
 - Keep content generic enough to apply to other repos; avoid hardcoding repo-specific details except in clearly marked examples.

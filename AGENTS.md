@@ -102,7 +102,6 @@ Useful commands:
 - `es-hotzone-debug`
 - `issue-to-pr`
 - `use-openviking`
-- `upstash` (only if explicitly needed later)
 
 ## Subagent routing
 

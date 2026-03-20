@@ -44,7 +44,9 @@ def generate_rows(
             seg_remaining = segments[seg_idx].minutes
         seg_remaining -= 1
 
-        seg = segments[seg_idx] if segments else Segment(minutes=minutes, drift_per_min=0.0, vol=1.0)
+        seg = (
+            segments[seg_idx] if segments else Segment(minutes=minutes, drift_per_min=0.0, vol=1.0)
+        )
 
         base_osc = math.sin(i / 7.0) * 0.6 + math.sin(i / 29.0) * 1.2
         shock = 0.0
@@ -82,10 +84,14 @@ def generate_rows(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate a synthetic replay CSV for es-hotzone-trader.")
+    parser = argparse.ArgumentParser(
+        description="Generate a synthetic replay CSV for es-hotzone-trader."
+    )
     parser.add_argument("--out", required=True, help="Output CSV path")
     parser.add_argument("--symbol", default="ES", help="Symbol (default: ES)")
-    parser.add_argument("--start", default="2026-03-16T11:20:00Z", help="UTC start timestamp (ISO-8601)")
+    parser.add_argument(
+        "--start", default="2026-03-16T11:20:00Z", help="UTC start timestamp (ISO-8601)"
+    )
     parser.add_argument("--minutes", type=int, default=340, help="Number of minutes to generate")
     parser.add_argument("--start-price", type=float, default=5200.0, help="Starting price")
     args = parser.parse_args()
@@ -96,9 +102,9 @@ def main() -> int:
     # Designed to span the configured hot-zones in America/Chicago:
     # 06:30-08:30 (Pre-Open), 09:00-11:00 (Post-Open), 12:00-13:00 (Midday/Close-Scalp).
     segments = [
-        Segment(minutes=90, drift_per_min=0.06, vol=0.9),   # pre-open style drift
+        Segment(minutes=90, drift_per_min=0.06, vol=0.9),  # pre-open style drift
         Segment(minutes=150, drift_per_min=0.10, vol=1.4),  # post-open trend + higher vol
-        Segment(minutes=100, drift_per_min=-0.03, vol=0.8), # midday chop / mean reversion
+        Segment(minutes=100, drift_per_min=-0.03, vol=0.8),  # midday chop / mean reversion
     ]
 
     rows = generate_rows(
@@ -123,4 +129,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

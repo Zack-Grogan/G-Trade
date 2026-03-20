@@ -1,4 +1,5 @@
 """Risk Manager - Position sizing and risk controls."""
+
 import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -16,14 +17,16 @@ logger = logging.getLogger(__name__)
 
 class RiskState(Enum):
     """Risk state machine."""
+
     NORMAL = "normal"
-    REDUCED = "reduced"      # Reduced size
+    REDUCED = "reduced"  # Reduced size
     CIRCUIT_BREAKER = "circuit_breaker"  # No trading
 
 
 @dataclass
 class TradeRecord:
     """Record of a completed trade."""
+
     entry_time: datetime
     exit_time: datetime
     direction: int  # 1 for long, -1 for short
@@ -44,9 +47,10 @@ class TradeRecord:
     account_is_practice: Optional[bool] = None
 
 
-@dataclass 
+@dataclass
 class RiskMetrics:
     """Current risk metrics."""
+
     daily_pnl: float = 0
     max_daily_loss: float = 0
     consecutive_losses: int = 0
@@ -61,7 +65,7 @@ class RiskMetrics:
 class RiskManager:
     """
     Manages position sizing and risk controls.
-    
+
     Enforces:
     - Daily loss limits
     - Position loss limits
@@ -69,14 +73,14 @@ class RiskManager:
     - Trade frequency limits
     - Position sizing based on volatility
     """
-    
+
     def __init__(self, config=None):
         """Initialize risk manager."""
         self.config = config or get_config()
         self.risk_config: RiskConfig = self.config.risk
         self.account_config = self.config.account
         self.observability = get_observability_store()
-        
+
         # State
         self._daily_pnl: float = 0
         self._daily_trades: int = 0
@@ -96,17 +100,19 @@ class RiskManager:
         self._blackout_reason: str = ""
         self._volatility_history: deque = deque(maxlen=20)
         self._volatility_circuit_active: bool = False
-        
+
         # Trade history
         self._trade_history: List[TradeRecord] = []
         self._daily_date: Optional[date] = None
         self._clock_time: Optional[datetime] = None
         self._session_timezone = pytz.timezone(self.risk_config.session_timezone)
-        self._market_price_stale_seconds = max(int(getattr(self.config.watchdog, "feed_stale_seconds", 15)), 1)
-        
+        self._market_price_stale_seconds = max(
+            int(getattr(self.config.watchdog, "feed_stale_seconds", 15)), 1
+        )
+
         # Risk state
         self._risk_state: RiskState = RiskState.NORMAL
-        
+
         # Position tracking
         self._current_position: int = 0
         self._position_entry_price: float = 0
@@ -114,8 +120,10 @@ class RiskManager:
         self._current_position_pnl: float = 0
         self._last_market_price: Optional[float] = None
         self._last_market_price_time: Optional[datetime] = None
-        
-        logger.info("RiskManager initialized with max_daily_loss=$%s", self.risk_config.max_daily_loss)
+
+        logger.info(
+            "RiskManager initialized with max_daily_loss=$%s", self.risk_config.max_daily_loss
+        )
 
     def _record_event(
         self,
@@ -139,7 +147,7 @@ class RiskManager:
             reason=reason,
             risk_state=self._risk_state.value,
         )
-    
+
     def _coerce_time(self, current_time: Optional[datetime] = None) -> datetime:
         """Convert a timestamp into the configured session timezone."""
         candidate = current_time or self._clock_time
@@ -164,7 +172,9 @@ class RiskManager:
             return
         self._clock_time = self._coerce_time(current_time)
 
-    def observe_market_price(self, market_price: Optional[float], observed_at: Optional[datetime] = None) -> None:
+    def observe_market_price(
+        self, market_price: Optional[float], observed_at: Optional[datetime] = None
+    ) -> None:
         """Track the most recent tradeable market price."""
         if market_price is None:
             return
@@ -202,24 +212,29 @@ class RiskManager:
                 action="reset",
                 reason="daily_reset",
             )
-    
+
     def _clean_hourly_trades(self, current_time: Optional[datetime] = None):
         """Remove trades older than 1 hour from hourly counter."""
         now = self._coerce_time(current_time)
-        while self._trades_this_hour and (now - self._coerce_time(self._trades_this_hour[0])).total_seconds() > 3600:
+        while (
+            self._trades_this_hour
+            and (now - self._coerce_time(self._trades_this_hour[0])).total_seconds() > 3600
+        ):
             self._trades_this_hour.popleft()
-    
-    def can_trade(self, zone_name: str, current_time: Optional[datetime] = None) -> tuple[bool, str]:
+
+    def can_trade(
+        self, zone_name: str, current_time: Optional[datetime] = None
+    ) -> tuple[bool, str]:
         """
         Check if new trade is allowed.
-        
+
         Returns:
             (allowed, reason)
         """
         self.observe_time(current_time)
         self._reset_daily(current_time)
         self._clean_hourly_trades(current_time)
-        
+
         # Check circuit breaker state
         if self._risk_state == RiskState.CIRCUIT_BREAKER:
             self._record_event(
@@ -242,35 +257,41 @@ class RiskManager:
                 zone=zone_name,
             )
             return False, self._blackout_reason or "blackout_active"
-        
+
         # Check daily loss limit
         if self._daily_pnl <= -self.risk_config.max_daily_loss:
             self._risk_state = RiskState.CIRCUIT_BREAKER
             logger.warning("Daily loss limit hit: $%.2f", self._daily_pnl)
             self._record_event(
                 event_type="risk_state_changed",
-                payload={"daily_pnl": self._daily_pnl, "max_daily_loss": self.risk_config.max_daily_loss},
+                payload={
+                    "daily_pnl": self._daily_pnl,
+                    "max_daily_loss": self.risk_config.max_daily_loss,
+                },
                 event_time=self._coerce_time(current_time),
                 action="set_circuit_breaker",
                 reason="daily_loss_limit",
                 zone=zone_name,
             )
             return False, "daily_loss_limit"
-        
+
         # Check consecutive losses
         if self._consecutive_losses >= self.risk_config.max_consecutive_losses:
             self._risk_state = RiskState.CIRCUIT_BREAKER
             logger.warning("Consecutive loss limit hit: %s", self._consecutive_losses)
             self._record_event(
                 event_type="risk_state_changed",
-                payload={"consecutive_losses": self._consecutive_losses, "max_consecutive_losses": self.risk_config.max_consecutive_losses},
+                payload={
+                    "consecutive_losses": self._consecutive_losses,
+                    "max_consecutive_losses": self.risk_config.max_consecutive_losses,
+                },
                 event_time=self._coerce_time(current_time),
                 action="set_circuit_breaker",
                 reason="consecutive_loss_limit",
                 zone=zone_name,
             )
             return False, "consecutive_loss_limit"
-        
+
         # Check trades per hour
         if len(self._trades_this_hour) >= self.risk_config.max_trades_per_hour:
             self._record_event(
@@ -282,12 +303,12 @@ class RiskManager:
                 zone=zone_name,
             )
             return False, "hourly_trade_limit"
-        
+
         # Check trades per zone
         if zone_name != self._current_zone_name:
             self._trades_this_zone = 0
             self._current_zone_name = zone_name
-        
+
         if self._trades_this_zone >= self.risk_config.max_trades_per_zone:
             self._record_event(
                 event_type="trade_blocked",
@@ -298,7 +319,7 @@ class RiskManager:
                 zone=zone_name,
             )
             return False, "zone_trade_limit"
-        
+
         # Check total daily trades
         if self._daily_trades >= self.risk_config.max_daily_trades:
             self._record_event(
@@ -310,7 +331,7 @@ class RiskManager:
                 zone=zone_name,
             )
             return False, "daily_trade_limit"
-        
+
         return True, "ok"
 
     def set_blackout(self, active: bool, reason: str = "news_blackout") -> None:
@@ -360,7 +381,10 @@ class RiskManager:
             self._risk_state = RiskState.CIRCUIT_BREAKER
         elif self._volatility_circuit_active and atr_value < (baseline * 0.9):
             self._volatility_circuit_active = False
-            if self._risk_state == RiskState.CIRCUIT_BREAKER and self._daily_pnl > -self.risk_config.max_daily_loss:
+            if (
+                self._risk_state == RiskState.CIRCUIT_BREAKER
+                and self._daily_pnl > -self.risk_config.max_daily_loss
+            ):
                 self._risk_state = RiskState.REDUCED
                 logger.info(
                     "risk_circuit_breaker_cleared reason=volatility_normalized atr=%.4f baseline=%.4f new_state=%s",
@@ -370,49 +394,49 @@ class RiskManager:
                 )
                 self._record_event(
                     event_type="risk_state_changed",
-                    payload={"atr_value": atr_value, "baseline": baseline, "new_state": self._risk_state.value},
+                    payload={
+                        "atr_value": atr_value,
+                        "baseline": baseline,
+                        "new_state": self._risk_state.value,
+                    },
                     event_time=self._clock_time,
                     action="set_reduced_risk",
                     reason="volatility_normalized",
                     zone=self._current_zone_name,
                 )
-    
-    def calculate_position_size(
-        self,
-        atr_value: float,
-        direction: int = 1
-    ) -> int:
+
+    def calculate_position_size(self, atr_value: float, direction: int = 1) -> int:
         """
         Calculate position size based on volatility and risk parameters.
-        
+
         Args:
             atr_value: Current ATR value
             direction: Trade direction (1=long, -1=short)
-        
+
         Returns:
             Number of contracts (1-5)
         """
         if atr_value <= 0:
             return self.account_config.default_contracts
-        
+
         # Target risk per contract
         risk_per_contract = self.account_config.risk_per_contract
-        
+
         # Risk per point = ATR * $50 (ES multiplier)
         risk_per_point = atr_value * 50
-        
+
         # Contracts based on risk
         contracts = int(risk_per_contract / risk_per_point) if risk_per_point > 0 else 1
-        
+
         # Clamp to limits
         contracts = max(1, min(contracts, self.account_config.max_contracts))
-        
+
         # Check if we should reduce size due to risk state
         if self._risk_state == RiskState.REDUCED:
             contracts = min(contracts, 2)  # Max 2 contracts in reduced state
         elif self._risk_state == RiskState.CIRCUIT_BREAKER:
             contracts = 0
-        
+
         return contracts
 
     def calculate_position_size_with_telemetry(
@@ -450,23 +474,26 @@ class RiskManager:
         elif self._risk_state == RiskState.CIRCUIT_BREAKER:
             contracts = 0
             telemetry["guardrail_reasons"].append("circuit_breaker")
-        if contracts >= self.account_config.max_contracts and base >= self.account_config.max_contracts:
+        if (
+            contracts >= self.account_config.max_contracts
+            and base >= self.account_config.max_contracts
+        ):
             telemetry["guardrail_reasons"].append("max_contracts_cap")
         return contracts, telemetry
-    
+
     def calculate_stop_distance(self, atr_value: float, multiplier: float = 2.0) -> float:
         """
         Calculate stop distance in points.
-        
+
         Args:
             atr_value: Current ATR
             multiplier: ATR multiplier for stop
-    
+
         Returns:
             Stop distance in points
         """
         return atr_value * multiplier
-    
+
     def record_trade(self, trade: TradeRecord):
         """Record a completed trade and update metrics."""
         if not trade.account_id:
@@ -485,7 +512,7 @@ class RiskManager:
         self._trades_this_zone += 1
         self._last_trade_time = trade.exit_time
         self._daily_pnl += trade.pnl
-        
+
         if trade.pnl < 0:
             self._consecutive_losses += 1
             logger.info("Loss recorded. Consecutive losses: %s", self._consecutive_losses)
@@ -520,15 +547,21 @@ class RiskManager:
         )
         if getattr(self.config.observability, "persist_completed_trades", True):
             self.observability.record_completed_trade(trade)
-        
+
         # Reset zone trade count if zone changed
         if trade.zone != self._current_zone_name:
             self._trades_this_zone = 0
             self._current_zone_name = trade.zone
 
-    def _build_trade_record(self, contracts: int, exit_price: float, exit_time: datetime) -> TradeRecord:
+    def _build_trade_record(
+        self, contracts: int, exit_price: float, exit_time: datetime
+    ) -> TradeRecord:
         direction = 1 if self._current_position > 0 else -1
-        pnl_per_contract = ((exit_price - self._position_entry_price) * 50) if direction > 0 else ((self._position_entry_price - exit_price) * 50)
+        pnl_per_contract = (
+            ((exit_price - self._position_entry_price) * 50)
+            if direction > 0
+            else ((self._position_entry_price - exit_price) * 50)
+        )
         return TradeRecord(
             entry_time=self._position_entry_time or exit_time,
             exit_time=exit_time,
@@ -559,7 +592,7 @@ class RiskManager:
         self._current_position_id = ""
         self._current_decision_id = ""
         self._current_attempt_id = ""
-    
+
     def open_position(
         self,
         contracts: int,
@@ -589,17 +622,35 @@ class RiskManager:
         self._current_position_id = position_id
         self._current_decision_id = decision_id
         self._current_attempt_id = attempt_id
-        logger.info("Position opened: %s contracts %s at %s", contracts, "long" if direction > 0 else "short", entry_price)
+        logger.info(
+            "Position opened: %s contracts %s at %s",
+            contracts,
+            "long" if direction > 0 else "short",
+            entry_price,
+        )
         self._record_event(
             event_type="position_opened",
-            payload={"contracts": contracts, "entry_price": entry_price, "direction": direction, "regime": regime, "event_tags": list(event_tags or []), "strategy": strategy, "trade_id": trade_id, "position_id": position_id, "decision_id": decision_id, "attempt_id": attempt_id},
+            payload={
+                "contracts": contracts,
+                "entry_price": entry_price,
+                "direction": direction,
+                "regime": regime,
+                "event_tags": list(event_tags or []),
+                "strategy": strategy,
+                "trade_id": trade_id,
+                "position_id": position_id,
+                "decision_id": decision_id,
+                "attempt_id": attempt_id,
+            },
             event_time=self._coerce_time(current_time),
             action="open_position",
             reason="position_opened",
             zone=zone,
         )
-    
-    def close_position(self, exit_price: float, current_time: Optional[datetime] = None) -> Optional[TradeRecord]:
+
+    def close_position(
+        self, exit_price: float, current_time: Optional[datetime] = None
+    ) -> Optional[TradeRecord]:
         """Record position closing and return trade record."""
         if self._current_position == 0:
             return None
@@ -666,14 +717,18 @@ class RiskManager:
         new_contracts = abs(signed_position)
 
         if new_direction == 0:
-            completed_trade = self._build_trade_record(prior_contracts, transition_price, current_time_value)
+            completed_trade = self._build_trade_record(
+                prior_contracts, transition_price, current_time_value
+            )
             self.record_trade(completed_trade)
             completed.append(completed_trade)
             self._clear_position_tracking()
             return completed
 
         if new_direction != prior_direction:
-            completed_trade = self._build_trade_record(prior_contracts, transition_price, current_time_value)
+            completed_trade = self._build_trade_record(
+                prior_contracts, transition_price, current_time_value
+            )
             self.record_trade(completed_trade)
             completed.append(completed_trade)
             self._clear_position_tracking()
@@ -694,7 +749,9 @@ class RiskManager:
             return completed
 
         if new_contracts < prior_contracts:
-            completed_trade = self._build_trade_record(prior_contracts - new_contracts, transition_price, current_time_value)
+            completed_trade = self._build_trade_record(
+                prior_contracts - new_contracts, transition_price, current_time_value
+            )
             self.record_trade(completed_trade)
             completed.append(completed_trade)
             self._current_position = signed_position
@@ -709,7 +766,7 @@ class RiskManager:
         if self._position_entry_time is None:
             self._position_entry_time = current_time_value
         return completed
-    
+
     def update_position_pnl(self, current_price: float) -> float:
         """Calculate current unrealized PnL."""
         if self._current_position == 0:
@@ -718,7 +775,9 @@ class RiskManager:
         self._current_position_pnl = pnl
         return pnl
 
-    def should_flatten_position(self, current_price: Optional[float] = None, current_time: Optional[datetime] = None) -> tuple[bool, str]:
+    def should_flatten_position(
+        self, current_price: Optional[float] = None, current_time: Optional[datetime] = None
+    ) -> tuple[bool, str]:
         """Return whether the current position should be flattened for risk reasons."""
         if self._current_position == 0:
             return False, "flat"
@@ -728,7 +787,12 @@ class RiskManager:
         if effective_price is None:
             if self._last_market_price is None or self._last_market_price_time is None:
                 return False, "no_market_price"
-            market_age = abs((self._coerce_time(current_time) - self._coerce_time(self._last_market_price_time)).total_seconds())
+            market_age = abs(
+                (
+                    self._coerce_time(current_time)
+                    - self._coerce_time(self._last_market_price_time)
+                ).total_seconds()
+            )
             if market_age > self._market_price_stale_seconds:
                 return False, "stale_market_price"
             effective_price = self._last_market_price
@@ -740,7 +804,11 @@ class RiskManager:
             self._risk_state = RiskState.REDUCED
             self._record_event(
                 event_type="flatten_required",
-                payload={"current_pnl": current_pnl, "max_position_loss": self.risk_config.max_position_loss, "current_price": effective_price},
+                payload={
+                    "current_pnl": current_pnl,
+                    "max_position_loss": self.risk_config.max_position_loss,
+                    "current_price": effective_price,
+                },
                 event_time=self._coerce_time(current_time),
                 action="flatten",
                 reason="max_position_loss",
@@ -768,7 +836,7 @@ class RiskManager:
             return True, "circuit_breaker_active"
 
         return False, "ok"
-    
+
     def get_metrics(self) -> RiskMetrics:
         """Get current risk metrics."""
         return RiskMetrics(
@@ -780,13 +848,13 @@ class RiskManager:
             trades_this_zone=self._trades_this_zone,
             current_position=self._current_position,
             current_position_pnl=self._current_position_pnl,
-            risk_state=self._risk_state
+            risk_state=self._risk_state,
         )
-    
+
     def get_state(self) -> RiskState:
         """Get current risk state."""
         return self._risk_state
-    
+
     def reduce_risk(self):
         """Reduce risk state (e.g., after partial loss)."""
         if self._risk_state == RiskState.NORMAL:
@@ -799,7 +867,7 @@ class RiskManager:
                 action="set_reduced_risk",
                 reason="reduce_risk",
             )
-    
+
     def reset_risk(self):
         """Reset risk state to normal."""
         self._risk_state = RiskState.NORMAL

@@ -1,4 +1,5 @@
 """launchd helpers for running es-hotzone-trader as a macOS user agent."""
+
 from __future__ import annotations
 
 import os
@@ -8,7 +9,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-
 
 LAUNCHD_LABEL = "com.gtrade.es-hotzone-trader"
 
@@ -57,9 +57,6 @@ def render_launchd_plist(config_path: Optional[str] = None) -> bytes:
     environment = {
         "PYTHONUNBUFFERED": "1",
     }
-    internal_token = os.environ.get("GTRADE_INTERNAL_API_TOKEN", "").strip()
-    if internal_token:
-        environment["GTRADE_INTERNAL_API_TOKEN"] = internal_token
     plist = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": args,
@@ -138,14 +135,19 @@ def start_launch_agent() -> LaunchdResult:
                 )
     kickstart = _run_launchctl("kickstart", "-k", launchctl_target())
     if kickstart.returncode != 0:
-        return LaunchdResult(False, kickstart.stderr.strip() or kickstart.stdout.strip() or "launchctl kickstart failed")
+        return LaunchdResult(
+            False,
+            kickstart.stderr.strip() or kickstart.stdout.strip() or "launchctl kickstart failed",
+        )
     return LaunchdResult(True, f"Started launchd agent {LAUNCHD_LABEL}.")
 
 
 def stop_launch_agent() -> LaunchdResult:
     result = _run_launchctl("bootout", launchctl_target())
     if result.returncode != 0 and "could not find service" not in (result.stderr or "").lower():
-        return LaunchdResult(False, result.stderr.strip() or result.stdout.strip() or "launchctl bootout failed")
+        return LaunchdResult(
+            False, result.stderr.strip() or result.stdout.strip() or "launchctl bootout failed"
+        )
     return LaunchdResult(True, f"Stopped launchd agent {LAUNCHD_LABEL}.")
 
 
@@ -164,7 +166,11 @@ def launch_agent_status() -> dict[str, object]:
         "plist_path": str(plist),
         "installed": plist.exists(),
         "loaded": result.returncode == 0,
-        "details": result.stdout.strip() if result.returncode == 0 else (result.stderr.strip() or result.stdout.strip()),
+        "details": (
+            result.stdout.strip()
+            if result.returncode == 0
+            else (result.stderr.strip() or result.stdout.strip())
+        ),
         "stdout_log_path": str(stdout_log_path()),
         "stderr_log_path": str(stderr_log_path()),
     }

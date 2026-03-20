@@ -1,4 +1,5 @@
 """Local regime packet and trade review analysis."""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -116,7 +117,9 @@ def _load_runtime_state(cfg: Config) -> tuple[dict[str, Any], dict[str, Any], st
         return state, health, "in_process"
 
 
-def _current_price_at_or_after(rows: list[dict[str, Any]], target: datetime) -> Optional[dict[str, Any]]:
+def _current_price_at_or_after(
+    rows: list[dict[str, Any]], target: datetime
+) -> Optional[dict[str, Any]]:
     for row in rows:
         captured_at = _parse_dt(row.get("captured_at"))
         if captured_at is not None and captured_at >= target:
@@ -198,12 +201,16 @@ def _candles_from_tape(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [buckets[key] for key in sorted(buckets.keys())]
 
 
-def _select_entry_decision(trade: dict[str, Any], decision_rows: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+def _select_entry_decision(
+    trade: dict[str, Any], decision_rows: list[dict[str, Any]]
+) -> Optional[dict[str, Any]]:
     if not decision_rows:
         return None
     decision_id = trade.get("decision_id")
     attempt_id = trade.get("attempt_id")
-    direction_action = "LONG" if trade["direction"] > 0 else "SHORT" if trade["direction"] < 0 else None
+    direction_action = (
+        "LONG" if trade["direction"] > 0 else "SHORT" if trade["direction"] < 0 else None
+    )
     entry_dt = trade["entry_dt"]
 
     scored: list[tuple[tuple[int, float], dict[str, Any]]] = []
@@ -285,7 +292,9 @@ def _compare_exit_candidates(
             "target_time": trade["exit_pt"].isoformat() if trade.get("exit_pt") else None,
             "observed_at": trade["exit_dt"].isoformat() if trade.get("exit_dt") else None,
             "price": round(trade["exit_price"], 4),
-            "pnl_points": round((trade["exit_price"] - trade["entry_price"]) * trade["direction"], 4),
+            "pnl_points": round(
+                (trade["exit_price"] - trade["entry_price"]) * trade["direction"], 4
+            ),
             "pnl_dollars": round(trade["pnl"], 2),
         }
     )
@@ -308,10 +317,18 @@ def _windowed_rows(
     symbol = trade.get("payload", {}).get("symbol") or "ES"
     run_id = trade.get("run_id")
     return {
-        "decisions": store.query_decision_snapshots(limit=500, run_id=run_id, start_time=start_time, end_time=end_time, symbol=symbol),
-        "orders": store.query_order_lifecycle(limit=500, run_id=run_id, start_time=start_time, end_time=end_time, symbol=symbol),
-        "events": store.query_events(limit=500, run_id=run_id, start_time=start_time, end_time=end_time),
-        "tape": store.query_market_tape(limit=5000, run_id=run_id, start_time=start_time, end_time=end_time, symbol=symbol),
+        "decisions": store.query_decision_snapshots(
+            limit=500, run_id=run_id, start_time=start_time, end_time=end_time, symbol=symbol
+        ),
+        "orders": store.query_order_lifecycle(
+            limit=500, run_id=run_id, start_time=start_time, end_time=end_time, symbol=symbol
+        ),
+        "events": store.query_events(
+            limit=500, run_id=run_id, start_time=start_time, end_time=end_time
+        ),
+        "tape": store.query_market_tape(
+            limit=5000, run_id=run_id, start_time=start_time, end_time=end_time, symbol=symbol
+        ),
     }
 
 
@@ -426,7 +443,11 @@ def build_regime_packet(
         if entry_pt is not None:
             by_hour[entry_pt.hour].append(trade)
         by_zone[str(trade.get("zone") or "Unknown")].append(trade)
-        reviews.append(build_trade_review(str(trade["id"]), account_id=effective_account, store=store, config=cfg))
+        reviews.append(
+            build_trade_review(
+                str(trade["id"]), account_id=effective_account, store=store, config=cfg
+            )
+        )
 
     def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         pnls = [float(row.get("pnl") or 0.0) for row in rows]
@@ -505,15 +526,15 @@ def build_launch_readiness(
     cfg = config or get_config()
     packet = build_regime_packet(account_id=account_id, lookback_days=14, store=store, config=cfg)
     state, health, state_source = _load_runtime_state(cfg)
-    bridge_configured = bool((cfg.observability.railway_ingest_url or "").strip())
     morning_candidate = packet["morning_meta"]["summary"]
     ready_checks = {
         "launch_gate_enabled": bool(cfg.strategy.launch_gate_enabled),
         "pre_open_live": "Pre-Open" in (cfg.strategy.live_entry_zones or []),
         "shadow_zones_defined": bool(cfg.strategy.shadow_entry_zones),
         "session_exit_enabled": bool(cfg.strategy.session_exit_enabled),
-        "bridge_disabled_by_default": not bridge_configured,
-        "recent_morning_sample_positive": bool(morning_candidate.get("count")) and morning_candidate.get("total_pnl", 0.0) > 0,
+        "bridge_disabled_by_default": True,
+        "recent_morning_sample_positive": bool(morning_candidate.get("count"))
+        and morning_candidate.get("total_pnl", 0.0) > 0,
         "runtime_reachable": state_source == "remote",
         "runtime_running": bool(state.get("running")),
         "runtime_healthy": str(health.get("status") or "").lower() == "healthy",

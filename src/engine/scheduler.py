@@ -1,4 +1,5 @@
 """Hot-Zone Scheduler - Time-gated trading window management."""
+
 import logging
 from dataclasses import dataclass
 from datetime import datetime, time as dt_time, timedelta
@@ -13,15 +14,17 @@ logger = logging.getLogger(__name__)
 
 class ZoneState(Enum):
     """Hot-zone state machine states."""
-    INACTIVE = "inactive"       # Outside all zones
-    ACTIVE = "active"          # Trading allowed
+
+    INACTIVE = "inactive"  # Outside all zones
+    ACTIVE = "active"  # Trading allowed
     FLATTEN_ONLY = "flatten_only"  # No new entries, manage exits only
-    CLOSING = "closing"         # Near zone end, tightening exits
+    CLOSING = "closing"  # Near zone end, tightening exits
 
 
 @dataclass
 class ZoneInfo:
     """Information about current zone."""
+
     name: str
     state: ZoneState
     start_time: datetime
@@ -34,11 +37,11 @@ class ZoneInfo:
 class HotZoneScheduler:
     """
     Manages hot-zone time windows for trading.
-    
+
     Implements time-gated trading based on configured zones.
     Handles timezone conversion and state transitions.
     """
-    
+
     def __init__(self, config=None):
         """Initialize scheduler with configuration."""
         self.config = config or get_config()
@@ -48,15 +51,15 @@ class HotZoneScheduler:
         self._zone_entry_time: Optional[datetime] = None
         self._bars_in_zone: int = 0
         self._last_zone_observation: Optional[datetime] = None
-        
+
         # Track if we've warned about zone end
         self._zone_end_warning_issued: bool = False
         self._validate_overlaps()
-        
+
     def _parse_time(self, time_str: str, tz: pytz.timezone) -> dt_time:
         """Parse time string to time object."""
         return datetime.strptime(time_str, "%H:%M").time()
-    
+
     def _get_current_time_in_zone(self, zone: HotZoneConfig) -> datetime:
         """Get current time in zone's timezone."""
         zone_tz = pytz.timezone(zone.timezone)
@@ -85,14 +88,14 @@ class HotZoneScheduler:
                         right.name,
                         winner,
                     )
-    
+
     def get_current_zone(self, current_time: Optional[datetime] = None) -> Optional[ZoneInfo]:
         """
         Get current zone information.
-        
+
         Args:
             current_time: Optional time to check (defaults to now)
-        
+
         Returns:
             ZoneInfo if inside a zone, None otherwise
         """
@@ -191,34 +194,34 @@ class HotZoneScheduler:
             end_time=end_dt,
             minutes_remaining=minutes_remaining,
             is_first_bar=is_first_bar,
-            is_last_bar=is_last_bar
+            is_last_bar=is_last_bar,
         )
-    
+
     def is_trading_allowed(self) -> bool:
         """Check if new entries are allowed."""
         zone = self.get_current_zone()
         if zone is None:
             return False
         return zone.state == ZoneState.ACTIVE
-    
+
     def is_flatten_only(self) -> bool:
         """Check if only exits are allowed (no new entries)."""
         zone = self.get_current_zone()
         if zone is None:
             return True  # Outside zones = flatten
         return zone.state == ZoneState.FLATTEN_ONLY
-    
+
     def should_flatten(self) -> bool:
         """Check if positions should be flattened."""
         zone = self.get_current_zone()
         if zone is None:
             return True  # Outside zones = flatten
         return zone.is_last_bar
-    
+
     def get_strategy_for_zone(self, zone_name: str) -> str:
         """Get strategy name configured for zone."""
         return self.config.strategy.zone_strategies.get(zone_name, "FLATTEN_ONLY")
-    
+
     def get_zone_stats(self) -> dict:
         """Get statistics about current zone."""
         zone = self.get_current_zone()
@@ -228,15 +231,15 @@ class HotZoneScheduler:
                 "state": "inactive",
                 "zone_name": None,
                 "minutes_remaining": 0,
-                "bars_in_zone": 0
+                "bars_in_zone": 0,
             }
-        
+
         time_in_zone = 0
         if self._zone_entry_time:
             default_tz = pytz.timezone(self.hot_zones[0].timezone)
             now = datetime.now(default_tz)
             time_in_zone = (now - self._zone_entry_time).total_seconds() / 60
-        
+
         return {
             "active": True,
             "state": zone.state.value,
@@ -245,7 +248,7 @@ class HotZoneScheduler:
             "bars_in_zone": self._bars_in_zone,
             "time_in_zone_minutes": time_in_zone,
             "is_first_bar": zone.is_first_bar,
-            "is_last_bar": zone.is_last_bar
+            "is_last_bar": zone.is_last_bar,
         }
 
 

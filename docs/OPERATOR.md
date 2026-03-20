@@ -13,8 +13,8 @@ The primary operator interfaces are the **CLI** and the **local Flask console**.
 - `es-trade broker-truth --focus-timestamp <iso>` — selected-account broker truth, recent broker order/trade history, and contradiction diagnostics.
 - `es-trade analyze regime-packet|trade-review|launch-readiness` — local research and launch checks from SQLite plus broker-truth context.
 - `es-trade events` — query observability events.
-- `es-trade service install|uninstall|start|stop|restart|status|logs|doctor` — manage the local `launchd` wrapper and inspect local runtime/bridge health.
-- `es-trade db runs|events|snapshots|bridge-health|logs|replay-missing` — inspect local SQLite durability and rebuild outbox work from local observability state.
+- `es-trade service install|uninstall|start|stop|restart|status|logs|doctor` — manage the local `launchd` wrapper and inspect local runtime health.
+- `es-trade db runs|events|snapshots|bridge-health|logs` — inspect local SQLite durability (including historical bridge-health rows from archived integrations).
 - `es-trade config` — show configuration.
 - `es-trade balance` — show Topstep account balance.
 - `es-trade health` — health check.
@@ -30,7 +30,7 @@ The console is local-only and serves these pages:
 - `/trades` — local trade list and account-trade context
 - `/trades/<id>` — trade review
 - `/logs` — runtime log stream as the primary view; events and orders are behind an expandable section
-- `/system` — config, health, and launch readiness (bridge health behind an expandable section)
+- `/system` — config, health, and launch readiness
 - `/health` and `/debug` — JSON compatibility endpoints for the CLI and service checks
 
 Chart notes:
@@ -67,7 +67,7 @@ The active operator workflow is local-only:
 Linear is the source of "what to do next" (G-Trade project, issues GDG-214–221). To resume development:
 
 1. **Pick an issue** — Start with the one In Progress (e.g. GDG-215 E2E validation) or move another from Backlog to In Progress via Linear.
-2. **Branch** — From the repo that owns the work (es-hotzone-trader for bridge/engine; G-Trade for docs): e.g. `feat/GDG-215-e2e-validation`. Use GDG prefix; see [engineering-system/linear-workflow.md](engineering-system/linear-workflow.md).
+2. **Branch** — Work from this repo (`G-Trade`) for runtime, docs, and tooling changes: e.g. `feat/GDG-215-e2e-validation`. Use GDG prefix; see [engineering-system/linear-workflow.md](engineering-system/linear-workflow.md).
 3. **Implement** — Follow [.cursor/skills/issue-to-pr/SKILL.md](../.cursor/skills/issue-to-pr/SKILL.md): read issue and AGENTS.md, implement, run tests, update docs if behavior or config changed.
 4. **Commit and PR** — Commit with issue ref in message; open PR with template and link to Linear issue. See [engineering-system/github-workflow.md](engineering-system/github-workflow.md).
 5. **Close the loop** — When PR is merged, move the Linear issue to Done; optionally update [Tasks.md](Tasks.md) if that item is listed there.

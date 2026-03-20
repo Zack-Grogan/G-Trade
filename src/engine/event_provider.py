@@ -1,4 +1,5 @@
 """Local event calendar provider and emergency halt interface."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -61,14 +62,19 @@ class LocalEventProvider:
         for time_str in self.fallback.news_times:
             event_time = datetime.strptime(time_str, "%H:%M").time()
             event_dt = self._tz.localize(datetime.combine(event_date, event_time))
-            fallback_events.append({"name": f"static_{time_str}", "timestamp": event_dt.isoformat(), "impact": "medium"})
+            fallback_events.append(
+                {
+                    "name": f"static_{time_str}",
+                    "timestamp": event_dt.isoformat(),
+                    "impact": "medium",
+                }
+            )
         return fallback_events
 
     def _iter_events(self, current_time: datetime) -> list[dict[str, Any]]:
         now = datetime.now(tz=current_time.tzinfo or pytz.UTC)
-        if (
-            self._last_refresh is None
-            or (now - self._last_refresh).total_seconds() >= max(int(self.config.refresh_seconds), 1)
+        if self._last_refresh is None or (now - self._last_refresh).total_seconds() >= max(
+            int(self.config.refresh_seconds), 1
         ):
             self._last_refresh = now
             loaded = self._load_calendar()
@@ -84,7 +90,9 @@ class LocalEventProvider:
 
         emergency_path = self._resolve_path(self.config.emergency_halt_path)
         if emergency_path.exists():
-            max_age_minutes = max(int(getattr(self.config, "emergency_halt_max_age_minutes", 1440)), 1)
+            max_age_minutes = max(
+                int(getattr(self.config, "emergency_halt_max_age_minutes", 1440)), 1
+            )
             halt_age_seconds = current_time.timestamp() - emergency_path.stat().st_mtime
             if halt_age_seconds <= max_age_minutes * 60:
                 return EventContext(True, "manual_emergency_halt", ["manual_halt"], 0.0, True)
@@ -106,9 +114,15 @@ class LocalEventProvider:
                 event_ts = event_ts.astimezone(self._tz)
 
             impact = str(raw_event.get("impact", "medium")).lower()
-            impact_window = self.config.impact_windows.get(impact, self.config.impact_windows.get("medium", {"pre": 5, "post": 10}))
-            pre_minutes = int(raw_event.get("pre_minutes", impact_window.get("pre", self.fallback.pre_minutes)))
-            post_minutes = int(raw_event.get("post_minutes", impact_window.get("post", self.fallback.post_minutes)))
+            impact_window = self.config.impact_windows.get(
+                impact, self.config.impact_windows.get("medium", {"pre": 5, "post": 10})
+            )
+            pre_minutes = int(
+                raw_event.get("pre_minutes", impact_window.get("pre", self.fallback.pre_minutes))
+            )
+            post_minutes = int(
+                raw_event.get("post_minutes", impact_window.get("post", self.fallback.post_minutes))
+            )
             window_start = event_ts - timedelta(minutes=pre_minutes)
             window_end = event_ts + timedelta(minutes=post_minutes)
             minutes_until = (event_ts - current_local).total_seconds() / 60.0

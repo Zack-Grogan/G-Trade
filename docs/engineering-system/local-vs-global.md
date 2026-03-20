@@ -5,7 +5,7 @@ Classification of what belongs in the repo (commit) vs user/team config (outside
 ## Commit to repo
 
 - AGENTS.md, .cursor/rules/*, docs tree, PR/issue templates, scripts/generate_docs_index.py, .cursorignore, .cursorindexingignore.
-- Repo-specific conventions and workflow docs. Templates under docs/engineering-system/global-cursor-pack/ are committed as reusable content; actual installation is global or manual.
+- Repo-specific conventions and workflow docs. Reusable templates are archived under `docs/archive/engineering-system-global-cursor-pack/`; installation remains a global/manual step.
 
 ## Global user config
 
@@ -18,7 +18,7 @@ Classification of what belongs in the repo (commit) vs user/team config (outside
 
 ## Hybrid (template in repo + manual global install)
 
-- Hooks: templates in repo under global-cursor-pack/hooks/; installer or copy to user/team Cursor or shell config.
+- Hooks: templates in repo under `docs/archive/engineering-system-global-cursor-pack/hooks/`; installer or copy to user/team Cursor or shell config.
 - MCP: example configs in repo (no secrets); real URLs and tokens in user .cursor/mcp.json or Cursor settings.
 - Reusable rule pack and AGENTS template: copy or run an init script for new repos.
 

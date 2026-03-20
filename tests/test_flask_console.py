@@ -55,7 +55,11 @@ class FlaskConsoleTests(unittest.TestCase):
             vwap_bands={"upper": 6636.5, "lower": 6629.4},
             volume_profile={"value_area_high": 6638.0, "value_area_low": 6618.0},
             regime={"state": "TREND", "reason": "session_open"},
-            execution={"decision_id": "decision-1", "attempt_id": "attempt-1", "trade_id": "trade-1"},
+            execution={
+                "decision_id": "decision-1",
+                "attempt_id": "attempt-1",
+                "trade_id": "trade-1",
+            },
             broker_truth={"status": "adopted", "summary": "Selected account short open"},
             heartbeat={"market_stream_connected": True},
             event_context={"zone": "Pre-Open"},
@@ -101,7 +105,11 @@ class FlaskConsoleTests(unittest.TestCase):
                 "account_id": "PRAC-V2-546557-70802903",
                 "account_name": "PRAC-V2-546557-70802903",
                 "account_is_practice": True,
-                "execution": {"decision_id": "decision-1", "attempt_id": "attempt-1", "trade_id": "trade-1"},
+                "execution": {
+                    "decision_id": "decision-1",
+                    "attempt_id": "attempt-1",
+                    "trade_id": "trade-1",
+                },
             },
             event_time=now,
         )
@@ -451,7 +459,7 @@ class FlaskConsoleTests(unittest.TestCase):
             (6621.0, 6623.5, 6620.5, 6623.0, 14),
             (6623.0, 6625.0, 6622.5, 6624.5, 16),
         ]
-        for idx, (o, h, l, c, v) in enumerate(rows):
+        for idx, (o, h, low, c, v) in enumerate(rows):
             self.store.record_market_tick(
                 {
                     "run_id": "history-run",
@@ -462,7 +470,7 @@ class FlaskConsoleTests(unittest.TestCase):
                     "source": "HistoryBar",
                     "open": o,
                     "high": h,
-                    "low": l,
+                    "low": low,
                     "close": c,
                     "historical": True,
                 }
@@ -478,9 +486,9 @@ class FlaskConsoleTests(unittest.TestCase):
                 "close": [row["close"] for row in target_candles],
                 "volume": [row["volume"] for row in target_candles],
             },
-            index=pd.to_datetime([row["time"] for row in target_candles], unit="s", utc=True).tz_convert(
-                self.config.sessions.timezone
-            ),
+            index=pd.to_datetime(
+                [row["time"] for row in target_candles], unit="s", utc=True
+            ).tz_convert(self.config.sessions.timezone),
         )
         expected = session_vwap_bands(
             frame,
@@ -527,7 +535,11 @@ class FlaskConsoleTests(unittest.TestCase):
         )
         self.store.force_flush()
         payload = self.client.get("/api/chart?lookback_hours=168").get_json()
-        alpha_points = [point for point in payload["series"]["alpha_long"] if point["time"] >= int(base.timestamp())]
+        alpha_points = [
+            point
+            for point in payload["series"]["alpha_long"]
+            if point["time"] >= int(base.timestamp())
+        ]
         self.assertGreaterEqual(len(alpha_points), 4)
         self.assertTrue(all(point["value"] == 5.5 for point in alpha_points[:4]))
 

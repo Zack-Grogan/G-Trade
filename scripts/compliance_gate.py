@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Print the compliance gate checklist for major local trader changes."""
+
 from __future__ import annotations
 
 import sys

@@ -1,4 +1,5 @@
 """Historical replay runner using the live engine path."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +13,7 @@ import pandas as pd
 
 from src.config import Config, get_config
 from src.engine.risk_manager import TradeRecord
-from src.engine.scheduler import HotZoneScheduler, ZoneState
+from src.engine.scheduler import HotZoneScheduler
 from src.engine.trading_engine import TradingEngine, get_trading_engine
 from src.market import MarketData
 from src.server import get_state, set_state
@@ -78,12 +79,18 @@ class ReplayRunner:
         self.engine.observability.force_flush()
 
         matrix_trades = list(self.engine.risk_manager.get_trade_history())
-        bars = self.engine._bars.copy()  # noqa: SLF001 - replay needs the finalized shared engine state.
+        bars = (
+            self.engine._bars.copy()
+        )  # noqa: SLF001 - replay needs the finalized shared engine state.
         matrix_summary = self.engine.build_performance_summary()
-        matrix_cost_summary = self._costed_trade_summary(matrix_trades, strategy_name="WEIGHTED_SCORE_MATRIX")
+        matrix_cost_summary = self._costed_trade_summary(
+            matrix_trades, strategy_name="WEIGHTED_SCORE_MATRIX"
+        )
 
         benchmark_trades = self._run_benchmark_portfolio(bars)
-        benchmark_cost_summary = self._costed_trade_summary(benchmark_trades, strategy_name="BENCHMARK_PORTFOLIO")
+        benchmark_cost_summary = self._costed_trade_summary(
+            benchmark_trades, strategy_name="BENCHMARK_PORTFOLIO"
+        )
 
         walk_forward = self._walk_forward_segments(bars, matrix_trades, benchmark_trades)
         approx_dsr = self._deflated_sharpe_ratio(
@@ -106,12 +113,16 @@ class ReplayRunner:
                 "portfolio": benchmark_cost_summary,
             },
             "comparison": {
-                "net_pnl_delta": round(matrix_cost_summary["net_pnl"] - benchmark_cost_summary["net_pnl"], 2),
+                "net_pnl_delta": round(
+                    matrix_cost_summary["net_pnl"] - benchmark_cost_summary["net_pnl"], 2
+                ),
                 "stressed_net_pnl_delta": round(
-                    matrix_cost_summary["stressed_net_pnl"] - benchmark_cost_summary["stressed_net_pnl"],
+                    matrix_cost_summary["stressed_net_pnl"]
+                    - benchmark_cost_summary["stressed_net_pnl"],
                     2,
                 ),
-                "trade_count_delta": matrix_cost_summary["trade_count"] - benchmark_cost_summary["trade_count"],
+                "trade_count_delta": matrix_cost_summary["trade_count"]
+                - benchmark_cost_summary["trade_count"],
             },
             "cost_assumptions": {
                 "commission_per_contract": self.config.replay_execution.commission_per_contract,
@@ -130,7 +141,9 @@ class ReplayRunner:
         }
         set_state(replay_summary=summary)
 
-        return ReplayResult(path=str(replay_path), events=processed, segments=walk_forward, summary=summary)
+        return ReplayResult(
+            path=str(replay_path), events=processed, segments=walk_forward, summary=summary
+        )
 
     def _load_events(self, replay_path: Path) -> Iterable[MarketData]:
         """Yield market data snapshots from a replay file."""
@@ -178,14 +191,22 @@ class ReplayRunner:
         ask = read_float("ask", default=last + 0.25)
 
         configured_mode = str(self.config.replay_execution.volume_mode or "auto").strip().lower()
-        raw_mode = str(raw.get("volume_mode", raw.get("volumeMode", configured_mode)) or configured_mode).strip().lower()
+        raw_mode = (
+            str(raw.get("volume_mode", raw.get("volumeMode", configured_mode)) or configured_mode)
+            .strip()
+            .lower()
+        )
         volume_field = raw.get("volume")
         size_field = raw.get("size")
         if raw_mode == "per_event":
-            volume = int(float(volume_field)) if has_value(volume_field) else read_int("size", default=0)
+            volume = (
+                int(float(volume_field)) if has_value(volume_field) else read_int("size", default=0)
+            )
             volume_is_cumulative = False
         elif raw_mode == "cumulative":
-            volume = int(float(volume_field)) if has_value(volume_field) else read_int("size", default=0)
+            volume = (
+                int(float(volume_field)) if has_value(volume_field) else read_int("size", default=0)
+            )
             volume_is_cumulative = True
         else:
             if has_value(volume_field):
@@ -242,7 +263,9 @@ class ReplayRunner:
             zone = scheduler.get_current_zone(current_time=current_time.to_pydatetime())
 
             if current_position != 0:
-                exit_price, exit_reason = self._benchmark_exit_price(current_bar, current_position, stop_loss, take_profit)
+                exit_price, exit_reason = self._benchmark_exit_price(
+                    current_bar, current_position, stop_loss, take_profit
+                )
                 if exit_price is not None and entry_time is not None:
                     trades.append(
                         self._build_trade_record(
@@ -288,7 +311,9 @@ class ReplayRunner:
                 continue
 
             zone_name = zone.name if zone else "Close-Scalp"
-            strategy_name = self.config.validation.benchmark_zone_strategies.get(zone_name, "FLATTEN_ONLY")
+            strategy_name = self.config.validation.benchmark_zone_strategies.get(
+                zone_name, "FLATTEN_ONLY"
+            )
             strategy = strategies.get(strategy_name, strategies["FLATTEN_ONLY"])
             signal = strategy.compute_signal(frame, current_position, zone)
             if signal is None:
@@ -318,8 +343,15 @@ class ReplayRunner:
                     take_profit = None
                 continue
 
-            if current_position == 0 and signal.direction in {SignalDirection.LONG, SignalDirection.SHORT}:
-                current_position = signal.contracts if signal.direction == SignalDirection.LONG else -signal.contracts
+            if current_position == 0 and signal.direction in {
+                SignalDirection.LONG,
+                SignalDirection.SHORT,
+            }:
+                current_position = (
+                    signal.contracts
+                    if signal.direction == SignalDirection.LONG
+                    else -signal.contracts
+                )
                 entry_price = price
                 entry_time = current_time.to_pydatetime()
                 stop_loss = signal.stop_loss
@@ -383,7 +415,11 @@ class ReplayRunner:
         event_tags: list[str],
     ) -> TradeRecord:
         multiplier = 50
-        pnl = (exit_price - entry_price) * multiplier * contracts if direction > 0 else (entry_price - exit_price) * multiplier * contracts
+        pnl = (
+            (exit_price - entry_price) * multiplier * contracts
+            if direction > 0
+            else (entry_price - exit_price) * multiplier * contracts
+        )
         return TradeRecord(
             entry_time=entry_time,
             exit_time=exit_time,
@@ -400,10 +436,14 @@ class ReplayRunner:
 
     def _costed_trade_summary(self, trades: list[TradeRecord], strategy_name: str) -> dict:
         """Summarize trades with fees and conservative slippage stress."""
-        fee_per_contract = self.config.replay_execution.commission_per_contract + self.config.replay_execution.exchange_fee_per_contract
+        fee_per_contract = (
+            self.config.replay_execution.commission_per_contract
+            + self.config.replay_execution.exchange_fee_per_contract
+        )
         limit_penalty_value = self.config.replay_execution.limit_fill_penalty_ticks * 12.5
         extra_stress_ticks = max(
-            float(self.config.replay_execution.stress_slippage_ticks) - float(self.config.replay_execution.market_slippage_ticks),
+            float(self.config.replay_execution.stress_slippage_ticks)
+            - float(self.config.replay_execution.market_slippage_ticks),
             0.0,
         )
         stress_penalty_value = extra_stress_ticks * 12.5
@@ -434,13 +474,17 @@ class ReplayRunner:
                 (zone_stats, trade.zone or "Unknown"),
                 (regime_stats, trade.regime or "Unknown"),
             ):
-                stats = bucket.setdefault(key, {"trades": 0, "gross_pnl": 0.0, "net_pnl": 0.0, "stressed_net_pnl": 0.0})
+                stats = bucket.setdefault(
+                    key, {"trades": 0, "gross_pnl": 0.0, "net_pnl": 0.0, "stressed_net_pnl": 0.0}
+                )
                 stats["trades"] += 1
                 stats["gross_pnl"] += gross
                 stats["net_pnl"] += net
                 stats["stressed_net_pnl"] += stressed_net
             for tag in trade.event_tags or ["none"]:
-                stats = event_tag_stats.setdefault(tag, {"trades": 0, "gross_pnl": 0.0, "net_pnl": 0.0, "stressed_net_pnl": 0.0})
+                stats = event_tag_stats.setdefault(
+                    tag, {"trades": 0, "gross_pnl": 0.0, "net_pnl": 0.0, "stressed_net_pnl": 0.0}
+                )
                 stats["trades"] += 1
                 stats["gross_pnl"] += gross
                 stats["net_pnl"] += net
@@ -460,8 +504,12 @@ class ReplayRunner:
             "avg_gross_trade": round(gross_pnl / len(trades), 2) if trades else 0.0,
             "avg_net_trade": round(net_pnl / len(trades), 2) if trades else 0.0,
             "zone_stats": {key: self._rounded_stats(value) for key, value in zone_stats.items()},
-            "regime_stats": {key: self._rounded_stats(value) for key, value in regime_stats.items()},
-            "event_tag_stats": {key: self._rounded_stats(value) for key, value in event_tag_stats.items()},
+            "regime_stats": {
+                key: self._rounded_stats(value) for key, value in regime_stats.items()
+            },
+            "event_tag_stats": {
+                key: self._rounded_stats(value) for key, value in event_tag_stats.items()
+            },
         }
 
     def _walk_forward_segments(
@@ -487,10 +535,22 @@ class ReplayRunner:
             test_end_idx = min(train_end_idx + test_bars, len(bars) - 1)
             test_start = bars.index[train_end_idx + 1]
             test_end = bars.index[test_end_idx]
-            matrix_window = [trade for trade in matrix_trades if self._trade_in_window(trade, test_start, test_end)]
-            benchmark_window = [trade for trade in benchmark_trades if self._trade_in_window(trade, test_start, test_end)]
-            matrix_summary = self._costed_trade_summary(matrix_window, strategy_name="WEIGHTED_SCORE_MATRIX")
-            benchmark_summary = self._costed_trade_summary(benchmark_window, strategy_name="BENCHMARK_PORTFOLIO")
+            matrix_window = [
+                trade
+                for trade in matrix_trades
+                if self._trade_in_window(trade, test_start, test_end)
+            ]
+            benchmark_window = [
+                trade
+                for trade in benchmark_trades
+                if self._trade_in_window(trade, test_start, test_end)
+            ]
+            matrix_summary = self._costed_trade_summary(
+                matrix_window, strategy_name="WEIGHTED_SCORE_MATRIX"
+            )
+            benchmark_summary = self._costed_trade_summary(
+                benchmark_window, strategy_name="BENCHMARK_PORTFOLIO"
+            )
             segments.append(
                 {
                     "segment": segment_number,
@@ -520,10 +580,15 @@ class ReplayRunner:
         """Apply fixed promotion gates for the current matrix version."""
         execution_state = get_state().execution or {}
         zone_stats = matrix_cost_summary.get("zone_stats", {})
-        total_positive_zone_pnl = sum(max(stats.get("net_pnl", 0.0), 0.0) for stats in zone_stats.values())
+        total_positive_zone_pnl = sum(
+            max(stats.get("net_pnl", 0.0), 0.0) for stats in zone_stats.values()
+        )
         dominant_zone_share = 1.0
         if total_positive_zone_pnl > 0:
-            dominant_zone_share = max(max(stats.get("net_pnl", 0.0), 0.0) for stats in zone_stats.values()) / total_positive_zone_pnl
+            dominant_zone_share = (
+                max(max(stats.get("net_pnl", 0.0), 0.0) for stats in zone_stats.values())
+                / total_positive_zone_pnl
+            )
 
         positive_window_ratio = (
             sum(1 for segment in walk_forward if segment["matrix_positive"]) / len(walk_forward)
@@ -543,11 +608,14 @@ class ReplayRunner:
         gates = {
             "decision_ready": decision_ready,
             "decision_ready_reason": decision_ready_reason,
-            "benchmark_outperformance": matrix_cost_summary["net_pnl"] > benchmark_cost_summary["net_pnl"],
+            "benchmark_outperformance": matrix_cost_summary["net_pnl"]
+            > benchmark_cost_summary["net_pnl"],
             "stress_survival_ok": matrix_cost_summary["stressed_net_pnl"] >= 0,
-            "zone_diversity_ok": dominant_zone_share <= float(self.config.validation.max_zone_pnl_share),
+            "zone_diversity_ok": dominant_zone_share
+            <= float(self.config.validation.max_zone_pnl_share),
             "dominant_zone_share": round(dominant_zone_share, 4),
-            "walk_forward_ok": positive_window_ratio >= float(self.config.validation.min_positive_test_window_ratio),
+            "walk_forward_ok": positive_window_ratio
+            >= float(self.config.validation.min_positive_test_window_ratio),
             "positive_test_window_ratio": round(positive_window_ratio, 4),
             "prac_observability_ok": (
                 int(execution_state.get("protection_failures", 0)) == 0

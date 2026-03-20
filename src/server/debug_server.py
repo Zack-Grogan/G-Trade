@@ -1,5 +1,14 @@
 """Compatibility wrapper for the local Flask operator console."""
-from .flask_console import DebugServer, TradingState, get_server, get_state, record_error, set_state, create_app
+
+from .flask_console import (
+    DebugServer,
+    TradingState,
+    get_server,
+    get_state,
+    record_error,
+    set_state,
+    create_app,
+)
 
 __all__ = [
     "DebugServer",
@@ -10,4 +19,3 @@ __all__ = [
     "record_error",
     "set_state",
 ]
-

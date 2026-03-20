@@ -1,4 +1,5 @@
 """CLI commands module."""
+
 import click
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -19,7 +20,6 @@ from src.config import get_config, load_config, set_config
 from src.cli.launchd import (
     install_launch_agent,
     launch_agent_status,
-    read_launchd_environment,
     restart_launch_agent,
     start_launch_agent,
     stderr_log_path,
@@ -33,9 +33,6 @@ from src.execution import get_executor
 from src.engine import ReplayRunner, get_scheduler, get_risk_manager, get_trading_engine
 from src.observability import get_observability_store
 from src.observability.provenance import collect_run_provenance
-from src.bridge import start_railway_bridge
-from src.bridge.outbox import RailwayOutbox
-from src.bridge.railway_bridge import rebuild_outbox_from_observability
 from src.analysis import (
     build_launch_readiness,
     build_regime_packet,
@@ -163,9 +160,7 @@ def _configure_logging(cfg) -> Path:
 
     root_logger = logging.getLogger()
     log_level = getattr(logging, str(cfg.logging.level).upper(), logging.INFO)
-    formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s [%(name)s] %(threadName)s %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(threadName)s %(message)s")
 
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
@@ -179,7 +174,8 @@ def _configure_logging(cfg) -> Path:
     stream_handler.setFormatter(
         _ConsoleFormatter(
             "%(asctime)s %(levelname)s [%(name)s] %(threadName)s %(message)s",
-            bool(getattr(cfg.logging, "console_colors", True)) and getattr(sys.stderr, "isatty", lambda: False)(),
+            bool(getattr(cfg.logging, "console_colors", True))
+            and getattr(sys.stderr, "isatty", lambda: False)(),
         )
     )
 
@@ -363,7 +359,14 @@ def _read_runtime_status(cfg, log_path: Optional[Path] = None) -> Optional[dict[
     return _read_json_file(_runtime_control_paths(cfg, log_path)["status_file"])
 
 
-def _mark_runtime_active(cfg, *, log_path: Path, config_path: str, data_mode: str, lifecycle_request: Optional[dict[str, Any]] = None) -> None:
+def _mark_runtime_active(
+    cfg,
+    *,
+    log_path: Path,
+    config_path: str,
+    data_mode: str,
+    lifecycle_request: Optional[dict[str, Any]] = None,
+) -> None:
     paths = _runtime_control_paths(cfg, log_path)
     _write_pid_file(paths["pid_file"], os.getpid())
     _write_runtime_status(
@@ -471,7 +474,15 @@ def _resolve_shutdown_request(
     }
 
 
-def _record_system_event(observability, *, event_type: str, payload: dict[str, Any], symbol: Optional[str], action: str, reason: str) -> None:
+def _record_system_event(
+    observability,
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+    symbol: Optional[str],
+    action: str,
+    reason: str,
+) -> None:
     observability.record_event(
         category="system",
         event_type=event_type,
@@ -497,7 +508,11 @@ def _request_runtime_action(
     runtime_status = _read_runtime_status(cfg, log_path)
     request = _build_lifecycle_request(action=action, reason=reason, source=request_source)
     _write_lifecycle_request(cfg, request, log_path)
-    if active_pid is None or not _pid_is_running(active_pid) or not _pid_is_trader_process(active_pid):
+    if (
+        active_pid is None
+        or not _pid_is_running(active_pid)
+        or not _pid_is_trader_process(active_pid)
+    ):
         if active_pid is not None:
             if _pid_is_running(active_pid) and not _pid_is_trader_process(active_pid):
                 logger.warning(
@@ -671,8 +686,6 @@ def _print_banner(title: str, color: str = "cyan") -> None:
 
 
 def _log_startup_summary(cfg, log_path: Path, current_zone: Optional[str], zone_state: str) -> None:
-    mcp_url = getattr(cfg.server, "railway_mcp_url", None) or ""
-    mcp_url = mcp_url.strip() if mcp_url else "disabled"
     logger.info(
         "startup_summary capital=%s max_contracts=%s hot_zones=%s matrix_version=%s preferred_account_match=%s trade_outside_hotzones=%s log_file=%s",
         cfg.account.capital,
@@ -684,10 +697,9 @@ def _log_startup_summary(cfg, log_path: Path, current_zone: Optional[str], zone_
         log_path,
     )
     logger.info(
-        "startup_endpoints health_url=%s debug_url=%s mcp_url=%s current_zone=%s zone_state=%s",
+        "startup_endpoints health_url=%s debug_url=%s current_zone=%s zone_state=%s",
         f"http://{cfg.server.host}:{cfg.server.health_port}/health",
         f"http://{cfg.server.host}:{cfg.server.debug_port}/debug",
-        mcp_url,
         current_zone,
         zone_state,
     )
@@ -711,7 +723,6 @@ def _startup_payload(
         "log_file": str(log_path),
         "health_port": cfg.server.health_port,
         "debug_port": cfg.server.debug_port,
-        "mcp_path": cfg.server.mcp_path,
         "current_zone": current_zone,
         "zone_state": zone_state,
     }
@@ -732,15 +743,15 @@ def _startup_payload(
 def _resolve_config_path(config: Optional[str]) -> str:
     if config:
         return str(Path(config).expanduser().resolve())
-    return str((Path(__file__).resolve().parent.parent.parent / "config" / "default.yaml").resolve())
+    return str(
+        (Path(__file__).resolve().parent.parent.parent / "config" / "default.yaml").resolve()
+    )
 
 
 def _runtime_urls(cfg) -> dict:
-    mcp_url = getattr(cfg.server, "railway_mcp_url", None)
     return {
         "health_url": f"http://{cfg.server.host}:{cfg.server.health_port}/health",
         "debug_url": f"http://{cfg.server.host}:{cfg.server.debug_port}/debug",
-        "mcp_url": mcp_url.strip() if mcp_url else None,
     }
 
 
@@ -766,7 +777,9 @@ def _fetch_remote_health(cfg, timeout_seconds: float = 1.5) -> Optional[dict[str
         return None
 
 
-def _record_runtime_provenance(cfg, observability, *, config_path: str, log_path: Path, data_mode: str):
+def _record_runtime_provenance(
+    cfg, observability, *, config_path: str, log_path: Path, data_mode: str
+):
     urls = _runtime_urls(cfg)
     manifest = collect_run_provenance(
         cfg,
@@ -776,10 +789,11 @@ def _record_runtime_provenance(cfg, observability, *, config_path: str, log_path
         data_mode=data_mode,
         health_url=urls["health_url"],
         debug_url=urls["debug_url"],
-        mcp_url=urls["mcp_url"],
     )
     debug_state = _fetch_remote_debug_state(cfg) or {}
-    account_payload = debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
+    account_payload = (
+        debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
+    )
     if account_payload:
         manifest["account"] = {
             "id": account_payload.get("id"),
@@ -810,7 +824,6 @@ def _record_runtime_provenance(cfg, observability, *, config_path: str, log_path
         config_path=manifest.get("config_path"),
         config_hash=manifest.get("config_hash"),
         observability_db_path=manifest.get("sqlite_path"),
-        mcp_url=manifest.get("mcp_url"),
         last_backfill=backfill_result,
     )
     return manifest, backfill_result
@@ -923,7 +936,7 @@ def _tail_file_lines(path: Path, *, lines: int = 100) -> list[str]:
         return []
     try:
         content = path.read_text(encoding="utf-8").splitlines()
-        return content[-max(int(lines), 1):]
+        return content[-max(int(lines), 1) :]
     except Exception:
         logger.exception("Failed to read log file at %s", path)
         return []
@@ -933,42 +946,23 @@ def _service_doctor_payload(cfg) -> dict[str, Any]:
     log_path = _resolve_log_path(cfg)
     runtime_status = _read_runtime_status(cfg, log_path)
     observability = get_observability_store()
-    outbox = RailwayOutbox(cfg.observability.outbox_path)
-    try:
-        launchd_env = read_launchd_environment()
-        remote_health = _fetch_remote_health(cfg)
-        remote_debug = _fetch_remote_debug_state(cfg)
-        execution_payload = remote_debug.get("execution") if isinstance(remote_debug, dict) else {}
-        focus_timestamp = None
-        if isinstance(execution_payload, dict):
-            focus_timestamp = execution_payload.get("last_ack_time") or None
-        return {
-            "launchd": launch_agent_status(),
-            "runtime_status": runtime_status,
-            "remote_health": remote_health,
-            "remote_debug": remote_debug,
-            "broker_truth": _fetch_broker_truth(cfg, focus_timestamp=focus_timestamp),
-            "observability_db_path": observability.get_db_path(),
-            "outbox_stats": outbox.get_queue_stats(),
-            "delivery_state": outbox.get_delivery_state(),
-            "log_path": str(log_path),
-            "launchd_stdout_log": str(stdout_log_path()),
-            "launchd_stderr_log": str(stderr_log_path()),
-            "bridge_url": cfg.observability.railway_ingest_url,
-            "internal_auth_configured": bool(
-                (
-                    os.environ.get("GTRADE_INTERNAL_API_TOKEN")
-                    or launchd_env.get("GTRADE_INTERNAL_API_TOKEN")
-                    or cfg.observability.internal_api_token
-                    or ""
-                ).strip()
-            ),
-            "legacy_ingest_key_configured": bool(
-                (os.environ.get("RAILWAY_INGEST_API_KEY") or cfg.observability.railway_ingest_api_key or "").strip()
-            ),
-        }
-    finally:
-        outbox.close()
+    remote_health = _fetch_remote_health(cfg)
+    remote_debug = _fetch_remote_debug_state(cfg)
+    execution_payload = remote_debug.get("execution") if isinstance(remote_debug, dict) else {}
+    focus_timestamp = None
+    if isinstance(execution_payload, dict):
+        focus_timestamp = execution_payload.get("last_ack_time") or None
+    return {
+        "launchd": launch_agent_status(),
+        "runtime_status": runtime_status,
+        "remote_health": remote_health,
+        "remote_debug": remote_debug,
+        "broker_truth": _fetch_broker_truth(cfg, focus_timestamp=focus_timestamp),
+        "observability_db_path": observability.get_db_path(),
+        "log_path": str(log_path),
+        "launchd_stdout_log": str(stdout_log_path()),
+        "launchd_stderr_log": str(stderr_log_path()),
+    }
 
 
 @click.group()
@@ -978,11 +972,11 @@ def cli():
 
 
 @cli.command()
-@click.option('--config', type=click.Path(exists=True), help='Config file path')
+@click.option("--config", type=click.Path(exists=True), help="Config file path")
 def start(config: Optional[str]):
     """Start the trading engine (live: real Topstep API, practice or funded account)."""
     _print_banner("ES Hot-Zone Trader Starting...")
-    
+
     # Load config
     config_path = _resolve_config_path(config)
     if config:
@@ -1007,15 +1001,24 @@ def start(config: Optional[str]):
     shutdown_signal = {"name": None}
     shutdown_requested = threading.Event()
     previous_signal_handlers: dict[int, Any] = {}
-    
-    click.secho(f"Config loaded: ${cfg.account.capital} account, max {cfg.account.max_contracts} contracts", fg="green")
+
+    click.secho(
+        f"Config loaded: ${cfg.account.capital} account, max {cfg.account.max_contracts} contracts",
+        fg="green",
+    )
     click.secho(f"Hot zones: {len(cfg.hot_zones)} configured", fg="green")
     click.secho(f"Alpha matrix: {cfg.alpha.matrix_version}", fg="green")
     click.secho(f"Preferred account match: {cfg.safety.preferred_account_match}", fg="green")
     click.secho(f"Trade outside hot zones: {cfg.strategy.trade_outside_hotzones}", fg="green")
     click.secho(f"Log file: {log_path}", fg="green")
     click.secho("Live: Topstep API (real market data and orders).", fg="green")
-    _mark_runtime_active(cfg, log_path=log_path, config_path=config_path, data_mode="live", lifecycle_request=startup_request)
+    _mark_runtime_active(
+        cfg,
+        log_path=log_path,
+        config_path=config_path,
+        data_mode="live",
+        lifecycle_request=startup_request,
+    )
     _set_lifecycle_state(
         phase="starting",
         requested_action=(startup_request or {}).get("action") or "start",
@@ -1026,7 +1029,7 @@ def start(config: Optional[str]):
         requester_pid=(startup_request or {}).get("requester_pid"),
         last_start_requested_at=_utc_now().isoformat(),
     )
-    
+
     # Start debug servers
     server = get_server(force_recreate=True)
     server.start()
@@ -1034,8 +1037,6 @@ def start(config: Optional[str]):
     click.secho(f"Console:      http://127.0.0.1:{cfg.server.debug_port}/", fg="blue")
     click.secho(f"Health JSON:  http://127.0.0.1:{cfg.server.health_port}/health", fg="blue")
     click.secho(f"Debug JSON:   http://127.0.0.1:{cfg.server.debug_port}/debug", fg="blue")
-    if start_railway_bridge():
-        click.secho("Legacy bridge: started", fg="blue")
 
     # Update state
     set_state(
@@ -1045,7 +1046,9 @@ def start(config: Optional[str]):
         data_mode="live",
         replay_summary=None,
     )
-    _record_runtime_provenance(cfg, observability, config_path=config_path, log_path=log_path, data_mode="live")
+    _record_runtime_provenance(
+        cfg, observability, config_path=config_path, log_path=log_path, data_mode="live"
+    )
     if getattr(cfg.observability, "sync_account_trade_history_on_startup", False):
         account_trade_sync = _sync_account_trade_history(
             cfg,
@@ -1066,7 +1069,7 @@ def start(config: Optional[str]):
             observability.get_run_id(),
             {"last_account_trade_sync": account_trade_sync},
         )
-    
+
     # Show current zone
     zone = scheduler.get_current_zone()
     if zone:
@@ -1075,7 +1078,11 @@ def start(config: Optional[str]):
         zone_state = zone.state.value
     else:
         click.secho(
-            "Current zone: Outside (active)" if cfg.strategy.trade_outside_hotzones else "Currently outside all trading zones",
+            (
+                "Current zone: Outside (active)"
+                if cfg.strategy.trade_outside_hotzones
+                else "Currently outside all trading zones"
+            ),
             fg="cyan",
         )
         current_zone_name = "Outside" if cfg.strategy.trade_outside_hotzones else None
@@ -1097,21 +1104,25 @@ def start(config: Optional[str]):
     for sig in (signal.SIGINT, signal.SIGTERM):
         previous_signal_handlers[sig] = signal.getsignal(sig)
         signal.signal(sig, _request_shutdown)
-    
+
     try:
         engine.start()
         started_engine = True
         # Re-record run manifest now that engine has populated account info
         if getattr(cfg.observability, "capture_run_provenance", True):
             debug_state = _fetch_remote_debug_state(cfg) or {}
-            account_payload = debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
+            account_payload = (
+                debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
+            )
             if account_payload:
-                observability.record_run_manifest({
-                    "run_id": observability.get_run_id(),
-                    "account_id": account_payload.get("id"),
-                    "account_name": account_payload.get("name"),
-                    "account_is_practice": account_payload.get("is_practice"),
-                })
+                observability.record_run_manifest(
+                    {
+                        "run_id": observability.get_run_id(),
+                        "account_id": account_payload.get("id"),
+                        "account_name": account_payload.get("name"),
+                        "account_is_practice": account_payload.get("is_practice"),
+                    }
+                )
     except Exception as exc:
         logger.exception("Engine startup failed")
         _record_system_event(
@@ -1169,7 +1180,7 @@ def start(config: Optional[str]):
     _clear_lifecycle_request(cfg, log_path)
     click.secho("\nTrading engine is running...", fg="green", bold=True)
     click.secho("Press Ctrl+C to stop", fg="yellow")
-    
+
     try:
         while not shutdown_requested.wait(timeout=1.0):
             pass
@@ -1206,8 +1217,10 @@ def start(config: Optional[str]):
 
 
 @cli.command()
-@click.option('--path', required=True, type=click.Path(exists=True), help='Replay CSV or JSONL file')
-@click.option('--config', type=click.Path(exists=True), help='Config file path')
+@click.option(
+    "--path", required=True, type=click.Path(exists=True), help="Replay CSV or JSONL file"
+)
+@click.option("--config", type=click.Path(exists=True), help="Config file path")
 def replay(path: str, config: Optional[str]):
     """Replay historical events through the live engine path."""
     config_path = _resolve_config_path(config)
@@ -1227,13 +1240,21 @@ def replay(path: str, config: Optional[str]):
         operator_reason="cli_replay",
         last_start_requested_at=_utc_now().isoformat(),
     )
-    set_state(status="replay", running=False, data_mode="replay", replay_summary=None, start_time=time.time())
+    set_state(
+        status="replay",
+        running=False,
+        data_mode="replay",
+        replay_summary=None,
+        start_time=time.time(),
+    )
     get_client(force_recreate=True)
     get_executor(force_recreate=True)
     get_scheduler(force_recreate=True)
     get_risk_manager(force_recreate=True)
     engine = get_trading_engine(force_recreate=True)
-    _record_runtime_provenance(cfg, observability, config_path=config_path, log_path=log_path, data_mode="replay")
+    _record_runtime_provenance(
+        cfg, observability, config_path=config_path, log_path=log_path, data_mode="replay"
+    )
 
     try:
         runner = ReplayRunner(config=cfg, engine=engine)
@@ -1304,8 +1325,20 @@ def replay(path: str, config: Optional[str]):
 
 
 @cli.command()
-@click.option('--reason', default='cli_stop', show_default=True, type=str, help='Reason recorded for the shutdown request')
-@click.option('--timeout-seconds', default=20, show_default=True, type=int, help='Seconds to wait for the process to exit cleanly')
+@click.option(
+    "--reason",
+    default="cli_stop",
+    show_default=True,
+    type=str,
+    help="Reason recorded for the shutdown request",
+)
+@click.option(
+    "--timeout-seconds",
+    default=20,
+    show_default=True,
+    type=int,
+    help="Seconds to wait for the process to exit cleanly",
+)
 def stop(reason: str, timeout_seconds: int):
     """Stop the trading engine."""
     cfg = get_config()
@@ -1326,9 +1359,23 @@ def stop(reason: str, timeout_seconds: int):
 
 
 @cli.command()
-@click.option('--config', type=click.Path(exists=True), help='Config file path for the restarted process')
-@click.option('--reason', default='cli_restart', show_default=True, type=str, help='Reason recorded for the restart request')
-@click.option('--timeout-seconds', default=20, show_default=True, type=int, help='Seconds to wait for the prior process to exit cleanly')
+@click.option(
+    "--config", type=click.Path(exists=True), help="Config file path for the restarted process"
+)
+@click.option(
+    "--reason",
+    default="cli_restart",
+    show_default=True,
+    type=str,
+    help="Reason recorded for the restart request",
+)
+@click.option(
+    "--timeout-seconds",
+    default=20,
+    show_default=True,
+    type=int,
+    help="Seconds to wait for the prior process to exit cleanly",
+)
 @click.pass_context
 def restart(ctx: click.Context, config: Optional[str], reason: str, timeout_seconds: int):
     """Restart the trading engine (always live)."""
@@ -1343,7 +1390,9 @@ def restart(ctx: click.Context, config: Optional[str], reason: str, timeout_seco
         timeout_seconds=timeout_seconds,
         request_source="src.cli.commands.restart",
     )
-    restart_config_path = config or ((runtime_status or {}).get("config_path") if runtime_status else None)
+    restart_config_path = config or (
+        (runtime_status or {}).get("config_path") if runtime_status else None
+    )
     if active_pid is None:
         click.echo("Trading engine is not running. Starting a fresh process with restart intent.")
     else:
@@ -1381,7 +1430,10 @@ def status():
         risk_state = str(state.risk_state)
 
     _print_banner("Trading Status", color="blue")
-    click.secho(f"Status:    {status_value}", fg="green" if status_value in {"healthy", "running"} else "yellow")
+    click.secho(
+        f"Status:    {status_value}",
+        fg="green" if status_value in {"healthy", "running"} else "yellow",
+    )
     click.secho(f"Running:   {running_value}", fg="green" if running_value else "yellow")
     click.secho(f"Data Mode: {data_mode}", fg="blue")
     click.secho(f"Zone:      {zone_name} ({zone_state})", fg="cyan")
@@ -1389,10 +1441,14 @@ def status():
     click.secho(f"Position:  {position_contracts} contracts", fg="magenta")
     click.secho(f"Position PnL: ${position_pnl:.2f}", fg="magenta")
     click.secho(f"Daily PnL: ${daily_pnl:.2f}", fg="magenta")
-    click.secho(f"Risk State: {risk_state}", fg="red" if risk_state.lower() != "normal" else "green")
+    click.secho(
+        f"Risk State: {risk_state}", fg="red" if risk_state.lower() != "normal" else "green"
+    )
     click.secho("=" * 50, fg="blue")
     if not remote:
-        click.secho("Note: runtime endpoints unavailable; showing local process state only.", fg="yellow")
+        click.secho(
+            "Note: runtime endpoints unavailable; showing local process state only.", fg="yellow"
+        )
 
 
 @cli.command()
@@ -1422,9 +1478,21 @@ def debug():
 
 
 @cli.command("broker-truth")
-@click.option("--symbol", default="ES", show_default=True, type=str, help="Instrument symbol to inspect")
-@click.option("--lookback-minutes", default=240, show_default=True, type=int, help="Recent history window around the focus timestamp")
-@click.option("--focus-timestamp", type=str, help="ISO-8601 timestamp to center the recent order/trade history window")
+@click.option(
+    "--symbol", default="ES", show_default=True, type=str, help="Instrument symbol to inspect"
+)
+@click.option(
+    "--lookback-minutes",
+    default=240,
+    show_default=True,
+    type=int,
+    help="Recent history window around the focus timestamp",
+)
+@click.option(
+    "--focus-timestamp",
+    type=str,
+    help="ISO-8601 timestamp to center the recent order/trade history window",
+)
 def broker_truth(symbol: str, lookback_minutes: int, focus_timestamp: Optional[str]) -> None:
     """Show selected-account broker truth plus recent broker history."""
     cfg = get_config()
@@ -1439,12 +1507,20 @@ def broker_truth(symbol: str, lookback_minutes: int, focus_timestamp: Optional[s
 
 
 @cli.command()
-@click.option('--limit', default=50, show_default=True, type=int, help='Maximum number of events to return')
-@click.option('--category', type=str, help='Filter by category')
-@click.option('--event-type', type=str, help='Filter by event type')
-@click.option('--since-minutes', type=int, help='Only include events from the last N minutes')
-@click.option('--search', type=str, help='Search across reasons, payloads, symbols, and sources')
-def events(limit: int, category: Optional[str], event_type: Optional[str], since_minutes: Optional[int], search: Optional[str]):
+@click.option(
+    "--limit", default=50, show_default=True, type=int, help="Maximum number of events to return"
+)
+@click.option("--category", type=str, help="Filter by category")
+@click.option("--event-type", type=str, help="Filter by event type")
+@click.option("--since-minutes", type=int, help="Only include events from the last N minutes")
+@click.option("--search", type=str, help="Search across reasons, payloads, symbols, and sources")
+def events(
+    limit: int,
+    category: Optional[str],
+    event_type: Optional[str],
+    since_minutes: Optional[int],
+    search: Optional[str],
+):
     """Query recent observability events."""
     rows = get_observability_store().query_events(
         limit=limit,
@@ -1463,10 +1539,14 @@ def analyze():
 
 @analyze.command("regime-packet")
 @click.option("--lookback-days", default=14, show_default=True, type=int)
-@click.option("--account-id", type=str, help="Account id override; defaults to the current selected account")
+@click.option(
+    "--account-id", type=str, help="Account id override; defaults to the current selected account"
+)
 @click.option("--output", type=click.Path(), help="Optional output path for the Markdown artifact")
 @click.option("--json-output", is_flag=True, help="Print JSON instead of Markdown")
-def analyze_regime_packet(lookback_days: int, account_id: Optional[str], output: Optional[str], json_output: bool) -> None:
+def analyze_regime_packet(
+    lookback_days: int, account_id: Optional[str], output: Optional[str], json_output: bool
+) -> None:
     """Build the local regime packet from SQLite and broker-truth context."""
     effective_account = account_id or _resolve_analysis_account_id()
     packet = build_regime_packet(account_id=effective_account, lookback_days=lookback_days)
@@ -1474,7 +1554,11 @@ def analyze_regime_packet(lookback_days: int, account_id: Optional[str], output:
         _print_json(packet)
         return
     rendered = render_regime_packet_markdown(packet)
-    target = Path(output).expanduser().resolve() if output else _default_research_output("regime_packet_latest.md")
+    target = (
+        Path(output).expanduser().resolve()
+        if output
+        else _default_research_output("regime_packet_latest.md")
+    )
     _write_text_output(target, rendered)
     click.echo(rendered)
     click.echo(f"\nSaved regime packet to {target}")
@@ -1482,7 +1566,9 @@ def analyze_regime_packet(lookback_days: int, account_id: Optional[str], output:
 
 @analyze.command("trade-review")
 @click.argument("trade_key", type=str)
-@click.option("--account-id", type=str, help="Account id override; defaults to the current selected account")
+@click.option(
+    "--account-id", type=str, help="Account id override; defaults to the current selected account"
+)
 def analyze_trade_review(trade_key: str, account_id: Optional[str]) -> None:
     """Show a local trade review bundle for one completed trade."""
     effective_account = account_id or _resolve_analysis_account_id()
@@ -1490,7 +1576,9 @@ def analyze_trade_review(trade_key: str, account_id: Optional[str]) -> None:
 
 
 @analyze.command("launch-readiness")
-@click.option("--account-id", type=str, help="Account id override; defaults to the current selected account")
+@click.option(
+    "--account-id", type=str, help="Account id override; defaults to the current selected account"
+)
 def analyze_launch_readiness(account_id: Optional[str]) -> None:
     """Summarize whether the local Sunday/Monday launch defaults are in place."""
     effective_account = account_id or _resolve_analysis_account_id()
@@ -1503,7 +1591,11 @@ def service():
 
 
 @service.command("install")
-@click.option("--config", type=click.Path(exists=True), help="Config file path embedded into the launchd plist")
+@click.option(
+    "--config",
+    type=click.Path(exists=True),
+    help="Config file path embedded into the launchd plist",
+)
 def service_install(config: Optional[str]) -> None:
     result = install_launch_agent(_resolve_config_path(config) if config else None)
     if not result.ok:
@@ -1551,7 +1643,14 @@ def service_status() -> None:
 
 @service.command("logs")
 @click.option("--lines", default=100, show_default=True, type=int, help="Number of lines to tail")
-@click.option("--source", "source_name", default="app", show_default=True, type=click.Choice(["app", "launchd-stdout", "launchd-stderr"]), help="Log source to display")
+@click.option(
+    "--source",
+    "source_name",
+    default="app",
+    show_default=True,
+    type=click.Choice(["app", "launchd-stdout", "launchd-stderr"]),
+    help="Log source to display",
+)
 def service_logs(lines: int, source_name: str) -> None:
     cfg = get_config()
     source_map = {
@@ -1592,7 +1691,13 @@ def db_runs(limit: int, search: Optional[str]) -> None:
 @click.option("--event-type", type=str)
 @click.option("--search", type=str)
 @click.option("--run-id", type=str)
-def db_events(limit: int, category: Optional[str], event_type: Optional[str], search: Optional[str], run_id: Optional[str]) -> None:
+def db_events(
+    limit: int,
+    category: Optional[str],
+    event_type: Optional[str],
+    search: Optional[str],
+    run_id: Optional[str],
+) -> None:
     rows = get_observability_store().query_events(
         limit=limit,
         category=category,
@@ -1605,7 +1710,12 @@ def db_events(limit: int, category: Optional[str], event_type: Optional[str], se
 
 @db.command("snapshots")
 @click.option("--limit", default=100, show_default=True, type=int)
-@click.option("--kind", default="state", show_default=True, type=click.Choice(["state", "decision", "market", "order"]))
+@click.option(
+    "--kind",
+    default="state",
+    show_default=True,
+    type=click.Choice(["state", "decision", "market", "order"]),
+)
 @click.option("--run-id", type=str)
 @click.option("--search", type=str)
 def db_snapshots(limit: int, kind: str, run_id: Optional[str], search: Optional[str]) -> None:
@@ -1635,8 +1745,12 @@ def db_bridge_health(limit: int, run_id: Optional[str], search: Optional[str]) -
 @click.option("--run-id", type=str)
 @click.option("--level", "level_name", type=str)
 @click.option("--search", type=str)
-def db_logs(limit: int, run_id: Optional[str], level_name: Optional[str], search: Optional[str]) -> None:
-    rows = get_observability_store().query_runtime_logs(limit=limit, run_id=run_id, level=level_name, search=search)
+def db_logs(
+    limit: int, run_id: Optional[str], level_name: Optional[str], search: Optional[str]
+) -> None:
+    rows = get_observability_store().query_runtime_logs(
+        limit=limit, run_id=run_id, level=level_name, search=search
+    )
     _print_json(rows)
 
 
@@ -1645,13 +1759,23 @@ def db_logs(limit: int, run_id: Optional[str], level_name: Optional[str], search
 @click.option("--run-id", type=str)
 @click.option("--account-id", type=str)
 @click.option("--search", type=str)
-def db_account_trades(limit: int, run_id: Optional[str], account_id: Optional[str], search: Optional[str]) -> None:
-    rows = get_observability_store().query_account_trades(limit=limit, run_id=run_id, account_id=account_id, search=search)
+def db_account_trades(
+    limit: int, run_id: Optional[str], account_id: Optional[str], search: Optional[str]
+) -> None:
+    rows = get_observability_store().query_account_trades(
+        limit=limit, run_id=run_id, account_id=account_id, search=search
+    )
     _print_json(rows)
 
 
 @db.command("sync-account-trades")
-@click.option("--hours", default=168, show_default=True, type=int, help="Look back this many hours in broker account history.")
+@click.option(
+    "--hours",
+    default=168,
+    show_default=True,
+    type=int,
+    help="Look back this many hours in broker account history.",
+)
 def db_sync_account_trades(hours: int) -> None:
     cfg = get_config()
     observability = get_observability_store()
@@ -1673,35 +1797,11 @@ def db_sync_account_trades(hours: int) -> None:
     _print_json(payload)
 
 
-@db.command("replay-missing")
-@click.option("--run-id", type=str, help="Replay a single run. Default: all local runs newer than the delivery cursor.")
-@click.option("--include-sent", is_flag=True, help="Ignore delivery cursors and replay all matching local records.")
-@click.option("--limit-per-kind", default=1000, show_default=True, type=int)
-def db_replay_missing(run_id: Optional[str], include_sent: bool, limit_per_kind: int) -> None:
-    cfg = get_config()
-    outbox = RailwayOutbox(cfg.observability.outbox_path)
-    try:
-        counts = rebuild_outbox_from_observability(
-            outbox,
-            run_id=run_id,
-            include_sent=include_sent,
-            limit_per_kind=limit_per_kind,
-        )
-        payload = {
-            "replayed": counts,
-            "outbox_stats": outbox.get_queue_stats(),
-            "delivery_state": outbox.get_delivery_state(),
-        }
-    finally:
-        outbox.close()
-    _print_json(payload)
-
-
 @cli.command()
 def config():
     """Show current configuration."""
     cfg = get_config()
-    
+
     click.echo("Configuration:")
     click.echo(f"  Account Capital:    ${cfg.account.capital}")
     click.echo(f"  Max Contracts:      {cfg.account.max_contracts}")
@@ -1710,7 +1810,9 @@ def config():
     click.echo("")
     click.echo("Hot Zones:")
     for hz in cfg.hot_zones:
-        click.echo(f"  {hz.name}: {hz.start}-{hz.end} ({hz.timezone}) [{'enabled' if hz.enabled else 'disabled'}]")
+        click.echo(
+            f"  {hz.name}: {hz.start}-{hz.end} ({hz.timezone}) [{'enabled' if hz.enabled else 'disabled'}]"
+        )
     click.echo("")
     click.echo(f"Alpha Matrix Version: {cfg.alpha.matrix_version}")
     click.echo(f"Min Entry Score:      {cfg.alpha.min_entry_score}")
@@ -1733,16 +1835,16 @@ def config():
 def balance():
     """Show account balance."""
     client = get_client()
-    
+
     # Auto-authenticate if not already
     if not client._access_token:
         click.echo("Authenticating with TopstepX...")
         if not client.authenticate():
             click.echo("Authentication failed. Check your .env credentials.")
             return
-    
+
     account = client.get_account()
-    
+
     if account:
         click.echo("Account:")
         click.echo(f"  Account ID:    {account.account_id}")
@@ -1764,5 +1866,5 @@ def main(argv: Optional[list[str]] = None):
     cli(args=args, prog_name="es-trade")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

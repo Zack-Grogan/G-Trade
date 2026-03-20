@@ -10,4 +10,4 @@
 
 To onboard this project into **Linear** and **OpenViking** (first-time setup, backfill issues, ingest docs), see [runbooks/Project-onboarding-Linear-and-OpenViking.md](runbooks/Project-onboarding-Linear-and-OpenViking.md).
 
-For new repositories using this setup, see [engineering-system/future-project-starter.md](engineering-system/future-project-starter.md) and [engineering-system/global-cursor-pack/](engineering-system/global-cursor-pack/).
+For new repositories using this setup, see [engineering-system/future-project-starter.md](engineering-system/future-project-starter.md) and [archive/engineering-system-global-cursor-pack/](archive/engineering-system-global-cursor-pack/).

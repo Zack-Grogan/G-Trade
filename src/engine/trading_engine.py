@@ -1,4 +1,5 @@
 """Trading engine orchestration."""
+
 from __future__ import annotations
 
 import json
@@ -62,16 +63,30 @@ class BarAggregator:
 
         if self._bucket_start is None:
             self._bucket_start = bucket_start
-            self._bar = {"timestamp": bucket_start, "open": price, "high": price, "low": price, "close": price, "volume": volume_delta}
+            self._bar = {
+                "timestamp": bucket_start,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": volume_delta,
+            }
             return None
 
         if bucket_start < self._bucket_start:
-            logger.warning("Out-of-order tick ignored: %s < %s", bucket_start.isoformat(), self._bucket_start.isoformat())
+            logger.warning(
+                "Out-of-order tick ignored: %s < %s",
+                bucket_start.isoformat(),
+                self._bucket_start.isoformat(),
+            )
             get_observability_store().record_event(
                 category="market",
                 event_type="out_of_order_tick",
                 source="src.engine.trading_engine",
-                payload={"bucket_start": bucket_start.isoformat(), "current_bucket_start": self._bucket_start.isoformat()},
+                payload={
+                    "bucket_start": bucket_start.isoformat(),
+                    "current_bucket_start": self._bucket_start.isoformat(),
+                },
                 symbol=market_data.symbol,
                 action="ignore_tick",
                 reason="out_of_order_tick",
@@ -82,7 +97,14 @@ class BarAggregator:
         if bucket_start != self._bucket_start:
             completed_bar = self._bar
             self._bucket_start = bucket_start
-            self._bar = {"timestamp": bucket_start, "open": price, "high": price, "low": price, "close": price, "volume": volume_delta}
+            self._bar = {
+                "timestamp": bucket_start,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": volume_delta,
+            }
             return completed_bar
 
         assert self._bar is not None
@@ -119,8 +141,14 @@ class TradingEngine:
         self.executor: OrderExecutor = get_executor()
         self.client: TopstepClient = get_client()
         self.matrix = DecisionMatrixEvaluator(self.config)
-        self.default_tz = self.config.hot_zones[0].timezone if self.config.hot_zones else self.config.sessions.timezone
-        self.event_provider = LocalEventProvider(self.config.event_provider, self.config.blackout, Path(__file__).parent.parent.parent)
+        self.default_tz = (
+            self.config.hot_zones[0].timezone
+            if self.config.hot_zones
+            else self.config.sessions.timezone
+        )
+        self.event_provider = LocalEventProvider(
+            self.config.event_provider, self.config.blackout, Path(__file__).parent.parent.parent
+        )
         self.bar_aggregator = BarAggregator(self.default_tz)
         self.microstructure = MicrostructureTracker(self.config.order_flow)
 
@@ -259,14 +287,20 @@ class TradingEngine:
         dominant_side = "long" if decision.long_score >= decision.short_score else "short"
         dominant_score = decision.long_score if dominant_side == "long" else decision.short_score
         opposing_score = decision.short_score if dominant_side == "long" else decision.long_score
-        event_time = current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time
+        event_time = (
+            current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time
+        )
         payload = {
             "decision_id": decision_id,
             "attempt_id": attempt_id,
             "position_id": position_id or self._current_position_id,
             "trade_id": trade_id or self._current_trade_id,
             "symbol": self.symbol,
-            "zone_state": zone.state.value if zone else ("active" if self.config.strategy.trade_outside_hotzones else "inactive"),
+            "zone_state": (
+                zone.state.value
+                if zone
+                else ("active" if self.config.strategy.trade_outside_hotzones else "inactive")
+            ),
             "decision_reason": decision.reason,
             "long_score": decision.long_score,
             "short_score": decision.short_score,
@@ -295,7 +329,9 @@ class TradingEngine:
             "post_event_cooling": self._latest_event_context.post_event_cooling,
             "order_flow": {
                 "ofi_zscore": decision.feature_snapshot.long_features.get("ofi_zscore", 0.0),
-                "quote_rate_state": decision.feature_snapshot.long_features.get("quote_rate_state", 0.0),
+                "quote_rate_state": decision.feature_snapshot.long_features.get(
+                    "quote_rate_state", 0.0
+                ),
                 "spread_regime": decision.feature_snapshot.long_features.get("spread_regime", 0.0),
                 "volume_pace": decision.feature_snapshot.long_features.get("volume_pace", 0.0),
             },
@@ -541,18 +577,26 @@ class TradingEngine:
             on_order_update=self.on_order_update,
             on_position_update=self.on_position_update,
         )
-        if not self.client.wait_for_market_stream(timeout=max(float(self.config.watchdog.feed_stale_seconds), 10.0)):
+        if not self.client.wait_for_market_stream(
+            timeout=max(float(self.config.watchdog.feed_stale_seconds), 10.0)
+        ):
             self._running = False
             self.client.stop_market_stream()
             self._record_event(
                 category="market",
                 event_type="stream_not_ready",
-                payload={"error": self.client.get_last_stream_error(), "timeout_seconds": max(float(self.config.watchdog.feed_stale_seconds), 10.0)},
+                payload={
+                    "error": self.client.get_last_stream_error(),
+                    "timeout_seconds": max(float(self.config.watchdog.feed_stale_seconds), 10.0),
+                },
                 event_time=self._current_event_time(),
                 action="connect_stream",
                 reason="stream_not_ready",
             )
-            raise RuntimeError(self.client.get_last_stream_error() or "Live market data stream did not become ready")
+            raise RuntimeError(
+                self.client.get_last_stream_error()
+                or "Live market data stream did not become ready"
+            )
 
         self._adopt_broker_state_at_startup()
         self._worker = threading.Thread(target=self._run, daemon=True)
@@ -627,13 +671,21 @@ class TradingEngine:
         self._record_event(
             category="execution",
             event_type="broker_order_update",
-            payload={"payload": payload, "filled_quantity": fill_info["filled_quantity"], "filled_price": fill_info["filled_price"]},
+            payload={
+                "payload": payload,
+                "filled_quantity": fill_info["filled_quantity"],
+                "filled_price": fill_info["filled_price"],
+            },
             event_time=self._current_event_time(),
             action=status.lower(),
             reason="broker_order_update",
             order_id=str(order_id),
         )
-        if status in {"CANCELLED", "REJECTED"} and self._last_position == 0 and not self.executor.has_active_entry_order(self.symbol):
+        if (
+            status in {"CANCELLED", "REJECTED"}
+            and self._last_position == 0
+            and not self.executor.has_active_entry_order(self.symbol)
+        ):
             self._clear_unresolved_entry_state(status.lower())
         self._position_sync_requested = True
 
@@ -656,13 +708,19 @@ class TradingEngine:
             self._watchdog_state.last_feed_time = market_data.timestamp
             self.risk_manager.observe_time(market_data.timestamp)
             self._last_price = market_data.last or market_data.mid or self._last_price
-            self.risk_manager.observe_market_price(market_data.mid or market_data.last, market_data.timestamp)
+            self.risk_manager.observe_market_price(
+                market_data.mid or market_data.last, market_data.timestamp
+            )
             self._latest_flow_snapshot = self.microstructure.update(market_data)
             set_state(last_price=self._last_price)
 
             if self._last_position != 0 and self._last_price:
-                self._position_high_water = max(self._position_high_water or self._last_price, self._last_price)
-                self._position_low_water = min(self._position_low_water or self._last_price, self._last_price)
+                self._position_high_water = max(
+                    self._position_high_water or self._last_price, self._last_price
+                )
+                self._position_low_water = min(
+                    self._position_low_water or self._last_price, self._last_price
+                )
             if self.executor.process_market_data(market_data):
                 self._position_sync_requested = True
                 self._sync_position_state()
@@ -674,8 +732,14 @@ class TradingEngine:
             if flattened:
                 return
             if completed_bar is not None:
-                self._evaluate_current_state(allow_entries=not self._watchdog_state.fail_safe_lockout)
-            elif self.config.alpha.decision_interval == "tick_and_bar" and self._last_position != 0 and not self._bars.empty:
+                self._evaluate_current_state(
+                    allow_entries=not self._watchdog_state.fail_safe_lockout
+                )
+            elif (
+                self.config.alpha.decision_interval == "tick_and_bar"
+                and self._last_position != 0
+                and not self._bars.empty
+            ):
                 self._evaluate_current_state(allow_entries=False)
 
     def flush_pending_bar(self) -> None:
@@ -684,7 +748,9 @@ class TradingEngine:
             pending_bar = self.bar_aggregator.flush()
             if pending_bar is not None:
                 self._append_bar(pending_bar)
-                self._evaluate_current_state(allow_entries=not self._watchdog_state.fail_safe_lockout)
+                self._evaluate_current_state(
+                    allow_entries=not self._watchdog_state.fail_safe_lockout
+                )
 
     def build_performance_summary(self) -> dict:
         """Summarize current trade history."""
@@ -710,7 +776,10 @@ class TradingEngine:
         event_tag_stats: dict[str, dict[str, float]] = {}
 
         for trade in trades:
-            for bucket, key in ((zone_stats, trade.zone or "Unknown"), (regime_stats, trade.regime or "Unknown")):
+            for bucket, key in (
+                (zone_stats, trade.zone or "Unknown"),
+                (regime_stats, trade.regime or "Unknown"),
+            ):
                 stats = bucket.setdefault(key, {"trades": 0, "wins": 0, "pnl": 0.0})
                 stats["trades"] += 1
                 stats["pnl"] += trade.pnl
@@ -785,9 +854,14 @@ class TradingEngine:
                 self._process_operator_request()
                 self.executor.reconcile_pending_orders()
                 local_active_entry_orders = self.executor.has_active_entry_order(self.symbol)
-                if (self._unresolved_entry_submission_count > 0 or local_active_entry_orders) and self._last_position == 0:
+                if (
+                    self._unresolved_entry_submission_count > 0 or local_active_entry_orders
+                ) and self._last_position == 0:
                     now_ts = time.time()
-                    if now_ts - self._last_unresolved_reconcile_at >= self._unresolved_reconcile_interval_seconds:
+                    if (
+                        now_ts - self._last_unresolved_reconcile_at
+                        >= self._unresolved_reconcile_interval_seconds
+                    ):
                         self._position_sync_requested = True
                         self._last_unresolved_reconcile_at = now_ts
                 if self._position_sync_requested or self._last_position != 0:
@@ -797,14 +871,18 @@ class TradingEngine:
                     if (
                         local_active_entry_orders
                         or self._last_position != 0
-                        or now_ts - self._last_broker_truth_refresh_at >= self._broker_truth_refresh_interval_seconds
+                        or now_ts - self._last_broker_truth_refresh_at
+                        >= self._broker_truth_refresh_interval_seconds
                     ):
                         self._refresh_broker_truth_snapshot(
                             force_history=local_active_entry_orders or self._last_position != 0,
                         )
                 if self._last_position != 0:
                     now_ts = time.time()
-                    cadence = getattr(self.config.strategy, "dynamic_exit_update_cadence_seconds", 10.0) or 10.0
+                    cadence = (
+                        getattr(self.config.strategy, "dynamic_exit_update_cadence_seconds", 10.0)
+                        or 10.0
+                    )
                     if now_ts - self._last_dynamic_exit_update_at >= cadence:
                         with self._lock:
                             self._refresh_dynamic_exit()
@@ -840,7 +918,13 @@ class TradingEngine:
     def _append_bar(self, bar: dict) -> None:
         bar_index = pd.DatetimeIndex([bar["timestamp"]], tz=self.default_tz)
         row = pd.DataFrame(
-            {"open": [bar["open"]], "high": [bar["high"]], "low": [bar["low"]], "close": [bar["close"]], "volume": [bar["volume"]]},
+            {
+                "open": [bar["open"]],
+                "high": [bar["high"]],
+                "low": [bar["low"]],
+                "close": [bar["close"]],
+                "volume": [bar["volume"]],
+            },
             index=bar_index,
         )
         self._bars = pd.concat([self._bars, row]).tail(1200)
@@ -850,8 +934,16 @@ class TradingEngine:
             "submission_count": self._unresolved_entry_submission_count,
             "side": self._unresolved_entry_side,
             "order_ids": list(self._unresolved_entry_order_ids),
-            "first_submitted_at": self._unresolved_entry_first_submitted_at.isoformat() if self._unresolved_entry_first_submitted_at else None,
-            "last_submitted_at": self._unresolved_entry_last_submitted_at.isoformat() if self._unresolved_entry_last_submitted_at else None,
+            "first_submitted_at": (
+                self._unresolved_entry_first_submitted_at.isoformat()
+                if self._unresolved_entry_first_submitted_at
+                else None
+            ),
+            "last_submitted_at": (
+                self._unresolved_entry_last_submitted_at.isoformat()
+                if self._unresolved_entry_last_submitted_at
+                else None
+            ),
             "contamination_detected": self._entry_contamination_detected,
         }
 
@@ -932,7 +1024,9 @@ class TradingEngine:
                 return int(position.quantity)
         return 0
 
-    def _broker_entry_price_from_snapshot(self, positions: Optional[Dict[str, Any]]) -> Optional[float]:
+    def _broker_entry_price_from_snapshot(
+        self, positions: Optional[Dict[str, Any]]
+    ) -> Optional[float]:
         if not positions:
             return None
         if self.symbol in positions:
@@ -980,13 +1074,19 @@ class TradingEngine:
         bundle = self.client.get_broker_truth_bundle(
             self.symbol,
             lookback_minutes=240,
-            focus_timestamp=focus_timestamp or self._pending_entry_submitted_at or self.executor.get_last_ack_time(),
+            focus_timestamp=focus_timestamp
+            or self._pending_entry_submitted_at
+            or self.executor.get_last_ack_time(),
             include_history=force_history,
         )
         self._broker_truth_snapshot = bundle
         self._last_broker_truth_refresh_at = time.time()
         contradictions = dict(bundle.get("contradictions") or {})
-        if contradictions and contradictions != self._last_broker_truth_contradictions and any(bool(v) for v in contradictions.values()):
+        if (
+            contradictions
+            and contradictions != self._last_broker_truth_contradictions
+            and any(bool(v) for v in contradictions.values())
+        ):
             self._record_event(
                 category="execution",
                 event_type="broker_truth_contradiction",
@@ -1019,7 +1119,9 @@ class TradingEngine:
             broker_position=0,
         )
         first = broker_orders[0] if broker_orders else {}
-        raw_side = str(first.get("side", first.get("orderSide", first.get("orderType", "")))).lower()
+        raw_side = str(
+            first.get("side", first.get("orderSide", first.get("orderType", "")))
+        ).lower()
         side = "buy" if raw_side in ("buy", "long", "bid", "b") else "sell"
         self._unresolved_entry_order_ids = list(broker_order_ids)
         self._unresolved_entry_side = side
@@ -1091,10 +1193,16 @@ class TradingEngine:
                 self._position_high_water = entry_price
                 self._position_low_water = entry_price
                 self._position_entry_time = pd.Timestamp(event_time)
-                zone = self.scheduler.get_current_zone(current_time=self._bars.index[-1] if not self._bars.empty else None)
+                zone = self.scheduler.get_current_zone(
+                    current_time=self._bars.index[-1] if not self._bars.empty else None
+                )
                 zone_name = zone.name if zone else "Outside"
-                regime_state = self._last_decision.feature_snapshot.regime_state if self._last_decision else ""
-                event_tags = self._latest_event_context.active_tags if self._latest_event_context else []
+                regime_state = (
+                    self._last_decision.feature_snapshot.regime_state if self._last_decision else ""
+                )
+                event_tags = (
+                    self._latest_event_context.active_tags if self._latest_event_context else []
+                )
                 self.risk_manager.sync_position(
                     signed_position=broker_position,
                     entry_price=entry_price,
@@ -1133,7 +1241,10 @@ class TradingEngine:
                 )
                 logger.info(
                     "Adopted broker position at startup: position=%s entry=%s stop=%s tp=%s",
-                    broker_position, entry_price, stop_price, take_profit,
+                    broker_position,
+                    entry_price,
+                    stop_price,
+                    take_profit,
                 )
                 return
             if broker_position == 0 and broker_order_ids:
@@ -1145,8 +1256,12 @@ class TradingEngine:
                 )
                 logger.info("Adopted broker open orders at startup: order_ids=%s", broker_order_ids)
 
-    def _evaluate_live_entry_guard(self, *, side: str, decision_price: float, expected_fill_price: float) -> tuple[bool, Optional[str], Dict[str, Any]]:
-        local_active_entry_orders = self.executor.get_active_orders(symbol=self.symbol, is_protective=False)
+    def _evaluate_live_entry_guard(
+        self, *, side: str, decision_price: float, expected_fill_price: float
+    ) -> tuple[bool, Optional[str], Dict[str, Any]]:
+        local_active_entry_orders = self.executor.get_active_orders(
+            symbol=self.symbol, is_protective=False
+        )
         snapshot: Dict[str, Any] = {
             "checked": True,
             "mode": "replay" if self._mock_mode else "live",
@@ -1208,7 +1323,10 @@ class TradingEngine:
             snapshot["reason"] = "broker_open_orders_present"
             return False, "broker_open_orders_present", snapshot
         if self._unresolved_entry_submission_count > 0:
-            if self._unresolved_entry_side == side and self._unresolved_entry_submission_count + 1 >= 2:
+            if (
+                self._unresolved_entry_side == side
+                and self._unresolved_entry_submission_count + 1 >= 2
+            ):
                 snapshot["reason"] = "duplicate_unresolved_entry"
                 return False, "duplicate_unresolved_entry", snapshot
             snapshot["reason"] = "unresolved_entry_pending"
@@ -1230,10 +1348,16 @@ class TradingEngine:
             "reason": None,
             "unresolved_entry": self._unresolved_entry_snapshot(),
         }
-        self.risk_manager.observe_time(current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time)
+        self.risk_manager.observe_time(
+            current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time
+        )
         zone = self.scheduler.get_current_zone(current_time=current_time)
-        self._latest_event_context = self.event_provider.get_context(current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time)
-        self.risk_manager.set_blackout(self._latest_event_context.blackout_active, self._latest_event_context.reason)
+        self._latest_event_context = self.event_provider.get_context(
+            current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time
+        )
+        self.risk_manager.set_blackout(
+            self._latest_event_context.blackout_active, self._latest_event_context.reason
+        )
 
         atr_value = self._calculate_current_atr()
         if atr_value is not None:
@@ -1241,19 +1365,31 @@ class TradingEngine:
 
         self._handle_zone_transition(zone)
         display_zone_name = self._zone_name_for_runtime(zone)
-        display_zone_state = zone.state.value if zone else ("active" if self.config.strategy.trade_outside_hotzones else "inactive")
+        display_zone_state = (
+            zone.state.value
+            if zone
+            else ("active" if self.config.strategy.trade_outside_hotzones else "inactive")
+        )
         set_state(current_zone=display_zone_name, zone_state=display_zone_state)
-        zone_live_entries_allowed, zone_gate_reason = self._zone_live_entry_allowed(display_zone_name)
+        zone_live_entries_allowed, zone_gate_reason = self._zone_live_entry_allowed(
+            display_zone_name
+        )
 
         should_flatten, flatten_reason = self.risk_manager.should_flatten_position(
             current_price,
-            current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time,
+            (
+                current_time.to_pydatetime()
+                if hasattr(current_time, "to_pydatetime")
+                else current_time
+            ),
         )
         if should_flatten:
             self._flatten_position(flatten_reason)
             return
 
-        session_flatten, session_flatten_reason = self._should_flatten_for_session_policy(current_time)
+        session_flatten, session_flatten_reason = self._should_flatten_for_session_policy(
+            current_time
+        )
         if session_flatten:
             self._flatten_position(session_flatten_reason or "session_policy")
             return
@@ -1343,7 +1479,9 @@ class TradingEngine:
             )
             return
         if self.executor.has_active_entry_order(self.symbol):
-            logger.info("Entry skipped because an active entry order is already working for %s", self.symbol)
+            logger.info(
+                "Entry skipped because an active entry order is already working for %s", self.symbol
+            )
             self._record_decision_event(
                 decision,
                 zone=zone,
@@ -1355,7 +1493,14 @@ class TradingEngine:
             )
             return
 
-        allowed, reason = self.risk_manager.can_trade(decision.zone_name, current_time=current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time)
+        allowed, reason = self.risk_manager.can_trade(
+            decision.zone_name,
+            current_time=(
+                current_time.to_pydatetime()
+                if hasattr(current_time, "to_pydatetime")
+                else current_time
+            ),
+        )
         if not allowed:
             set_state(active_vetoes=decision.active_vetoes + [reason])
             logger.info("Trade blocked by risk manager: %s", reason)
@@ -1581,7 +1726,10 @@ class TradingEngine:
             active_vetoes=decision.active_vetoes,
             matrix_version=self.config.alpha.matrix_version,
             active_session=snapshot.active_session,
-            anchored_vwaps={"rth": snapshot.diagnostics.get("rth_vwap"), "eth": snapshot.diagnostics.get("eth_vwap")},
+            anchored_vwaps={
+                "rth": snapshot.diagnostics.get("rth_vwap"),
+                "eth": snapshot.diagnostics.get("eth_vwap"),
+            },
             vwap_bands={
                 "rth_sigma": snapshot.diagnostics.get("rth_sigma"),
                 "eth_sigma": snapshot.diagnostics.get("eth_sigma"),
@@ -1606,7 +1754,11 @@ class TradingEngine:
         )
 
     def _handle_zone_transition(self, zone: Optional[ZoneInfo]) -> None:
-        zone_name = zone.name if zone else ("Outside" if self.config.strategy.trade_outside_hotzones else None)
+        zone_name = (
+            zone.name
+            if zone
+            else ("Outside" if self.config.strategy.trade_outside_hotzones else None)
+        )
         if zone_name == self._active_zone_name:
             return
         previous_zone = self._active_zone_name
@@ -1614,7 +1766,11 @@ class TradingEngine:
         self._record_event(
             category="market",
             event_type="zone_transition",
-            payload={"previous_zone": previous_zone, "new_zone": zone_name, "zone_state": zone.state.value if zone else "inactive"},
+            payload={
+                "previous_zone": previous_zone,
+                "new_zone": zone_name,
+                "zone_state": zone.state.value if zone else "inactive",
+            },
             event_time=self._current_event_time(),
             action="zone_transition",
             reason="zone_changed",
@@ -1622,7 +1778,11 @@ class TradingEngine:
         )
 
     def _zone_name_for_runtime(self, zone: Optional[ZoneInfo]) -> Optional[str]:
-        return zone.name if zone else ("Outside" if self.config.strategy.trade_outside_hotzones else None)
+        return (
+            zone.name
+            if zone
+            else ("Outside" if self.config.strategy.trade_outside_hotzones else None)
+        )
 
     def _zone_live_entry_allowed(self, zone_name: Optional[str]) -> tuple[bool, Optional[str]]:
         if not self.config.strategy.launch_gate_enabled:
@@ -1641,7 +1801,9 @@ class TradingEngine:
         parsed = datetime.strptime(value.strip(), "%H:%M")
         return parsed.hour, parsed.minute
 
-    def _should_flatten_for_session_policy(self, current_time: pd.Timestamp | datetime) -> tuple[bool, Optional[str]]:
+    def _should_flatten_for_session_policy(
+        self, current_time: pd.Timestamp | datetime
+    ) -> tuple[bool, Optional[str]]:
         if self._last_position == 0 or not self.config.strategy.session_exit_enabled:
             return False, None
         entry_zone = self._position_entry_zone or self._pending_entry_zone or ""
@@ -1653,7 +1815,9 @@ class TradingEngine:
             timestamp = timestamp.tz_localize(self.default_tz)
         policy_tz = pytz.timezone(self.config.strategy.session_exit_timezone)
         local_time = timestamp.tz_convert(policy_tz)
-        hard_flat_hour, hard_flat_minute = self._parse_local_clock(self.config.strategy.session_exit_hard_flat_time)
+        hard_flat_hour, hard_flat_minute = self._parse_local_clock(
+            self.config.strategy.session_exit_hard_flat_time
+        )
         hard_flat_cutoff = local_time.replace(
             hour=hard_flat_hour,
             minute=hard_flat_minute,
@@ -1667,17 +1831,30 @@ class TradingEngine:
     def _determine_contracts(self, decision: MatrixDecision) -> int:
         direction = 1 if decision.action == "LONG" else -1
         atr_val = decision.feature_snapshot.atr_value or 0.0
-        base_contracts, risk_telemetry = self.risk_manager.calculate_position_size_with_telemetry(atr_val, direction)
+        base_contracts, risk_telemetry = self.risk_manager.calculate_position_size_with_telemetry(
+            atr_val, direction
+        )
         if base_contracts <= 0:
-            self._last_sizing_telemetry = {**risk_telemetry, "size_fraction": decision.size_fraction, "final_contracts": 0}
+            self._last_sizing_telemetry = {
+                **risk_telemetry,
+                "size_fraction": decision.size_fraction,
+                "final_contracts": 0,
+            }
             return 0
-        contracts = base_contracts if decision.size_fraction >= 1.0 else max(1, int(round(base_contracts * decision.size_fraction)))
+        contracts = (
+            base_contracts
+            if decision.size_fraction >= 1.0
+            else max(1, int(round(base_contracts * decision.size_fraction)))
+        )
         if self.risk_manager.is_reduced_risk():
             contracts = min(contracts, 1)
             if "reduced_risk_cap" not in risk_telemetry.get("guardrail_reasons", []):
                 risk_telemetry.setdefault("guardrail_reasons", []).append("reduced_risk_cap")
         contracts = max(1, min(contracts, self.config.account.max_contracts))
-        if contracts >= self.config.account.max_contracts and base_contracts >= self.config.account.max_contracts:
+        if (
+            contracts >= self.config.account.max_contracts
+            and base_contracts >= self.config.account.max_contracts
+        ):
             risk_telemetry.setdefault("guardrail_reasons", []).append("max_contracts_cap")
         self._last_sizing_telemetry = {
             **risk_telemetry,
@@ -1783,7 +1960,11 @@ class TradingEngine:
                 for order in (broker_orders or [])
                 if str(order.get("id", order.get("orderId", "")))
             ]
-            broker_order_reconciliation = {"cleared_order_ids": [], "adopted_order_ids": [], "broker_order_ids": broker_order_ids}
+            broker_order_reconciliation = {
+                "cleared_order_ids": [],
+                "adopted_order_ids": [],
+                "broker_order_ids": broker_order_ids,
+            }
             if not self._mock_mode and order_error is None:
                 broker_order_reconciliation = self.executor.reconcile_broker_open_orders(
                     self.symbol,
@@ -1802,8 +1983,13 @@ class TradingEngine:
                     reason="broker_open_orders_present",
                 )
 
-            if not self._mock_mode and signed_position == 0 and (
-                self._unresolved_entry_submission_count > 0 or broker_order_reconciliation["cleared_order_ids"]
+            if (
+                not self._mock_mode
+                and signed_position == 0
+                and (
+                    self._unresolved_entry_submission_count > 0
+                    or broker_order_reconciliation["cleared_order_ids"]
+                )
             ):
                 if order_error is None and (broker_orders is None or len(broker_orders) == 0):
                     self._clear_unresolved_entry_state("broker_flat_no_orders")
@@ -1843,15 +2029,45 @@ class TradingEngine:
                     fill_qty += quantity
                     fill_notional += quantity * price
 
-                transition_price = (fill_notional / fill_qty) if fill_qty > 0 else (entry_price or self._last_price)
+                transition_price = (
+                    (fill_notional / fill_qty)
+                    if fill_qty > 0
+                    else (entry_price or self._last_price)
+                )
                 actual_entry_price = entry_price or transition_price or self._last_price
-                zone = self.scheduler.get_current_zone(current_time=self._bars.index[-1] if not self._bars.empty else None)
-                regime_state = self._last_decision.feature_snapshot.regime_state if self._last_decision else ""
-                event_tags = self._latest_event_context.active_tags if self._latest_event_context else []
-                zone_name = self._pending_entry_zone or self._active_zone_name or (zone.name if zone else ("Outside" if self.config.strategy.trade_outside_hotzones else "sync_recovery"))
+                zone = self.scheduler.get_current_zone(
+                    current_time=self._bars.index[-1] if not self._bars.empty else None
+                )
+                regime_state = (
+                    self._last_decision.feature_snapshot.regime_state if self._last_decision else ""
+                )
+                event_tags = (
+                    self._latest_event_context.active_tags if self._latest_event_context else []
+                )
+                zone_name = (
+                    self._pending_entry_zone
+                    or self._active_zone_name
+                    or (
+                        zone.name
+                        if zone
+                        else (
+                            "Outside"
+                            if self.config.strategy.trade_outside_hotzones
+                            else "sync_recovery"
+                        )
+                    )
+                )
                 prior_position = self._last_position
-                position_id = self._pending_position_id or self._current_position_id or self._next_stable_id("position")
-                trade_id = self._pending_trade_id or self._current_trade_id or self._next_stable_id("trade")
+                position_id = (
+                    self._pending_position_id
+                    or self._current_position_id
+                    or self._next_stable_id("position")
+                )
+                trade_id = (
+                    self._pending_trade_id
+                    or self._current_trade_id
+                    or self._next_stable_id("trade")
+                )
                 decision_id = self._pending_decision_id or self._last_decision_id
                 attempt_id = self._pending_attempt_id or self._last_attempt_id
 
@@ -1892,7 +2108,9 @@ class TradingEngine:
                     )
                     self._last_entry_fill_price = actual_entry_price
                     if self._pending_expected_fill_price is not None and actual_entry_price:
-                        self._last_fill_drift_ticks = round((actual_entry_price - self._pending_expected_fill_price) / 0.25, 4)
+                        self._last_fill_drift_ticks = round(
+                            (actual_entry_price - self._pending_expected_fill_price) / 0.25, 4
+                        )
                     else:
                         self._last_fill_drift_ticks = None
                     if self._pending_entry_submitted_at is not None:
@@ -2040,7 +2258,12 @@ class TradingEngine:
 
     def _refresh_dynamic_exit(self) -> None:
         """Update stop to breakeven/profit-lock/trailing when price moved in our favor; idempotent protection refresh."""
-        if self._mock_mode or self._last_position == 0 or self._stop_loss is None or self._last_entry_fill_price is None:
+        if (
+            self._mock_mode
+            or self._last_position == 0
+            or self._stop_loss is None
+            or self._last_entry_fill_price is None
+        ):
             return
         atr_value = self._calculate_current_atr()
         if atr_value is None or atr_value <= 0:
@@ -2073,7 +2296,11 @@ class TradingEngine:
                 self._record_event(
                     category="execution",
                     event_type="dynamic_exit_updated",
-                    payload={"stop_price": candidate, "protection_mode": self._protection_mode, "high_water": hw},
+                    payload={
+                        "stop_price": candidate,
+                        "protection_mode": self._protection_mode,
+                        "high_water": hw,
+                    },
                     event_time=self._current_event_time(),
                     action="refresh_protection",
                     reason="dynamic_exit",
@@ -2100,7 +2327,11 @@ class TradingEngine:
                 self._record_event(
                     category="execution",
                     event_type="dynamic_exit_updated",
-                    payload={"stop_price": candidate, "protection_mode": self._protection_mode, "low_water": lw},
+                    payload={
+                        "stop_price": candidate,
+                        "protection_mode": self._protection_mode,
+                        "low_water": lw,
+                    },
                     event_time=self._current_event_time(),
                     action="refresh_protection",
                     reason="dynamic_exit",
@@ -2113,14 +2344,24 @@ class TradingEngine:
         now = self._current_event_time()
         feed_stale = False
         if self._watchdog_state.last_feed_time is not None:
-            feed_stale = (now - self._watchdog_state.last_feed_time).total_seconds() >= self.config.watchdog.feed_stale_seconds
+            feed_stale = (
+                now - self._watchdog_state.last_feed_time
+            ).total_seconds() >= self.config.watchdog.feed_stale_seconds
 
         last_ack = self.executor.get_last_ack_time()
         broker_ack_stale = False
-        if last_ack is not None and self._last_position != 0 and not self.executor.is_protected(self.symbol):
-            broker_ack_stale = (now - last_ack).total_seconds() >= self.config.watchdog.broker_ack_stale_seconds
+        if (
+            last_ack is not None
+            and self._last_position != 0
+            and not self.executor.is_protected(self.symbol)
+        ):
+            broker_ack_stale = (
+                now - last_ack
+            ).total_seconds() >= self.config.watchdog.broker_ack_stale_seconds
 
-        protection_timeout = self.executor.protection_pending_too_long(self.symbol, now, self.config.watchdog.protection_ack_seconds)
+        protection_timeout = self.executor.protection_pending_too_long(
+            self.symbol, now, self.config.watchdog.protection_ack_seconds
+        )
 
         self._watchdog_state.feed_stale = feed_stale
         self._watchdog_state.broker_ack_stale = broker_ack_stale
@@ -2130,7 +2371,11 @@ class TradingEngine:
             self._record_event(
                 category="risk",
                 event_type="watchdog_triggered",
-                payload={"feed_stale": feed_stale, "broker_ack_stale": broker_ack_stale, "protection_timeout": protection_timeout},
+                payload={
+                    "feed_stale": feed_stale,
+                    "broker_ack_stale": broker_ack_stale,
+                    "protection_timeout": protection_timeout,
+                },
                 event_time=now,
                 action="watchdog",
                 reason="feed_stale",
@@ -2140,7 +2385,11 @@ class TradingEngine:
             self._record_event(
                 category="risk",
                 event_type="watchdog_triggered",
-                payload={"feed_stale": feed_stale, "broker_ack_stale": broker_ack_stale, "protection_timeout": protection_timeout},
+                payload={
+                    "feed_stale": feed_stale,
+                    "broker_ack_stale": broker_ack_stale,
+                    "protection_timeout": protection_timeout,
+                },
                 event_time=now,
                 action="watchdog",
                 reason="protection_ack_timeout",
@@ -2150,7 +2399,11 @@ class TradingEngine:
             self._record_event(
                 category="risk",
                 event_type="watchdog_triggered",
-                payload={"feed_stale": feed_stale, "broker_ack_stale": broker_ack_stale, "protection_timeout": protection_timeout},
+                payload={
+                    "feed_stale": feed_stale,
+                    "broker_ack_stale": broker_ack_stale,
+                    "protection_timeout": protection_timeout,
+                },
                 event_time=now,
                 action="watchdog",
                 reason="broker_ack_stale",
@@ -2168,7 +2421,11 @@ class TradingEngine:
         self._record_event(
             category="risk",
             event_type="fail_safe_activated",
-            payload={"reason": reason, "position": self._last_position, "protection_failures": self._protection_failure_count},
+            payload={
+                "reason": reason,
+                "position": self._last_position,
+                "protection_failures": self._protection_failure_count,
+            },
             event_time=self._current_event_time(),
             action="fail_safe",
             reason=reason,
@@ -2179,7 +2436,12 @@ class TradingEngine:
     def _calculate_current_atr(self) -> Optional[float]:
         if len(self._bars) < self.config.strategy.atr_length:
             return None
-        atr_series = atr(self._bars["high"], self._bars["low"], self._bars["close"], self.config.strategy.atr_length)
+        atr_series = atr(
+            self._bars["high"],
+            self._bars["low"],
+            self._bars["close"],
+            self.config.strategy.atr_length,
+        )
         atr_value = atr_series.iloc[-1]
         if pd.isna(atr_value):
             return None
@@ -2203,11 +2465,19 @@ class TradingEngine:
                 "decision_price": self._last_decision_price,
                 "unresolved_entry": self._unresolved_entry_snapshot(),
                 "active_zone": self._active_zone_name,
-                "active_regime": self._last_decision.feature_snapshot.regime_state if self._last_decision else None,
+                "active_regime": (
+                    self._last_decision.feature_snapshot.regime_state
+                    if self._last_decision
+                    else None
+                ),
                 "adoption_source": self._adoption_source,
                 "adopted_broker_position_at_startup": self._adopted_broker_position_at_startup,
                 "adopted_broker_orders_at_startup": self._adopted_broker_orders_at_startup,
-                "last_reconciliation_at": self._last_reconciliation_at.isoformat() if self._last_reconciliation_at else None,
+                "last_reconciliation_at": (
+                    self._last_reconciliation_at.isoformat()
+                    if self._last_reconciliation_at
+                    else None
+                ),
                 "last_reconciliation_reason": self._last_reconciliation_reason,
                 "position_entry_zone": self._position_entry_zone,
                 "launch_gate_enabled": self.config.strategy.launch_gate_enabled,
@@ -2253,8 +2523,16 @@ class TradingEngine:
             execution=execution_snapshot,
             broker_truth=self._broker_truth_snapshot,
             heartbeat={
-                "feed": self._watchdog_state.last_feed_time.isoformat() if self._watchdog_state.last_feed_time else None,
-                "broker_ack": self.executor.get_last_ack_time().isoformat() if self.executor.get_last_ack_time() else None,
+                "feed": (
+                    self._watchdog_state.last_feed_time.isoformat()
+                    if self._watchdog_state.last_feed_time
+                    else None
+                ),
+                "broker_ack": (
+                    self.executor.get_last_ack_time().isoformat()
+                    if self.executor.get_last_ack_time()
+                    else None
+                ),
                 "fail_safe_lockout": self._watchdog_state.fail_safe_lockout,
                 "fail_safe": self._watchdog_state.fail_safe_lockout,
                 "decisions_last_min": self._decision_events_since_heartbeat,
@@ -2265,7 +2543,9 @@ class TradingEngine:
                 "market_stream_error": self.client.get_last_stream_error(),
             },
         )
-        self.observability.record_state_snapshot(get_state().to_dict(), event_time=self._current_event_time())
+        self.observability.record_state_snapshot(
+            get_state().to_dict(), event_time=self._current_event_time()
+        )
 
     def _current_event_time(self) -> datetime:
         if self._latest_market_data is not None and self._latest_market_data.timestamp is not None:
@@ -2273,7 +2553,11 @@ class TradingEngine:
             return timestamp if timestamp.tzinfo else timestamp.replace(tzinfo=UTC)
         if not self._bars.empty:
             current_time = self._bars.index[-1]
-            return current_time.to_pydatetime() if hasattr(current_time, "to_pydatetime") else current_time
+            return (
+                current_time.to_pydatetime()
+                if hasattr(current_time, "to_pydatetime")
+                else current_time
+            )
         return datetime.now(UTC)
 
 

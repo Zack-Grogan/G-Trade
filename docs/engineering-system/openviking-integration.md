@@ -44,7 +44,7 @@ Documentation only; no secrets in repo. Each developer or CI that runs OpenVikin
 
 ### Using OpenRouter for embeddings
 
-Copy [ov.conf.example](global-cursor-pack/mcp/ov.conf.example) and set your OpenRouter settings:
+Copy [ov.conf.example](../archive/engineering-system-global-cursor-pack/mcp/ov.conf.example) and set your OpenRouter settings:
 
 ```json
 {
@@ -78,7 +78,7 @@ For full configuration examples and alternatives, see the [OpenViking quick star
 ### Server
 
 - **MCP over HTTP:** Run `openviking-server` (default port 1933). Point Cursor MCP at that URL. One server per workspace/data dir to avoid contention.
-- **MCP over stdio:** This repo uses `scripts/openviking_mcp_server.py` (stdio). Cursor MCP is preconfigured in `.cursor/mcp.json` with `OPENVIKING_CONFIG_FILE` and `OPENVIKING_DATA_PATH`. The library reads embedding/VLM config from `OPENVIKING_CONFIG_FILE`; ensure that path exists and contains your `ov.conf` (copy from `docs/engineering-system/global-cursor-pack/mcp/ov.conf.example` and add API keys). Create the workspace dir, e.g. `mkdir -p ~/.openviking/workspace`.
+- **MCP over stdio:** Use the upstream OpenViking MCP server setup from official docs. Cursor MCP can be configured with `OPENVIKING_CONFIG_FILE` and `OPENVIKING_DATA_PATH`; ensure your `ov.conf` exists (copy from `docs/archive/engineering-system-global-cursor-pack/mcp/ov.conf.example` and add API keys). Create the workspace dir, e.g. `mkdir -p ~/.openviking/workspace`.
 
 ---
 
@@ -92,7 +92,7 @@ For full configuration examples and alternatives, see the [OpenViking quick star
 
 ### First-time ingest (onboarding)
 
-1. **Prereqs:** Create `~/.openviking/ov.conf` (copy from [ov.conf.example](global-cursor-pack/mcp/ov.conf.example), add your API keys). Create workspace dir: `mkdir -p ~/.openviking/workspace`. Set `OPENVIKING_CONFIG_FILE` and optionally `OPENVIKING_DATA_PATH` if you use a different path.
+1. **Prereqs:** Create `~/.openviking/ov.conf` (copy from [ov.conf.example](../archive/engineering-system-global-cursor-pack/mcp/ov.conf.example), add your API keys). Create workspace dir: `mkdir -p ~/.openviking/workspace`. Set `OPENVIKING_CONFIG_FILE` and optionally `OPENVIKING_DATA_PATH` if you use a different path.
 2. **Run from G-Trade repo root** (workspace root where docs/ and scripts/ live): `python scripts/onboard_openviking.py`  
    The script runs `generate_docs_index.py`, then ingests `docs/` (authored + generated) and `AGENTS.md`, `README.md`. It prints the `viking://` root URIs for querying.
 3. **Refresh:** Run the same command after significant doc or structure changes, or after a merge. See "Refresh cadence" below.

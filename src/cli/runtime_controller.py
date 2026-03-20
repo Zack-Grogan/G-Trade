@@ -33,7 +33,11 @@ def resolve_config(config_path: Optional[str]) -> tuple[Any, str]:
     else:
         cfg = get_config()
     set_config(cfg)
-    resolved = str(Path(config_path).resolve()) if config_path else str(_project_root() / "config" / "default.yaml")
+    resolved = (
+        str(Path(config_path).resolve())
+        if config_path
+        else str(_project_root() / "config" / "default.yaml")
+    )
     return cfg, resolved
 
 
@@ -134,7 +138,9 @@ def persist_preferred_account_id(account_id: str) -> RuntimeActionResult:
     return RuntimeActionResult(True, f"Preferred account updated to {cleaned}.")
 
 
-def list_available_accounts(config_path: Optional[str] = None) -> tuple[list[dict[str, Any]], RuntimeActionResult]:
+def list_available_accounts(
+    config_path: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], RuntimeActionResult]:
     cfg, _ = resolve_config(config_path)
     _ = cfg
     client = get_client(force_recreate=True)
@@ -179,7 +185,9 @@ def launch_start_process(config_path: Optional[str] = None) -> RuntimeActionResu
         )
     except Exception as exc:
         return RuntimeActionResult(False, f"Failed to launch runtime: {exc}")
-    return RuntimeActionResult(True, f"Runtime launch requested (PID {proc.pid}).", active_pid=proc.pid)
+    return RuntimeActionResult(
+        True, f"Runtime launch requested (PID {proc.pid}).", active_pid=proc.pid
+    )
 
 
 def request_runtime_action(
@@ -226,7 +234,9 @@ def request_runtime_action(
             if not _pid_is_running(pid):
                 launched = launch_start_process(config_path)
                 if launched.ok:
-                    return RuntimeActionResult(True, f"Restarted runtime from PID {pid}.", active_pid=launched.active_pid)
+                    return RuntimeActionResult(
+                        True, f"Restarted runtime from PID {pid}.", active_pid=launched.active_pid
+                    )
                 return launched
             time.sleep(0.2)
         return RuntimeActionResult(False, f"Timed out restarting PID {pid}.", active_pid=pid)
@@ -319,9 +329,13 @@ def run_replay(path: str, config_path: Optional[str] = None) -> RuntimeActionRes
     if config_path:
         args.extend(["--config", resolved_config])
     try:
-        proc = subprocess.run(args, cwd=str(project_root), capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            args, cwd=str(project_root), capture_output=True, text=True, check=False
+        )
     except Exception as exc:
         return RuntimeActionResult(False, f"Replay failed to launch: {exc}")
     if proc.returncode != 0:
-        return RuntimeActionResult(False, proc.stderr.strip() or proc.stdout.strip() or "Replay failed.")
+        return RuntimeActionResult(
+            False, proc.stderr.strip() or proc.stdout.strip() or "Replay failed."
+        )
     return RuntimeActionResult(True, proc.stdout.strip() or "Replay completed.")

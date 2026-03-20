@@ -11,7 +11,6 @@ from typing import Any, Optional
 
 from src.config import Config
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 PACKAGE_NAME = "es-hotzone-trader"
 
@@ -25,7 +24,6 @@ def collect_run_provenance(
     data_mode: str,
     health_url: str,
     debug_url: str,
-    mcp_url: Optional[str],
 ) -> dict[str, Any]:
     resolved_config_path = _resolve_config_path(config_path)
     git_metadata = _read_git_metadata(PROJECT_ROOT)
@@ -42,7 +40,6 @@ def collect_run_provenance(
         "sqlite_path": str(sqlite_path),
         "health_url": health_url,
         "debug_url": debug_url,
-        "mcp_url": mcp_url,
         **git_metadata,
     }
 
@@ -57,7 +54,9 @@ def _resolve_config_path(config_path: Optional[str]) -> Optional[Path]:
 def _hash_config(config: Config, resolved_config_path: Optional[Path]) -> str:
     if resolved_config_path is not None and resolved_config_path.exists():
         return sha256(resolved_config_path.read_bytes()).hexdigest()
-    payload = json.dumps(_normalize_value(asdict(config)), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(
+        _normalize_value(asdict(config)), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
     return sha256(payload).hexdigest()
 
 

@@ -31,7 +31,6 @@ class LaunchReadinessTests(unittest.TestCase):
         self.config = load_config()
         self.config.observability.enabled = True
         self.config.observability.sqlite_path = str(Path(self._temp_dir.name) / "observability.db")
-        self.config.observability.railway_ingest_url = ""
         self.config.strategy.launch_gate_enabled = True
         self.config.strategy.live_entry_zones = ["Pre-Open"]
         self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
@@ -65,7 +64,10 @@ class LaunchReadinessTests(unittest.TestCase):
         remote_health = {"status": "healthy"}
 
         with patch("src.analysis.regime_packet.build_regime_packet", return_value=packet):
-            with patch("src.analysis.regime_packet.urlopen", side_effect=[_FakeResponse(remote_debug), _FakeResponse(remote_health)]):
+            with patch(
+                "src.analysis.regime_packet.urlopen",
+                side_effect=[_FakeResponse(remote_debug), _FakeResponse(remote_health)],
+            ):
                 readiness = build_launch_readiness(store=self.store, config=self.config)
 
         self.assertTrue(readiness["checks"]["runtime_reachable"])

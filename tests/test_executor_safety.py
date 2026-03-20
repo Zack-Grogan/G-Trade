@@ -64,9 +64,12 @@ class TestExecutorFailClosed(unittest.TestCase):
         config.order_execution.retry_attempts = 2
         config.order_execution.retry_delay_seconds = 0.0
         observability = _FakeObservability()
-        with patch("src.execution.executor.get_client", return_value=_FailingClient()), patch(
-            "src.execution.executor.get_observability_store",
-            return_value=observability,
+        with (
+            patch("src.execution.executor.get_client", return_value=_FailingClient()),
+            patch(
+                "src.execution.executor.get_observability_store",
+                return_value=observability,
+            ),
         ):
             executor = OrderExecutor(config=config)
         return executor, observability
@@ -83,7 +86,11 @@ class TestExecutorFailClosed(unittest.TestCase):
         )
 
         self.assertIsNone(order)
-        failure_events = [event for event in observability.events if event["event_type"] == "order_submission_failed"]
+        failure_events = [
+            event
+            for event in observability.events
+            if event["event_type"] == "order_submission_failed"
+        ]
         self.assertEqual(len(failure_events), 1)
         self.assertEqual(failure_events[0]["payload"]["error"], "submit transport failure")
 
@@ -104,19 +111,26 @@ class TestExecutorFailClosed(unittest.TestCase):
         cancelled = executor.cancel_order("ord-1")
 
         self.assertFalse(cancelled)
-        failure_events = [event for event in observability.events if event["event_type"] == "order_cancel_failed"]
+        failure_events = [
+            event for event in observability.events if event["event_type"] == "order_cancel_failed"
+        ]
         self.assertEqual(len(failure_events), 1)
         self.assertEqual(failure_events[0]["payload"]["error"], "cancel transport failure")
 
 
 class TestExecutorBrokerTruthReconciliation(unittest.TestCase):
-    def _make_executor(self, *, market_timestamp: datetime | None = None) -> tuple[OrderExecutor, _FakeObservability]:
+    def _make_executor(
+        self, *, market_timestamp: datetime | None = None
+    ) -> tuple[OrderExecutor, _FakeObservability]:
         config = load_config()
         observability = _FakeObservability()
         client = _LiveClient(market_timestamp=market_timestamp or datetime.now(UTC))
-        with patch("src.execution.executor.get_client", return_value=client), patch(
-            "src.execution.executor.get_observability_store",
-            return_value=observability,
+        with (
+            patch("src.execution.executor.get_client", return_value=client),
+            patch(
+                "src.execution.executor.get_observability_store",
+                return_value=observability,
+            ),
         ):
             executor = OrderExecutor(config=config)
         executor.reset_state(mock_mode=False)
@@ -179,4 +193,6 @@ class TestExecutorBrokerTruthReconciliation(unittest.TestCase):
 
         self.assertEqual(result["adopted_order_ids"], ["broker-open-1"])
         self.assertTrue(executor.has_active_entry_order("ES"))
-        self.assertIn("broker-open-1", executor.get_watchdog_snapshot("ES")["active_entry_order_ids"])
+        self.assertIn(
+            "broker-open-1", executor.get_watchdog_snapshot("ES")["active_entry_order_ids"]
+        )
