@@ -132,3 +132,29 @@ Use at most two subagents at a time.
 
 - Nested repo import record: [`docs/archive/repository-imports-2026-03-19.md`](docs/archive/repository-imports-2026-03-19.md)
 - Railway retirement notes: [`docs/archive/railway-sunset/README.md`](docs/archive/railway-sunset/README.md)
+
+## Cursor Cloud specific instructions
+
+### Environment
+
+- Python 3.12+ is available. No version manager is needed.
+- `pip install -e ".[dev]"` installs the package in editable mode with all dev dependencies (pytest, ruff, black, pytest-asyncio, pytest-cov).
+- The `es-trade` CLI, `pytest`, `ruff`, and `black` are installed to `~/.local/bin`. This directory must be on `PATH` (added to `~/.bashrc` during setup).
+- No Docker, Node.js, or external databases are required. SQLite is built into Python.
+- No `.env` file or Topstep credentials are needed to run tests — the test suite uses mocks.
+
+### Running services
+
+- **Flask console**: `python3 -c "from src.server import create_app; app = create_app(); app.run(host='127.0.0.1', port=31381)"` — serves the operator dashboard on port 31381. Health endpoint: `GET /health`. The full `es-trade start` command also starts the Flask console but requires Topstep credentials for the engine.
+- **CLI**: `es-trade --help` for all commands. `es-trade config`, `es-trade status`, `es-trade health`, `es-trade debug` work without credentials. Commands that connect to Topstep (`start`, `replay`) require `EMAIL` and `TOPSTEP_API_KEY` in a `.env` file.
+
+### Testing & linting
+
+- Standard commands are in the "Testing contract" section above: `pytest`, `ruff check .`, `black .`
+- The codebase has pre-existing lint findings (unused imports, formatting). These are not regressions.
+- `asyncio_mode = "auto"` is set in `pyproject.toml`, so async tests run without extra markers.
+
+### Gotchas
+
+- The `launchd` service commands (`es-trade service ...`) are macOS-only and will not work in Linux cloud VMs.
+- The `logs/` directory is auto-created by the application when needed; do not rely on it existing beforehand.
