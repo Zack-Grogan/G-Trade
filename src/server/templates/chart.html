@@ -1,17 +1,14 @@
 {% extends "base.html" %}
 
 {% block head %}
-  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
 {% endblock %}
 
 {% block content %}
-  <section class="chart-header-strip">
+  <section class="chart-header-strip chart-header-strip-compact">
     <div class="strip-stat"><span>Symbol</span><strong>{{ model.symbol }}</strong></div>
-    <div class="strip-stat"><span>Zone</span><strong>{{ model.summary.zone }}</strong></div>
     <div class="strip-stat"><span>Price</span><strong>{{ model.levels.last_price|number }}</strong></div>
-    <div class="strip-stat"><span>Long</span><strong>{{ model.summary.long_score|number }}</strong></div>
-    <div class="strip-stat"><span>Short</span><strong>{{ model.summary.short_score|number }}</strong></div>
-    <div class="strip-stat"><span>Flat</span><strong>{{ model.summary.flat_bias|number }}</strong></div>
+    <div class="strip-stat"><span>Zone</span><strong>{{ model.summary.zone }}</strong></div>
   </section>
 
   <section class="chart-layout chart-layout-stacked">
@@ -38,6 +35,7 @@
     <article class="panel">
       <div class="panel-head">
         <h2>Broker fills</h2>
+        <a class="panel-link" href="/trades">Open all</a>
       </div>
       <div class="stack compact-stack">
         {% for trade in model.recent_trades %}

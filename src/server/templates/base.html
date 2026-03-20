@@ -9,18 +9,16 @@
   </head>
   <body class="app-shell">
     <header class="topbar">
-      <h1>{{ title }}</h1>
       <div class="topbar-meta">
         <span class="badge badge-neutral" id="topbar-status">{{ state.status }}</span>
         <span class="badge" id="topbar-zone">{{ state.zone.name or 'inactive' }}</span>
       </div>
+      <nav class="nav">
+        {% for page in pages %}
+          <a class="nav-link{% if page.active %} is-active{% endif %}" href="{{ page.href }}">{{ page.label }}</a>
+        {% endfor %}
+      </nav>
     </header>
-
-    <nav class="nav">
-      {% for page in pages %}
-        <a class="nav-link{% if page.active %} is-active{% endif %}" href="{{ page.href }}">{{ page.label }}</a>
-      {% endfor %}
-    </nav>
 
     <main class="page">
       {% block content %}{% endblock %}

@@ -439,7 +439,7 @@ def _run_bridge_loop(outbox: RailwayOutbox, ingest_url: str, api_key: str, inter
             bridge_health = {
                 "run_id": run_id,
                 "bridge_status": "running",
-                "queue_depth": None,
+                "queue_depth": outbox.get_queue_stats().get("total"),
                 "last_flush_at": None,
                 "last_success_at": None,
                 "last_error": None,

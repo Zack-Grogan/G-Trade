@@ -245,11 +245,11 @@ class ObservabilityStore:
                 "sequence": payload.get("sequence"),
                 "payload_json": self._json_dumps(payload),
             }
-            self._queue.put_nowait(record)
+            self._queue.put(record, timeout=1.0)
         except queue.Full:
             self._dropped_events += 1
             if self._dropped_events in {1, 10, 100} or self._dropped_events % 1000 == 0:
-                logger.warning("Observability queue full; dropped %s records", self._dropped_events)
+                logger.warning("Observability queue full after 1s block; dropped %s records", self._dropped_events)
         except Exception:
             self._failed = True
             logger.exception("Failed to record market tick")
