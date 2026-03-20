@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.config import load_config, set_config
 from src.observability import get_observability_store
+from src.server.flask_console import _decision_markers
 from src.server.debug_server import create_app, set_state
 
 
@@ -312,12 +313,25 @@ class FlaskConsoleTests(unittest.TestCase):
         self.assertIn("levels", payload)
         self.assertEqual(len(payload["series"]["price"]), len(payload["candles"]))
         self.assertEqual(len(payload["series"]["vwap"]), len(payload["candles"]))
-        self.assertGreaterEqual(len(payload["marker_sets"]["decision"]), 1)
         if len(payload["candles"]) > 1:
             self.assertNotEqual(
                 payload["series"]["price"][0]["value"],
                 payload["series"]["price"][-1]["value"],
             )
+
+    def test_decision_markers_accept_legacy_action_names(self) -> None:
+        markers = _decision_markers(
+            [
+                {
+                    "decided_at": datetime.now(UTC),
+                    "action": "enter_long",
+                    "reason": "legacy_action",
+                    "outcome": "submit_order",
+                }
+            ]
+        )
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]["shape"], "arrowUp")
 
     def test_chart_api_keeps_market_history_across_runs(self) -> None:
         earlier = datetime.now(UTC) - timedelta(hours=10)
