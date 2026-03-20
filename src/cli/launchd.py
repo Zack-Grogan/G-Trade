@@ -123,8 +123,19 @@ def start_launch_agent() -> LaunchdResult:
     if not path.exists():
         return LaunchdResult(False, f"Launchd agent plist missing at {path}. Install it first.")
     bootstrap = _run_launchctl("bootstrap", f"gui/{os.getuid()}", str(path))
-    if bootstrap.returncode not in {0} and "service already loaded" not in (bootstrap.stderr or "").lower():
-        return LaunchdResult(False, bootstrap.stderr.strip() or bootstrap.stdout.strip() or "launchctl bootstrap failed")
+    if bootstrap.returncode not in {0}:
+        bootstrap_error = (bootstrap.stderr or bootstrap.stdout or "").strip()
+        bootstrap_error_lower = bootstrap_error.lower()
+        already_loaded = "service already loaded" in bootstrap_error_lower
+        if not already_loaded:
+            # On some macOS builds launchctl may return bootstrap I/O errors
+            # while the service is already loaded in this GUI domain.
+            loaded = bool(launch_agent_status().get("loaded"))
+            if not loaded:
+                return LaunchdResult(
+                    False,
+                    bootstrap_error or "launchctl bootstrap failed",
+                )
     kickstart = _run_launchctl("kickstart", "-k", launchctl_target())
     if kickstart.returncode != 0:
         return LaunchdResult(False, kickstart.stderr.strip() or kickstart.stdout.strip() or "launchctl kickstart failed")

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import requests
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -245,6 +246,42 @@ def _pid_is_running(pid: int) -> bool:
     return True
 
 
+def _pid_command(pid: int) -> str:
+    if pid <= 0:
+        return ""
+    try:
+        completed = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        logger.warning("Failed to inspect command for pid=%s", pid, exc_info=True)
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return (completed.stdout or "").strip()
+
+
+def _pid_is_trader_process(pid: int) -> bool:
+    command = _pid_command(pid).lower()
+    if not command:
+        return False
+    return any(
+        token in command
+        for token in (
+            "src.cli start",
+            "src.cli.commands start",
+            "es-hotzone-trader",
+        )
+    )
+
+
+def _pid_is_active_trader(pid: int) -> bool:
+    return _pid_is_running(pid) and _pid_is_trader_process(pid)
+
+
 def _read_pid_file(path: Path) -> Optional[int]:
     if not path.exists():
         return None
@@ -401,9 +438,16 @@ def _set_lifecycle_state(**updates: Any) -> dict[str, Any]:
 def _ensure_runtime_is_not_active(cfg, *, log_path: Path) -> None:
     paths = _runtime_control_paths(cfg, log_path)
     active_pid = _read_pid_file(paths["pid_file"])
-    if active_pid is not None and _pid_is_running(active_pid):
-        raise click.ClickException(f"ES Hot-Zone Trader is already running with PID {active_pid}.")
     if active_pid is not None:
+        if _pid_is_active_trader(active_pid):
+            raise click.ClickException(
+                f"ES Hot-Zone Trader is already running with PID {active_pid}."
+            )
+        if _pid_is_running(active_pid):
+            logger.warning(
+                "Removing stale trader pid file for pid=%s (process is not ES Hot-Zone Trader)",
+                active_pid,
+            )
         _remove_file_if_exists(paths["pid_file"])
 
 
@@ -453,8 +497,14 @@ def _request_runtime_action(
     runtime_status = _read_runtime_status(cfg, log_path)
     request = _build_lifecycle_request(action=action, reason=reason, source=request_source)
     _write_lifecycle_request(cfg, request, log_path)
-    if active_pid is None or not _pid_is_running(active_pid):
+    if active_pid is None or not _pid_is_running(active_pid) or not _pid_is_trader_process(active_pid):
         if active_pid is not None:
+            if _pid_is_running(active_pid) and not _pid_is_trader_process(active_pid):
+                logger.warning(
+                    "Ignoring stale runtime pid=%s for %s request (process is not ES Hot-Zone Trader)",
+                    active_pid,
+                    action,
+                )
             _remove_file_if_exists(paths["pid_file"])
         if runtime_status and runtime_status.get("running"):
             _mark_runtime_inactive(
@@ -471,7 +521,7 @@ def _request_runtime_action(
     os.kill(active_pid, signal.SIGTERM)
     deadline = time.time() + max(timeout_seconds, 1)
     while time.time() < deadline:
-        if not _pid_is_running(active_pid):
+        if not _pid_is_active_trader(active_pid):
             return active_pid, runtime_status, request
         time.sleep(0.25)
 
@@ -1051,6 +1101,17 @@ def start(config: Optional[str]):
     try:
         engine.start()
         started_engine = True
+        # Re-record run manifest now that engine has populated account info
+        if getattr(cfg.observability, "capture_run_provenance", True):
+            debug_state = _fetch_remote_debug_state(cfg) or {}
+            account_payload = debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
+            if account_payload:
+                observability.record_run_manifest({
+                    "run_id": observability.get_run_id(),
+                    "account_id": account_payload.get("id"),
+                    "account_name": account_payload.get("name"),
+                    "account_is_practice": account_payload.get("is_practice"),
+                })
     except Exception as exc:
         logger.exception("Engine startup failed")
         _record_system_event(

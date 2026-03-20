@@ -1,4 +1,5 @@
 """Local Flask operator console for the trader runtime."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from flask import Flask, Response, abort, jsonify, render_template, stream_with_context
+from flask import Flask, Response, abort, jsonify, render_template, request, stream_with_context
 from werkzeug.serving import make_server
 
 from src.config import Config, ServerConfig, get_config
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
+CHART_DEFAULT_LOOKBACK_HOURS = 48
+CHART_MIN_LOOKBACK_HOURS = 1
+CHART_MAX_LOOKBACK_HOURS = 24 * 14
 NOISE_LOGGERS = {"werkzeug"}
 NOISE_LOG_FRAGMENTS = (
     ' "GET / HTTP/1.1"',
@@ -33,6 +37,176 @@ NOISE_LOG_FRAGMENTS = (
     ' "GET /static/',
     ' "GET /favicon',
 )
+
+# Registry of typed notification cards.
+# Each entry maps a log message prefix to a display config.
+# Fields per entry:
+#   type        — short singular name used as CSS class suffix
+#   label       — display name shown in card header
+#   icon        — SVG path name (keys in SVG_ICON_PATHS below)
+#   summary     — human-readable one-liner (None = derive from fields)
+#   fields      — ordered list of field specs:
+#     key       — raw token name from the log (e.g. "decisions_last_min")
+#     label     — short human label (e.g. "dec/min")
+#     unit      — optional suffix rendered after the value
+#     color     — optional CSS var name for value color ("good", "danger", "warn", "accent")
+#     fmt       — optional format hint: "price" (2dp), "bool" (Yes/No), "int"
+NOTIFICATION_TYPES: dict[str, dict[str, Any]] = {
+    "runtime_heartbeat": {
+        "type": "runtime_heartbeat",
+        "label": "Heartbeat",
+        "icon": "activity",
+        "summary": None,
+        "fields": [
+            {"key": "mode", "label": "mode", "color": "accent"},
+            {"key": "zone", "label": "zone", "color": "accent"},
+            {"key": "position", "label": "pos", "fmt": "int"},
+            {"key": "last_price", "label": "price", "fmt": "price"},
+            {"key": "decisions_last_min", "label": "dec/min", "fmt": "int"},
+            {"key": "fail_safe", "label": "fail-safe", "fmt": "bool"},
+        ],
+    },
+    "market_stream_heartbeat": {
+        "type": "market_heartbeat",
+        "label": "Market",
+        "icon": "trending-up",
+        "summary": None,
+        "fields": [
+            {"key": "symbol", "label": "symbol", "color": "accent"},
+            {"key": "quotes", "label": "quotes", "fmt": "int"},
+            {"key": "last_price", "label": "price", "fmt": "price"},
+        ],
+    },
+    "broker_order_cancelled": {
+        "type": "broker_order",
+        "label": "Order Cancelled",
+        "icon": "arrow-up-right",
+        "summary": "Order {order_id} cancelled",
+        "fields": [
+            {"key": "order_id", "label": "order"},
+        ],
+    },
+    "broker_order_cancel_failed": {
+        "type": "broker_order",
+        "label": "Cancel Failed",
+        "icon": "arrow-up-right",
+        "summary": "Cancel failed for {order_id}",
+        "fields": [
+            {"key": "order_id", "label": "order"},
+            {"key": "error", "label": "error"},
+        ],
+    },
+    "Position opened": {
+        "type": "position_open",
+        "label": "Position",
+        "icon": "plus-circle",
+        "summary": "{direction} {contracts} @ {entry_price}",
+        "fields": [
+            {"key": "contracts", "label": "contracts", "fmt": "int"},
+            {"key": "direction", "label": "dir"},
+            {"key": "entry_price", "label": "price", "fmt": "price"},
+        ],
+    },
+    "Trade blocked by risk manager": {
+        "type": "blocked",
+        "label": "Blocked",
+        "icon": "lock",
+        "summary": "{reason}",
+        "fields": [
+            {"key": "reason", "label": "reason"},
+        ],
+    },
+    "Entry skipped because": {
+        "type": "skipped",
+        "label": "Skipped",
+        "icon": "minus-circle",
+        "summary": "{reason}",
+        "fields": [
+            {"key": "reason", "label": "reason"},
+        ],
+    },
+    "Fail-safe lockout activated": {
+        "type": "failsafe",
+        "label": "Fail-Safe",
+        "icon": "alert-triangle",
+        "summary": "{reason}",
+        "fields": [
+            {"key": "reason", "label": "reason"},
+        ],
+    },
+    "Flatten requested": {
+        "type": "flatten",
+        "label": "Flatten",
+        "icon": "x-circle",
+        "summary": "Flatten: {reason}",
+        "fields": [
+            {"key": "reason", "label": "reason"},
+        ],
+    },
+    "Loss recorded": {
+        "type": "loss",
+        "label": "Loss",
+        "icon": "trending-down",
+        "summary": "Consecutive losses: {consecutive_losses}",
+        "fields": [
+            {"key": "consecutive_losses", "label": "streak", "fmt": "int"},
+        ],
+    },
+    "Daily loss limit": {
+        "type": "daily_limit",
+        "label": "Daily Limit",
+        "icon": "shield-alert",
+        "summary": "Daily loss limit hit: ${loss}",
+        "fields": [
+            {"key": "loss", "label": "loss", "fmt": "price"},
+        ],
+    },
+    "Consecutive loss limit": {
+        "type": "consecutive_loss",
+        "label": "Consecutive Loss",
+        "icon": "shield-alert",
+        "summary": "Consecutive loss limit hit",
+        "fields": [
+            {"key": "consecutive_losses", "label": "streak", "fmt": "int"},
+        ],
+    },
+    "Daily counters reset": {
+        "type": "risk",
+        "label": "Risk",
+        "icon": "shield",
+        "summary": "Daily counters reset",
+        "fields": [],
+    },
+    "Risk state reduced": {
+        "type": "risk",
+        "label": "Risk",
+        "icon": "shield",
+        "summary": "Risk state reduced",
+        "fields": [],
+    },
+    "Risk state reset": {
+        "type": "risk",
+        "label": "Risk",
+        "icon": "shield",
+        "summary": "Risk state reset to normal",
+        "fields": [],
+    },
+}
+
+SVG_ICON_PATHS: dict[str, str] = {
+    "activity": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>',
+    "trending-up": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg>',
+    "arrow-up-right": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"></line><polyline points="7 7 17 7 17 17"></polyline></svg>',
+    "plus-circle": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>',
+    "lock": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>',
+    "minus-circle": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="8" y1="12" x2="16" y2="12"></line></svg>',
+    "alert-triangle": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>',
+    "x-circle": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>',
+    "trending-down": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline><polyline points="17 18 23 18 23 12"></polyline></svg>',
+    "shield-alert": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>',
+    "shield": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>',
+    "briefcase": '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>',
+}
 
 
 class TradingState:
@@ -239,7 +413,9 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def _pacific_calendar_day_bounds_utc(reference: Optional[datetime] = None) -> tuple[datetime, datetime]:
+def _pacific_calendar_day_bounds_utc(
+    reference: Optional[datetime] = None,
+) -> tuple[datetime, datetime]:
     """UTC [start, end] inclusive for the America/Los_Angeles calendar day containing `reference`.
 
     Matches :func:`_format_datetime` / console.js Pacific formatting so "today" is the operator's
@@ -478,7 +654,116 @@ def _compact_log_source(logger_name: Any, source: Any) -> str:
     return text.replace("-", " ").title() if text else "Runtime"
 
 
+def _parse_log_type(message: str) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+    """Match a log message against NOTIFICATION_TYPES prefixes. Returns (type_key, schema) or (None, None)."""
+    for prefix, schema in NOTIFICATION_TYPES.items():
+        if message.startswith(prefix):
+            return prefix, schema
+    return None, None
+
+
+def _parse_tokens(text: str) -> dict[str, str]:
+    """Parse all key=value tokens from a log message into a flat dict."""
+    tokens: dict[str, str] = {}
+    for token in text.split():
+        if "=" in token:
+            k, _, v = token.partition("=")
+            tokens[k.strip()] = v.strip()
+    return tokens
+
+
+def _format_chip_value(value: str) -> str:
+    """Strip common prefixes, replace underscores with spaces, and title-case for chip display."""
+    prefixes = ("blackout_", "matrix_", "failsafe_", "risk_", "zone_")
+    for prefix in prefixes:
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    return value.replace("_", " ").title()
+
+
+def _fmt_value(value: str, fmt: str | None) -> str:
+    """Format a raw token value according to its format hint."""
+    if fmt == "bool":
+        return "Yes" if value.lower() in ("true", "1") else "No"
+    if fmt == "price":
+        try:
+            return f"{float(value):.2f}"
+        except (ValueError, TypeError):
+            return value
+    if fmt == "int":
+        try:
+            return str(int(float(value)))
+        except (ValueError, TypeError):
+            return value
+    return value
+
+
+def _token_color(raw_key: str, value: str, schema_color: str | None) -> str:
+    """Determine CSS color class for a field based on its actual value, overriding schema defaults."""
+    if raw_key == "direction":
+        if value in ("long", "Long"):
+            return "good"
+        if value in ("short", "Short"):
+            return "danger"
+    if raw_key == "fail_safe":
+        if value in ("True", "true", "1"):
+            return "danger"
+        return ""
+    if raw_key == "position":
+        try:
+            pos = int(float(value))
+            if pos > 0:
+                return "good"
+            if pos < 0:
+                return "danger"
+            return ""
+        except (ValueError, TypeError):
+            return ""
+    return schema_color or ""
+
+
+def _build_display_fields(schema: dict[str, Any], tokens: dict[str, str]) -> list[dict[str, str]]:
+    """Build the ordered list of display-field dicts for a matched notification type."""
+    fields_spec = schema.get("fields") or []
+    display_fields: list[dict[str, str]] = []
+    for spec in fields_spec:
+        raw_key = spec.get("key") or ""
+        value = tokens.get(raw_key)
+        if value is None:
+            continue
+        fmt = spec.get("fmt")
+        unit = spec.get("unit", "")
+        display_fields.append(
+            {
+                "label": spec.get("label", raw_key),
+                "value": _fmt_value(_format_chip_value(value), fmt) + unit,
+                "color": _token_color(raw_key, value, schema_color=spec.get("color")),
+            }
+        )
+    return display_fields
+
+
+def _build_summary(schema: dict[str, Any], tokens: dict[str, str]) -> str:
+    """Build the human-readable summary line for a notification card."""
+    template = schema.get("summary")
+    if template:
+        try:
+            return template.format(**tokens)
+        except KeyError:
+            pass
+    # Fallback: derive summary from the first few fields
+    fields = schema.get("fields") or []
+    parts = []
+    for spec in fields[:3]:
+        key = spec.get("key") or ""
+        value = tokens.get(key)
+        if value is not None:
+            parts.append(_fmt_value(value, spec.get("fmt")))
+    return " · ".join(parts) if parts else ""
+
+
 def _compact_log_message(message: Any) -> str:
+    """Legacy fallback: produce a plain-text one-liner from a log message."""
     text = str(message or "").strip()
     if not text:
         return "-"
@@ -503,10 +788,90 @@ def _compact_log_message(message: Any) -> str:
         text = text.replace("startup_summary ", "", 1)
         keep = []
         for token in text.split():
-            if token.startswith(("capital=", "max_contracts=", "trade_outside_hotzones=", "matrix_version=", "log_file=")):
+            if token.startswith(
+                (
+                    "capital=",
+                    "max_contracts=",
+                    "trade_outside_hotzones=",
+                    "matrix_version=",
+                )
+            ):
                 keep.append(token.replace("=", " "))
         return "Startup summary: " + " · ".join(keep)
+    # For typed notifications, return empty — card handles the summary
+    notif_type, _ = _parse_log_type(text)
+    if notif_type:
+        return ""
     return text
+
+
+def _render_notification_card(item: dict[str, Any]) -> str:
+    """Build the HTML string for a typed notification card."""
+    schema = item.get("notif_schema") or {}
+    notif_type = item.get("notif_type", "")  # already set to schema["type"]
+    icon = item.get("notif_icon", "")
+    summary = item.get("notif_summary", "")
+    display_fields = item.get("display_fields", [])
+
+    # Build field chips
+    chips_html = ""
+    if display_fields:
+        chips = []
+        for f in display_fields:
+            color_cls = f"is-{f['color']}" if f.get("color") else ""
+            chips.append(
+                f'<span class="chip {color_cls}">'
+                f'<span class="chip-label">{f["label"]}</span>'
+                f'<span class="chip-sep">&nbsp;</span>'
+                f'<span class="chip-val">{f["value"]}</span>'
+                f"</span>"
+            )
+        chips_html = '<div class="notif-fields">' + "".join(chips) + "</div>"
+
+    card_class = f"notif notif-{notif_type}" if notif_type else "notif"
+    icon_html = f'<span class="notif-icon">{icon}</span>' if icon else ""
+    label = schema.get("label", notif_type.title()) if notif_type else ""
+
+    return (
+        f'<div class="{card_class}">'
+        f"{icon_html}"
+        f'<div class="notif-body">'
+        f'<div class="notif-label">{label}</div>'
+        f'<div class="notif-summary">{summary}</div>'
+        f"{chips_html}"
+        f"</div>"
+        f"</div>"
+    )
+
+
+def _render_log_item(item: dict[str, Any]) -> str:
+    """Build the complete HTML string for a single log stack-item."""
+    timestamp = item.get("logged_at", "")
+    level = item.get("level", "INFO")
+    source = item.get("display_source") or item.get("logger_name") or item.get("source") or ""
+    header = f'<div class="stack-title">{_format_datetime(timestamp)}</div><div class="stack-subtle">{level} · {source}</div>'
+
+    notif_type = item.get("notif_type", "")
+    if notif_type:
+        card_html = _render_notification_card(item)
+        return f'<div class="stack-item">{header}{card_html}</div>'
+
+    # Legacy display
+    display_message = item.get("display_message") or item.get("message") or ""
+    fields_html = ""
+    display_fields = item.get("display_fields")
+    if display_fields and isinstance(display_fields, list):
+        rows = []
+        for f in display_fields:
+            rows.append(f"<dt>{f.get('label', '')}</dt><dd>{f.get('value', '')}</dd>")
+        fields_html = '<dl class="display-fields">' + "".join(rows) + "</dl>"
+    elif display_fields and isinstance(display_fields, dict):
+        rows = []
+        for k, v in display_fields.items():
+            rows.append(f"<dt>{k}</dt><dd>{v}</dd>")
+        fields_html = '<dl class="display-fields">' + "".join(rows) + "</dl>"
+
+    return f'<div class="stack-item">{header}<div>{display_message}</div>{fields_html}</div>'
 
 
 def _render_operator_logs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -515,12 +880,37 @@ def _render_operator_logs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         item = dict(row)
         item["display_source"] = _compact_log_source(row.get("logger_name"), row.get("source"))
-        item["display_message"] = _compact_log_message(row.get("message"))
-        key = (
-            str(item.get("level") or ""),
-            str(item.get("display_source") or ""),
-            str(item.get("display_message") or ""),
-        )
+        raw_message = str(row.get("message") or "")
+        item["display_message"] = _compact_log_message(raw_message)
+
+        # Try to match a typed notification
+        notif_type, schema = _parse_log_type(raw_message)
+        if notif_type:
+            tokens = _parse_tokens(raw_message)
+            css_type = schema.get("type", notif_type)
+            item["notif_type"] = css_type
+            item["notif_schema"] = schema
+            item["notif_icon"] = SVG_ICON_PATHS.get(schema.get("icon", ""), "")
+            item["notif_summary"] = _build_summary(schema, tokens)
+            item["display_fields"] = _build_display_fields(schema, tokens)
+            item["card_html"] = _render_notification_card(item)
+            key = (str(item.get("level") or ""), str(item.get("display_source") or ""), css_type)
+        else:
+            # Legacy: display_fields as plain key→value (backwards compat)
+            if "=" in raw_message:
+                legacy_fields: list[dict[str, str]] = []
+                for token in raw_message.split():
+                    if "=" in token:
+                        k, _, v = token.partition("=")
+                        legacy_fields.append({"label": k.strip(), "value": v.strip(), "color": ""})
+                if legacy_fields:
+                    item["display_fields"] = legacy_fields
+            key = (
+                str(item.get("level") or ""),
+                str(item.get("display_source") or ""),
+                str(item.get("display_message") or ""),
+            )
+
         if key in seen:
             continue
         seen.add(key)
@@ -555,6 +945,207 @@ def _constant_series(candles: list[dict[str, Any]], value: Optional[float]) -> l
     return [{"time": candle["time"], "value": value} for candle in candles]
 
 
+def _resolve_chart_lookback_hours(value: Any) -> int:
+    parsed = _coerce_int(value)
+    if parsed is None:
+        return CHART_DEFAULT_LOOKBACK_HOURS
+    return max(CHART_MIN_LOOKBACK_HOURS, min(parsed, CHART_MAX_LOOKBACK_HOURS))
+
+
+def _chart_market_limit(lookback_hours: int) -> int:
+    # Heuristic cap for tick query volume while allowing longer chart windows.
+    return max(25000, min(200000, lookback_hours * 7000))
+
+
+def _bucket_minute_epoch(value: Any) -> Optional[int]:
+    dt = _parse_dt(value)
+    if dt is None:
+        return None
+    return int(dt.timestamp() // 60) * 60
+
+
+def _compact_marker_text(prefix: str, detail: Any, max_len: int = 20) -> str:
+    text = str(detail or "").replace("_", " ").strip()
+    if len(text) > max_len:
+        text = text[: max_len - 3].rstrip() + "..."
+    return f"{prefix} {text}".strip()
+
+
+def _decision_score_series(decisions: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    buckets: dict[int, float] = {}
+    for row in decisions:
+        bucket = _bucket_minute_epoch(row.get("decided_at"))
+        value = _coerce_float(row.get(key))
+        if bucket is None or value is None:
+            continue
+        buckets[bucket] = value
+    return [{"time": ts, "value": buckets[ts]} for ts in sorted(buckets)]
+
+
+def _decision_markers(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    for row in decisions:
+        bucket = _bucket_minute_epoch(row.get("decided_at"))
+        if bucket is None:
+            continue
+        action = str(row.get("action") or "").upper()
+        outcome = str(row.get("outcome") or "").lower()
+        reason = row.get("reason") or row.get("outcome_reason") or ""
+        if action == "LONG":
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "belowBar",
+                    "color": "#22c55e",
+                    "shape": "arrowUp",
+                    "text": _compact_marker_text("L", reason),
+                }
+            )
+        elif action == "SHORT":
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "aboveBar",
+                    "color": "#ef4444",
+                    "shape": "arrowDown",
+                    "text": _compact_marker_text("S", reason),
+                }
+            )
+        elif action in {"EXIT", "FLAT"} or outcome in {"flatten_request", "flatten_submitted"}:
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "inBar",
+                    "color": "#f59e0b",
+                    "shape": "square",
+                    "text": _compact_marker_text("Flat", reason),
+                }
+            )
+        elif outcome in {"entry_blocked", "entry_skipped", "entry_rejected"}:
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "inBar",
+                    "color": "#94a3b8",
+                    "shape": "circle",
+                    "text": _compact_marker_text("Block", reason),
+                }
+            )
+    return markers
+
+
+def _execution_markers(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    for row in rows:
+        bucket = _bucket_minute_epoch(row.get("observed_at"))
+        if bucket is None:
+            continue
+        status = str(row.get("status") or "").lower()
+        event_type = str(row.get("event_type") or "").lower()
+        role = str(row.get("role") or "").lower()
+        side = _order_side_label(row.get("side")).lower()
+        reason = row.get("reason") or role or event_type or status
+
+        is_fill = "fill" in status or "fill" in event_type
+        is_flatten = role == "flatten" or "flatten" in event_type
+        is_protective = bool(row.get("is_protective")) or role in {"stop_loss", "take_profit"}
+        is_submitted = "submit" in event_type or status in {"new", "submitted", "working", "open"}
+
+        if is_fill:
+            is_buy = side == "buy"
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "belowBar" if is_buy else "aboveBar",
+                    "color": "#22c55e" if is_buy else "#ef4444",
+                    "shape": "circle",
+                    "text": _compact_marker_text("Fill", reason),
+                }
+            )
+        elif is_flatten:
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "inBar",
+                    "color": "#f59e0b",
+                    "shape": "square",
+                    "text": _compact_marker_text("Flatten", reason),
+                }
+            )
+        elif is_protective:
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "inBar",
+                    "color": "#64748b",
+                    "shape": "square",
+                    "text": _compact_marker_text("Protect", reason),
+                }
+            )
+        elif is_submitted:
+            markers.append(
+                {
+                    "time": bucket,
+                    "position": "inBar",
+                    "color": "#38bdf8",
+                    "shape": "circle",
+                    "text": _compact_marker_text("Order", reason),
+                }
+            )
+    return markers
+
+
+def _clip_markers_to_candle_window(
+    markers: list[dict[str, Any]], candles: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if not candles:
+        return markers
+    first_candle_time = candles[0].get("time", 0)
+    last_candle_time = candles[-1].get("time", 0)
+    return [
+        marker
+        for marker in markers
+        if first_candle_time <= (marker.get("time", 0) or 0) <= last_candle_time
+    ]
+
+
+def _dedupe_markers(markers: list[dict[str, Any]], max_per_bucket: int = 5) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    per_bucket: dict[int, int] = {}
+    for marker in sorted(markers, key=lambda item: item.get("time", 0) or 0):
+        marker_time = int(marker.get("time", 0) or 0)
+        key = (
+            marker_time,
+            marker.get("shape"),
+            marker.get("position"),
+            marker.get("text"),
+            marker.get("color"),
+        )
+        if key in seen:
+            continue
+        if per_bucket.get(marker_time, 0) >= max_per_bucket:
+            continue
+        seen.add(key)
+        per_bucket[marker_time] = per_bucket.get(marker_time, 0) + 1
+        deduped.append(marker)
+    return deduped
+
+
+def _clip_series_to_candle_window(
+    series: list[dict[str, Any]], candles: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    if not candles:
+        return series
+    first_candle_time = candles[0].get("time", 0)
+    last_candle_time = candles[-1].get("time", 0)
+    return [
+        point
+        for point in series
+        if first_candle_time <= (point.get("time", 0) or 0) <= last_candle_time
+    ]
+
+
 def _recent_market_rows(
     store,
     *,
@@ -572,12 +1163,22 @@ def _recent_market_rows(
         start_time=start_time,
     )
     if run_id and len(rows) < 200:
-        rows = store.query_market_tape(
+        fallback_rows = store.query_market_tape(
             limit=limit,
             ascending=False,
             symbol=symbol,
             start_time=start_time,
         )
+        if len(fallback_rows) > len(rows) * 2:
+            logger.warning(
+                "Market tape has only %d rows for run_id=%s in %dh window; "
+                "including %d rows from other runs",
+                len(rows),
+                run_id,
+                hours,
+                len(fallback_rows),
+            )
+            rows = fallback_rows
     return rows
 
 
@@ -613,10 +1214,15 @@ def _series_price(row: dict[str, Any]) -> Optional[float]:
     return None
 
 
-def _build_candles(market_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_candles(
+    market_rows: list[dict[str, Any]], *, max_candles: int = 500
+) -> list[dict[str, Any]]:
     buckets: dict[int, dict[str, Any]] = {}
     for row in market_rows:
         timestamp = _parse_dt(row.get("captured_at"))
+        latency_ms = _coerce_int(row.get("latency_ms"))
+        if timestamp is not None and latency_ms is not None and 0 < latency_ms < 5000:
+            timestamp = timestamp - timedelta(milliseconds=latency_ms)
         price = _series_price(row)
         if timestamp is None or price is None:
             continue
@@ -632,16 +1238,18 @@ def _build_candles(market_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "volume": 0,
             },
         )
-        if "open" not in candle:
-            candle["open"] = price
         candle["high"] = max(candle["high"], price)
         candle["low"] = min(candle["low"], price)
         candle["close"] = price
         volume = _coerce_int(row.get("volume"))
+        is_cumulative = bool(row.get("volume_is_cumulative"))
         if volume is not None:
-            candle["volume"] += volume
+            if is_cumulative:
+                candle["volume"] = volume
+            else:
+                candle["volume"] += volume
     candles = [buckets[key] for key in sorted(buckets)]
-    return candles[-500:]
+    return candles[-max(max_candles, 1) :]
 
 
 def _trade_marker_direction(direction: Any) -> str:
@@ -661,9 +1269,10 @@ def _trade_markers(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry_price = _coerce_float(trade.get("entry_price"))
         exit_price = _coerce_float(trade.get("exit_price"))
         if entry_time is not None and entry_price is not None and direction is not None:
+            bucket_time = (entry_time // 60) * 60
             markers.append(
                 {
-                    "time": entry_time,
+                    "time": bucket_time,
                     "position": "belowBar" if direction > 0 else "aboveBar",
                     "color": "#16a34a" if direction > 0 else "#dc2626",
                     "shape": "arrowUp" if direction > 0 else "arrowDown",
@@ -671,9 +1280,10 @@ def _trade_markers(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
         if exit_time is not None and exit_price is not None:
+            bucket_time = (exit_time // 60) * 60
             markers.append(
                 {
-                    "time": exit_time,
+                    "time": bucket_time,
                     "position": "aboveBar" if direction and direction > 0 else "belowBar",
                     "color": "#94a3b8",
                     "shape": "circle",
@@ -693,9 +1303,10 @@ def _account_trade_markers(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         side = str(trade.get("side_label") or trade.get("side") or "").lower()
         is_long = side in {"long", "buy"}
         pnl = _coerce_float(trade.get("profit_and_loss")) or 0.0
+        bucket_time = (trade_time // 60) * 60
         markers.append(
             {
-                "time": trade_time,
+                "time": bucket_time,
                 "position": "belowBar" if is_long else "aboveBar",
                 "color": "#16a34a" if pnl >= 0 else "#dc2626",
                 "shape": "circle",
@@ -747,7 +1358,9 @@ def _trade_summary_from_account_trades(rows: list[dict[str, Any]]) -> dict[str, 
     realized = [row for row in rows if _coerce_float(row.get("profit_and_loss")) is not None]
     net_pnl = sum(_coerce_float(row.get("profit_and_loss")) or 0.0 for row in realized)
     win_count = sum(1 for row in realized if (_coerce_float(row.get("profit_and_loss")) or 0.0) > 0)
-    loss_count = sum(1 for row in realized if (_coerce_float(row.get("profit_and_loss")) or 0.0) < 0)
+    loss_count = sum(
+        1 for row in realized if (_coerce_float(row.get("profit_and_loss")) or 0.0) < 0
+    )
     return {
         "count": len(realized),
         "net_pnl": net_pnl,
@@ -762,7 +1375,11 @@ def _compress_account_trade_ledger(rows: list[dict[str, Any]]) -> list[dict[str,
         item = dict(row)
         dt = _parse_dt(item.get("occurred_at"))
         cluster_key = (
-            dt.astimezone(PACIFIC_TZ).strftime("%Y-%m-%d %H:%M:%S") if dt else str(item.get("occurred_at") or ""),
+            (
+                dt.astimezone(PACIFIC_TZ).strftime("%Y-%m-%d %H:%M:%S")
+                if dt
+                else str(item.get("occurred_at") or "")
+            ),
             str(item.get("side_label") or ""),
             _coerce_float(item.get("price")),
             item.get("profit_and_loss") is not None,
@@ -770,15 +1387,24 @@ def _compress_account_trade_ledger(rows: list[dict[str, Any]]) -> list[dict[str,
         if compressed and compressed[-1].get("_cluster_key") == cluster_key:
             previous = compressed[-1]
             previous["fill_count"] = (_coerce_int(previous.get("fill_count")) or 1) + 1
-            previous["size"] = (_coerce_int(previous.get("size")) or 0) + (_coerce_int(item.get("size")) or 0)
-            if previous.get("profit_and_loss") is not None or item.get("profit_and_loss") is not None:
-                previous["profit_and_loss"] = (_coerce_float(previous.get("profit_and_loss")) or 0.0) + (_coerce_float(item.get("profit_and_loss")) or 0.0)
+            previous["size"] = (_coerce_int(previous.get("size")) or 0) + (
+                _coerce_int(item.get("size")) or 0
+            )
+            if (
+                previous.get("profit_and_loss") is not None
+                or item.get("profit_and_loss") is not None
+            ):
+                previous["profit_and_loss"] = (
+                    _coerce_float(previous.get("profit_and_loss")) or 0.0
+                ) + (_coerce_float(item.get("profit_and_loss")) or 0.0)
             broker_ids = list(previous.get("broker_trade_ids") or [previous.get("broker_trade_id")])
             broker_ids.append(item.get("broker_trade_id"))
             previous["broker_trade_ids"] = [value for value in broker_ids if value]
             continue
         item["fill_count"] = 1
-        item["broker_trade_ids"] = [item.get("broker_trade_id")] if item.get("broker_trade_id") else []
+        item["broker_trade_ids"] = (
+            [item.get("broker_trade_id")] if item.get("broker_trade_id") else []
+        )
         item["_cluster_key"] = cluster_key
         compressed.append(item)
     for item in compressed:
@@ -930,21 +1556,39 @@ def _latest_run_bundle(store) -> dict[str, Any]:
 
 def _build_console_model(state: TradingState, store) -> dict[str, Any]:
     run_id = _latest_run_id(store, state)
-    recent_trades = _canonical_completed_trades(store.query_completed_trades(limit=8, ascending=False))
-    recent_account_trades = _canonical_account_trades(store.query_account_trades(limit=8, ascending=False))
-    recent_logs = _render_operator_logs(_filter_operator_logs(store.query_runtime_logs(limit=80, ascending=False)))[:12]
+    recent_trades = _canonical_completed_trades(
+        store.query_completed_trades(limit=8, ascending=False)
+    )
+    recent_account_trades = _canonical_account_trades(
+        store.query_account_trades(limit=8, ascending=False)
+    )
+    recent_logs = _render_operator_logs(
+        _filter_operator_logs(store.query_runtime_logs(limit=80, ascending=False))
+    )[:5]
     recent_events = store.query_events(limit=12, ascending=False, run_id=run_id)
     recent_orders = store.query_order_lifecycle(limit=8, ascending=False, run_id=run_id)
     latest_run = _latest_run_bundle(store)
-    latest_trade = recent_account_trades[0] if recent_account_trades else (recent_trades[0] if recent_trades else None)
+    latest_trade = (
+        recent_account_trades[0]
+        if recent_account_trades
+        else (recent_trades[0] if recent_trades else None)
+    )
     broker_truth = state.broker_truth if isinstance(state.broker_truth, dict) else {}
-    current_truth = broker_truth.get("current") if isinstance(broker_truth.get("current"), dict) else {}
-    broker_position = current_truth.get("position") if isinstance(current_truth, dict) and isinstance(current_truth.get("position"), dict) else {}
+    current_truth = (
+        broker_truth.get("current") if isinstance(broker_truth.get("current"), dict) else {}
+    )
+    broker_position = (
+        current_truth.get("position")
+        if isinstance(current_truth, dict) and isinstance(current_truth.get("position"), dict)
+        else {}
+    )
     broker_position_qty = _coerce_int(broker_position.get("quantity")) or 0
     broker_order_count = _coerce_int(current_truth.get("open_order_count")) or 0
     if broker_position_qty:
         broker_truth_status = "position_open"
-        broker_truth_summary = f"{_direction_label(broker_position_qty)} {abs(broker_position_qty)} on broker"
+        broker_truth_summary = (
+            f"{_direction_label(broker_position_qty)} {abs(broker_position_qty)} on broker"
+        )
     elif broker_order_count:
         broker_truth_status = "working_orders"
         broker_truth_summary = f"{broker_order_count} open broker order(s)"
@@ -979,30 +1623,85 @@ def _build_console_model(state: TradingState, store) -> dict[str, Any]:
     }
 
 
-def _build_chart_model(state: TradingState, store) -> dict[str, Any]:
+def _build_chart_model(
+    state: TradingState,
+    store,
+    *,
+    lookback_hours: int = CHART_DEFAULT_LOOKBACK_HOURS,
+) -> dict[str, Any]:
+    lookback_hours = _resolve_chart_lookback_hours(lookback_hours)
     run_id = _latest_run_id(store, state)
-    market_rows = _recent_market_rows(store, run_id=run_id, symbol=None, hours=8, limit=25000)
-    candles = _build_candles(market_rows)
+    market_rows = _recent_market_rows(
+        store,
+        run_id=run_id,
+        symbol=None,
+        hours=lookback_hours,
+        limit=_chart_market_limit(lookback_hours),
+    )
+    max_candles = min(5000, max(500, (lookback_hours * 60) + 120))
+    candles = _build_candles(market_rows, max_candles=max_candles)
     if not candles:
         current = _coerce_float(state.last_price)
         now_time = int(_utcnow().timestamp())
         if current is not None:
-            candles = [{"time": now_time, "open": current, "high": current, "low": current, "close": current, "volume": 0}]
-    completed_trades = _canonical_completed_trades(store.query_completed_trades(
-        limit=50,
-        ascending=False,
+            candles = [
+                {
+                    "time": now_time,
+                    "open": current,
+                    "high": current,
+                    "low": current,
+                    "close": current,
+                    "volume": 0,
+                }
+            ]
+    window_start = _utcnow() - timedelta(hours=lookback_hours)
+    decision_limit = max(500, lookback_hours * 120)
+    decisions = store.query_decision_snapshots(
+        limit=decision_limit,
+        ascending=True,
         run_id=run_id,
-    ))
-    account_trades = _canonical_account_trades(store.query_account_trades(limit=50, ascending=False, run_id=run_id))
-    if len(account_trades) < 3:
-        account_trades = _canonical_account_trades(store.query_account_trades(limit=50, ascending=False))
-    markers = _trade_markers(list(reversed(completed_trades))) + _account_trade_markers(list(reversed(account_trades)))
+        start_time=window_start,
+        end_time=_utcnow(),
+    )
+    order_rows = store.query_order_lifecycle(
+        limit=decision_limit,
+        ascending=True,
+        run_id=run_id,
+        start_time=window_start,
+        end_time=_utcnow(),
+    )
+    completed_trades = _canonical_completed_trades(
+        store.query_completed_trades(
+            limit=50,
+            ascending=False,
+            run_id=run_id,
+        )
+    )
+    account_trades = _canonical_account_trades(
+        store.query_account_trades(limit=50, ascending=False, run_id=run_id)
+    )
+    trade_markers = _trade_markers(list(reversed(completed_trades))) + _account_trade_markers(
+        list(reversed(account_trades))
+    )
+    decision_markers = _decision_markers(decisions)
+    execution_markers = _execution_markers(order_rows)
+    markers = _dedupe_markers(
+        _clip_markers_to_candle_window(
+            trade_markers + decision_markers + execution_markers, candles
+        )
+    )
+
     session_context = state.to_dict().get("session_context", {})
-    anchored_vwaps = session_context.get("anchored_vwaps") if isinstance(session_context, dict) else {}
+    anchored_vwaps = (
+        session_context.get("anchored_vwaps") if isinstance(session_context, dict) else {}
+    )
     vwap_bands = session_context.get("vwap_bands") if isinstance(session_context, dict) else {}
     session_vwap = _first_numeric(anchored_vwaps, ["vwap", "session", "eth", "rth"])
-    upper_band = _first_numeric(vwap_bands, ["upper", "high"])
-    lower_band = _first_numeric(vwap_bands, ["lower", "low"])
+    rth_sigma = _first_numeric(vwap_bands, ["rth_sigma"])
+    eth_sigma = _first_numeric(vwap_bands, ["eth_sigma"])
+    sigma = rth_sigma if rth_sigma is not None else eth_sigma
+    upper_band = (session_vwap + sigma) if session_vwap is not None and sigma is not None else None
+    lower_band = (session_vwap - sigma) if session_vwap is not None and sigma is not None else None
     last_price = _coerce_float(state.last_price)
     if last_price is None and candles:
         last_price = _coerce_float(candles[-1].get("close"))
@@ -1010,6 +1709,15 @@ def _build_chart_model(state: TradingState, store) -> dict[str, Any]:
     vwap_series = _constant_series(candles, session_vwap)
     upper_series = _constant_series(candles, upper_band)
     lower_series = _constant_series(candles, lower_band)
+    alpha_long_series = _clip_series_to_candle_window(
+        _decision_score_series(decisions, "long_score"), candles
+    )
+    alpha_short_series = _clip_series_to_candle_window(
+        _decision_score_series(decisions, "short_score"), candles
+    )
+    alpha_flat_series = _clip_series_to_candle_window(
+        _decision_score_series(decisions, "flat_bias"), candles
+    )
     indicators = {
         "long_score": state.long_score,
         "short_score": state.short_score,
@@ -1020,6 +1728,7 @@ def _build_chart_model(state: TradingState, store) -> dict[str, Any]:
         "regime": state.regime,
         "order_flow": state.order_flow,
         "broker_truth": state.broker_truth,
+        "lookback_hours": lookback_hours,
     }
     return {
         "run_id": run_id,
@@ -1030,8 +1739,16 @@ def _build_chart_model(state: TradingState, store) -> dict[str, Any]:
             "vwap": vwap_series,
             "upper_band": upper_series,
             "lower_band": lower_series,
+            "alpha_long": alpha_long_series,
+            "alpha_short": alpha_short_series,
+            "alpha_flat": alpha_flat_series,
         },
         "markers": markers,
+        "marker_sets": {
+            "trade": _clip_markers_to_candle_window(trade_markers, candles),
+            "decision": _clip_markers_to_candle_window(decision_markers, candles),
+            "execution": _clip_markers_to_candle_window(execution_markers, candles),
+        },
         "summary": {
             "status": state.effective_status(),
             "zone": _zone_label({"name": state.current_zone, "state": state.zone_state}),
@@ -1041,6 +1758,7 @@ def _build_chart_model(state: TradingState, store) -> dict[str, Any]:
             "short_score": state.short_score,
             "flat_bias": state.flat_bias,
             "last_price": state.last_price,
+            "lookback_hours": lookback_hours,
         },
         "indicators": indicators,
         "levels": {
@@ -1049,13 +1767,22 @@ def _build_chart_model(state: TradingState, store) -> dict[str, Any]:
             "lower_band": lower_band,
             "last_price": last_price,
         },
-        "recent_trades": account_trades[:10],
+        "chart_window": {
+            "lookback_hours": lookback_hours,
+            "window_start": window_start.isoformat(),
+            "window_end": _utcnow().isoformat(),
+        },
+        "recent_trades": account_trades[:5],
     }
 
 
 def _build_trades_model(state: TradingState, store) -> dict[str, Any]:
-    completed_trades = _canonical_completed_trades(store.query_completed_trades(limit=150, ascending=False))
-    account_trades = _canonical_account_trades(store.query_account_trades(limit=150, ascending=False))
+    completed_trades = _canonical_completed_trades(
+        store.query_completed_trades(limit=150, ascending=False)
+    )
+    account_trades = _canonical_account_trades(
+        store.query_account_trades(limit=150, ascending=False)
+    )
     ledger_account_trades = _compress_account_trade_ledger(account_trades)
     recent_runs = store.query_run_manifests(limit=12)
     account_summary = _trade_summary_from_account_trades(account_trades)
@@ -1078,7 +1805,9 @@ def _build_trades_model(state: TradingState, store) -> dict[str, Any]:
 
 def _resolve_trade_reference(store, ref: str) -> dict[str, Any]:
     ref_text = str(ref).strip()
-    completed = _canonical_completed_trades(store.query_completed_trades(limit=1000, ascending=False))
+    completed = _canonical_completed_trades(
+        store.query_completed_trades(limit=1000, ascending=False)
+    )
     for row in completed:
         candidates = {
             str(row.get("id")),
@@ -1090,7 +1819,9 @@ def _resolve_trade_reference(store, ref: str) -> dict[str, Any]:
         }
         if ref_text in candidates:
             return {"kind": "completed_trade", "row": row}
-    account_trades = _canonical_account_trades(store.query_account_trades(limit=1000, ascending=False))
+    account_trades = _canonical_account_trades(
+        store.query_account_trades(limit=1000, ascending=False)
+    )
     for row in account_trades:
         candidates = {
             str(row.get("id")),
@@ -1164,23 +1895,41 @@ def _build_trade_detail_model(state: TradingState, store, ref: str) -> dict[str,
         events=events,
         snapshots=snapshots,
     )
-    summary_source = trade if kind == "completed_trade" else {
-        "direction": trade.get("side") if trade.get("side") is not None else trade.get("size"),
-        "entry_time": trade.get("occurred_at"),
-        "exit_time": trade.get("occurred_at"),
-        "entry_price": trade.get("price"),
-        "exit_price": trade.get("price"),
-    }
+    summary_source = (
+        trade
+        if kind == "completed_trade"
+        else {
+            "direction": trade.get("side") if trade.get("side") is not None else trade.get("size"),
+            "entry_time": trade.get("occurred_at"),
+            "exit_time": trade.get("occurred_at"),
+            "entry_price": trade.get("price"),
+            "exit_price": trade.get("price"),
+        }
+    )
     summary = _trade_summary(summary_source, market_rows)
     display = {
-        "entry_time": _format_datetime(trade.get("entry_time") if kind == "completed_trade" else trade.get("occurred_at")),
-        "exit_time": _format_datetime(trade.get("exit_time") if kind == "completed_trade" else trade.get("occurred_at")),
-        "entry_price": _format_number(trade.get("entry_price") if kind == "completed_trade" else trade.get("price")),
-        "exit_price": _format_number(trade.get("exit_price") if kind == "completed_trade" else trade.get("price")),
-        "pnl": _format_money(trade.get("pnl") if kind == "completed_trade" else trade.get("profit_and_loss")),
+        "entry_time": _format_datetime(
+            trade.get("entry_time") if kind == "completed_trade" else trade.get("occurred_at")
+        ),
+        "exit_time": _format_datetime(
+            trade.get("exit_time") if kind == "completed_trade" else trade.get("occurred_at")
+        ),
+        "entry_price": _format_number(
+            trade.get("entry_price") if kind == "completed_trade" else trade.get("price")
+        ),
+        "exit_price": _format_number(
+            trade.get("exit_price") if kind == "completed_trade" else trade.get("price")
+        ),
+        "pnl": _format_money(
+            trade.get("pnl") if kind == "completed_trade" else trade.get("profit_and_loss")
+        ),
     }
-    related_completed = _canonical_completed_trades(store.query_completed_trades(limit=12, ascending=False, run_id=run_id))
-    related_account = _canonical_account_trades(store.query_account_trades(limit=12, ascending=False, run_id=run_id))
+    related_completed = _canonical_completed_trades(
+        store.query_completed_trades(limit=12, ascending=False, run_id=run_id)
+    )
+    related_account = _canonical_account_trades(
+        store.query_account_trades(limit=12, ascending=False, run_id=run_id)
+    )
     return {
         "not_found": False,
         "kind": kind,
@@ -1203,7 +1952,9 @@ def _build_trade_detail_model(state: TradingState, store, ref: str) -> dict[str,
 
 def _build_logs_model(state: TradingState, store) -> dict[str, Any]:
     run_id = _latest_run_id(store, state)
-    logs = _render_operator_logs(_filter_operator_logs(store.query_runtime_logs(limit=400, ascending=False, run_id=run_id)))[:200]
+    logs = _render_operator_logs(
+        _filter_operator_logs(store.query_runtime_logs(limit=400, ascending=False, run_id=run_id))
+    )[:200]
     events = store.query_events(limit=100, ascending=False, run_id=run_id)
     orders = store.query_order_lifecycle(limit=100, ascending=False, run_id=run_id)
     return {
@@ -1235,12 +1986,18 @@ def _build_system_model(state: TradingState, store) -> dict[str, Any]:
             "run_count": len(recent_runs),
             "bridge_health_count": len(bridge_health),
             "log_count": len(recent_logs),
-            "observability_enabled": bool(getattr(store.settings, "enabled", False)) if hasattr(store, "settings") else False,
+            "observability_enabled": (
+                bool(getattr(store.settings, "enabled", False))
+                if hasattr(store, "settings")
+                else False
+            ),
         },
     }
 
 
-def _page_context(title: str, active_page: str, state: TradingState, **extra: Any) -> dict[str, Any]:
+def _page_context(
+    title: str, active_page: str, state: TradingState, **extra: Any
+) -> dict[str, Any]:
     cfg = get_config()
     pages = [
         {"href": "/", "label": "Console", "active": active_page == "console"},
@@ -1303,17 +2060,27 @@ def create_app(config: Optional[Config] = None) -> Flask:
     @app.get("/")
     def console() -> str:
         model = _build_console_model(get_state(), _current_store())
-        return render_template("console.html", **_page_context("Console", "console", get_state(), model=_json_safe(model)))
+        return render_template(
+            "console.html",
+            **_page_context("Console", "console", get_state(), model=_json_safe(model)),
+        )
 
     @app.get("/chart")
     def chart() -> str:
-        model = _build_chart_model(get_state(), _current_store())
-        return render_template("chart.html", **_page_context("Chart", "chart", get_state(), model=_json_safe(model)))
+        lookback_hours = _resolve_chart_lookback_hours(
+            request.args.get("lookback_hours") or request.args.get("hours")
+        )
+        model = _build_chart_model(get_state(), _current_store(), lookback_hours=lookback_hours)
+        return render_template(
+            "chart.html", **_page_context("Chart", "chart", get_state(), model=_json_safe(model))
+        )
 
     @app.get("/trades")
     def trades() -> str:
         model = _build_trades_model(get_state(), _current_store())
-        return render_template("trades.html", **_page_context("Trades", "trades", get_state(), model=_json_safe(model)))
+        return render_template(
+            "trades.html", **_page_context("Trades", "trades", get_state(), model=_json_safe(model))
+        )
 
     @app.get("/trades/<ref>")
     def trade_detail(ref: str) -> str:
@@ -1328,12 +2095,16 @@ def create_app(config: Optional[Config] = None) -> Flask:
     @app.get("/logs")
     def logs() -> str:
         model = _build_logs_model(get_state(), _current_store())
-        return render_template("logs.html", **_page_context("Logs", "logs", get_state(), model=_json_safe(model)))
+        return render_template(
+            "logs.html", **_page_context("Logs", "logs", get_state(), model=_json_safe(model))
+        )
 
     @app.get("/system")
     def system() -> str:
         model = _build_system_model(get_state(), _current_store())
-        return render_template("system.html", **_page_context("System", "system", get_state(), model=_json_safe(model)))
+        return render_template(
+            "system.html", **_page_context("System", "system", get_state(), model=_json_safe(model))
+        )
 
     @app.get("/api/state")
     def api_state() -> Response:
@@ -1341,7 +2112,16 @@ def create_app(config: Optional[Config] = None) -> Flask:
 
     @app.get("/api/chart")
     def api_chart() -> Response:
-        return jsonify(_json_safe(_build_chart_model(get_state(), _current_store())))
+        lookback_hours = _resolve_chart_lookback_hours(
+            request.args.get("lookback_hours") or request.args.get("hours")
+        )
+        return jsonify(
+            _json_safe(
+                _build_chart_model(
+                    get_state(), _current_store(), lookback_hours=lookback_hours
+                )
+            )
+        )
 
     @app.get("/api/trades")
     def api_trades() -> Response:
@@ -1388,11 +2168,22 @@ def create_app(config: Optional[Config] = None) -> Flask:
 
     @app.get("/stream/chart")
     def stream_chart() -> Response:
-        return _sse_response("chart", lambda: _build_chart_model(get_state(), _current_store()), interval_seconds=2.0)
+        lookback_hours = _resolve_chart_lookback_hours(
+            request.args.get("lookback_hours") or request.args.get("hours")
+        )
+        return _sse_response(
+            "chart",
+            lambda: _build_chart_model(
+                get_state(), _current_store(), lookback_hours=lookback_hours
+            ),
+            interval_seconds=2.0,
+        )
 
     @app.get("/stream/logs")
     def stream_logs() -> Response:
-        return _sse_response("logs", lambda: _build_logs_model(get_state(), _current_store()), interval_seconds=2.0)
+        return _sse_response(
+            "logs", lambda: _build_logs_model(get_state(), _current_store()), interval_seconds=2.0
+        )
 
     return app
 

@@ -1,21 +1,31 @@
 {% extends "base.html" %}
 
 {% block head %}
-  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@5.1.0/dist/lightweight-charts.standalone.production.js"></script>
 {% endblock %}
 
 {% block content %}
   <section class="chart-header-strip">
     <div class="strip-stat"><span>Symbol</span><strong>{{ model.symbol }}</strong></div>
-    <div class="strip-stat"><span>Zone</span><strong>{{ model.summary.zone }}</strong></div>
+    <div class="strip-stat"><span>Status</span><strong id="chart-status">{{ model.summary.status }}</strong></div>
+    <div class="strip-stat"><span>Zone</span><strong id="chart-zone">{{ model.summary.zone }}</strong></div>
     <div class="strip-stat"><span>Price</span><strong>{{ model.levels.last_price|number }}</strong></div>
-    <div class="strip-stat"><span>Long</span><strong>{{ model.summary.long_score|number }}</strong></div>
-    <div class="strip-stat"><span>Short</span><strong>{{ model.summary.short_score|number }}</strong></div>
-    <div class="strip-stat"><span>Flat</span><strong>{{ model.summary.flat_bias|number }}</strong></div>
+    <div class="strip-stat"><span>Position</span><strong id="chart-position">{{ model.summary.position }}</strong></div>
+    <div class="strip-stat"><span>Long</span><strong id="chart-long-score">{{ model.summary.long_score|number }}</strong></div>
+    <div class="strip-stat"><span>Short</span><strong id="chart-short-score">{{ model.summary.short_score|number }}</strong></div>
+    <div class="strip-stat"><span>Flat</span><strong id="chart-flat-bias">{{ model.summary.flat_bias|number }}</strong></div>
   </section>
 
   <section class="chart-layout chart-layout-stacked">
     <article class="panel chart-panel">
+      <div class="chart-legend" aria-label="Chart indicators">
+        <span class="chart-chip chart-chip-long">Alpha Long</span>
+        <span class="chart-chip chart-chip-short">Alpha Short</span>
+        <span class="chart-chip chart-chip-flat">Alpha Flat</span>
+        <span class="chart-chip">Lookback {{ model.summary.lookback_hours|integer }}h</span>
+        <span class="chart-chip">Decision markers {{ model.marker_sets.decision|length if model.marker_sets else 0 }}</span>
+        <span class="chart-chip">Execution markers {{ model.marker_sets.execution|length if model.marker_sets else 0 }}</span>
+      </div>
       <div id="chart" class="chart-canvas" aria-label="Price chart"></div>
     </article>
   </section>
@@ -31,6 +41,7 @@
         <div><dt>Lower band</dt><dd>{{ model.levels.lower_band|number }}</dd></div>
         <div><dt>Position</dt><dd>{{ model.summary.position }}</dd></div>
         <div><dt>Status</dt><dd>{{ model.summary.status }}</dd></div>
+        <div><dt>Lookback</dt><dd>{{ model.summary.lookback_hours|integer }}h</dd></div>
         <div><dt>Daily P&amp;L</dt><dd class="{{ 'pos' if (model.summary.daily_pnl or 0) >= 0 else 'neg' }}">{{ model.summary.daily_pnl|money }}</dd></div>
       </div>
     </article>
@@ -38,6 +49,7 @@
     <article class="panel">
       <div class="panel-head">
         <h2>Broker fills</h2>
+        <a class="panel-link" href="/trades">Open all</a>
       </div>
       <div class="stack compact-stack">
         {% for trade in model.recent_trades %}
@@ -59,5 +71,13 @@
 {% block scripts %}
   <script>
     window.GTradeConsole.initChart("chart", JSON.parse(document.getElementById("page-data").textContent));
+    window.GTradeConsole.initStateStream("/stream/state", {
+      status: "#chart-status",
+      zone: "#chart-zone",
+      position: "#chart-position",
+      longScore: "#chart-long-score",
+      shortScore: "#chart-short-score",
+      flatBias: "#chart-flat-bias",
+    });
   </script>
 {% endblock %}
