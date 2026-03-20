@@ -149,7 +149,12 @@ class TopstepClient:
         self._on_market_data: Optional[Callable] = None
         self._on_order_update: Optional[Callable] = None
         self._on_position_update: Optional[Callable] = None
+
+        # Stream diagnostics
         self._agent_debug_quote_count: int = 0
+        self._partial_quote_count: int = 0  # Quotes with some fields missing
+        self._rejected_quote_count: int = 0  # Quotes with no valid fields
+        self._trade_count: int = 0  # GatewayTrade messages processed
 
         # Persistent user-hub listener (orders/positions/trades)
         self._user_hub_ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -2188,32 +2193,45 @@ class TopstepClient:
             symbol_name = str(payload.get("symbolName", payload.get("symbol", "ES")) or "ES")
             root_symbol = self._normalize_symbol(symbol_name or payload.get("symbol", "ES"))
 
-            # Extract price fields - fall back to previous quote for missing sides
+            # Extract incoming price fields (may be partial/sparse)
             bid_raw = payload.get("bestBid", payload.get("bid"))
             ask_raw = payload.get("bestAsk", payload.get("ask"))
             last_raw = payload.get("lastPrice", payload.get("last"))
 
-            bid = float(bid_raw) if bid_raw is not None else 0.0
-            ask = float(ask_raw) if ask_raw is not None else 0.0
-            last = float(last_raw) if last_raw is not None else 0.0
+            incoming_bid = float(bid_raw) if bid_raw is not None else None
+            incoming_ask = float(ask_raw) if ask_raw is not None else None
+            incoming_last = float(last_raw) if last_raw is not None else None
 
-            # Get previous quote to fill in missing sides (Topstep sends one-sided updates)
+            # Track if this is a partial update
+            has_partial = (
+                incoming_bid is None or incoming_bid == 0.0
+                or incoming_ask is None or incoming_ask == 0.0
+            )
+
+            # Get cached state - never let 0.0 overwrite valid values
             prior = self._lookup_market_snapshot(contract_id) or self._lookup_market_snapshot(root_symbol)
-            if prior is not None:
-                if bid == 0.0 and prior.bid != 0.0:
-                    bid = prior.bid
-                if ask == 0.0 and prior.ask != 0.0:
-                    ask = prior.ask
-                if last == 0.0 and prior.last != 0.0:
-                    last = prior.last
+            cached_bid = prior.bid if prior else 0.0
+            cached_ask = prior.ask if prior else 0.0
+            cached_last = prior.last if prior else 0.0
 
-            # Only reject if we have absolutely no price information
-            if bid == 0.0 and ask == 0.0 and last == 0.0:
+            # Update only from positive values, preserve cached state otherwise
+            bid = incoming_bid if incoming_bid and incoming_bid > 0.0 else cached_bid
+            ask = incoming_ask if incoming_ask and incoming_ask > 0.0 else cached_ask
+            # Note: last from quote is NOT authoritative - GatewayTrade is
+            # But we'll accept it if positive (for BBO snapshot scenarios)
+            last = cached_last  # Preserve trade-derived last price
+
+            # Reject if no valid information at all
+            if bid == 0.0 and ask == 0.0:
+                self._rejected_quote_count += 1
                 logger.debug(
-                    "Skipping empty GatewayQuote for %s: bid=%s ask=%s last=%s",
-                    root_symbol, bid_raw, ask_raw, last_raw,
+                    "Rejecting empty GatewayQuote for %s: bid=%s ask=%s (cached: bid=%.2f ask=%.2f)",
+                    root_symbol, bid_raw, ask_raw, cached_bid, cached_ask,
                 )
                 return
+
+            if has_partial:
+                self._partial_quote_count += 1
 
             quote = MarketData(
                 symbol=root_symbol,
@@ -2255,31 +2273,41 @@ class TopstepClient:
                 }
             )
 
+            # Stream ready requires both bid and ask valid (BBO established)
             if not self._stream_ready.is_set():
-                self._stream_error = None
-                self._stream_ready.set()
-                logger.info(
-                    "Received first live quote for %s at %s", root_symbol, quote.last or quote.mid
-                )
-                self._record_event(
-                    category="market",
-                    event_type="first_live_quote",
-                    payload={"price": quote.last or quote.mid, "contract_id": contract_id},
-                    event_time=quote.timestamp,
-                    symbol=root_symbol,
-                    action="receive_quote",
-                    reason="stream_ready",
-                )
+                if bid > 0.0 and ask > 0.0:
+                    self._stream_error = None
+                    self._stream_ready.set()
+                    logger.info(
+                        "Received valid BBO for %s: bid=%.2f ask=%.2f mid=%.2f",
+                        root_symbol, bid, ask, (bid + ask) / 2
+                    )
+                    self._record_event(
+                        category="market",
+                        event_type="first_live_quote",
+                        payload={"bid": bid, "ask": ask, "contract_id": contract_id},
+                        event_time=quote.timestamp,
+                        symbol=root_symbol,
+                        action="receive_quote",
+                        reason="stream_ready",
+                    )
 
             if self._on_market_data:
                 self._on_market_data(quote)
             self._agent_debug_quote_count += 1
             if self._agent_debug_quote_count % 300 == 0:
+                # Log cached validated state, not raw message
+                cached = self._lookup_market_snapshot(root_symbol) or quote
                 logger.info(
-                    "market_stream_heartbeat symbol=%s quotes=%s last_price=%s",
+                    "market_stream_heartbeat symbol=%s quotes=%s trades=%s partial=%s rejected=%s bid=%.2f ask=%.2f last=%.2f",
                     root_symbol,
                     self._agent_debug_quote_count,
-                    quote.last or quote.mid,
+                    self._trade_count,
+                    self._partial_quote_count,
+                    self._rejected_quote_count,
+                    cached.bid,
+                    cached.ask,
+                    cached.last,
                 )
 
         elif target == "GatewayTrade" and len(arguments) >= 2:
@@ -2292,7 +2320,8 @@ class TopstepClient:
             root_symbol = prior.symbol if prior is not None else self._normalize_symbol(symbol_id)
             prior = prior or MarketData(symbol=root_symbol)
 
-            # Extract trade price - reject if missing
+            # Extract trade price - reject if missing or zero
+            # GatewayTrade is authoritative for last_trade_price
             trade_price_raw = payload.get("price")
             if trade_price_raw is None:
                 logger.warning("Rejecting GatewayTrade for %s: missing price", root_symbol)
@@ -2302,11 +2331,14 @@ class TopstepClient:
                 logger.warning("Rejecting GatewayTrade for %s: zero price", root_symbol)
                 return
 
+            self._trade_count += 1
+
+            # Build quote with trade as authoritative last, preserve BBO from prior
             quote = MarketData(
                 symbol=root_symbol or prior.symbol,
                 bid=prior.bid,
                 ask=prior.ask,
-                last=trade_price,
+                last=trade_price,  # Authoritative from trade
                 volume=int(payload.get("volume", prior.volume or 0) or 0),
                 bid_size=prior.bid_size,
                 ask_size=prior.ask_size,
