@@ -614,6 +614,214 @@ class TopstepClient:
         assert last_error is not None
         raise last_error
 
+    def has_credentials(self) -> bool:
+        """Return True when environment credentials are available for broker API calls."""
+        return bool(os.getenv("EMAIL") and os.getenv("TOPSTEP_API_KEY"))
+
+    @staticmethod
+    def _history_unit_value(unit: str | int) -> int:
+        if isinstance(unit, int):
+            return unit
+        mapping = {
+            "second": 1,
+            "seconds": 1,
+            "minute": 2,
+            "minutes": 2,
+            "hour": 3,
+            "hours": 3,
+            "day": 4,
+            "days": 4,
+            "week": 5,
+            "weeks": 5,
+            "month": 6,
+            "months": 6,
+        }
+        return mapping.get(str(unit or "minute").strip().lower(), 2)
+
+    def _history_endpoint_candidates(self) -> list[str]:
+        candidates = [f"{self.base_url.rstrip('/')}/api/History/retrieveBars"]
+        if "thefuturesdesk.projectx.com" not in self.base_url:
+            candidates.append("https://api.thefuturesdesk.projectx.com/api/History/retrieveBars")
+        deduped: list[str] = []
+        for candidate in candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
+
+    def retrieve_bars(
+        self,
+        symbol: str = "ES",
+        *,
+        start_time: datetime | str,
+        end_time: datetime | str,
+        unit: str | int = "minute",
+        unit_number: int = 1,
+        limit: int = 20000,
+        include_partial_bar: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Retrieve historical OHLCV bars for a contract using the ProjectX history API."""
+        start_dt = self._parse_datetime(start_time)
+        end_dt = self._parse_datetime(end_time)
+        if start_dt is None or end_dt is None or start_dt >= end_dt:
+            return []
+        if not self._ensure_auth() and not self.authenticate():
+            return []
+
+        account = self._account or self.get_account()
+        contract_id = self._resolve_contract_id(symbol)
+        if not contract_id:
+            return []
+
+        payload = {
+            "contractId": contract_id,
+            "live": bool(account is not None and not account.is_practice),
+            "startTime": start_dt.isoformat(),
+            "endTime": end_dt.isoformat(),
+            "unit": self._history_unit_value(unit),
+            "unitNumber": max(int(unit_number), 1),
+            "limit": min(max(int(limit), 1), 20000),
+            "includePartialBar": bool(include_partial_bar),
+        }
+        last_error: Optional[Exception] = None
+        for url in self._history_endpoint_candidates():
+            try:
+                response = requests.post(
+                    url,
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=self.config.timeout,
+                )
+                response.raise_for_status()
+                data = response.json()
+                raw_bars = []
+                if isinstance(data, list):
+                    raw_bars = data
+                elif isinstance(data, dict):
+                    for key in ("bars", "data", "items", "history"):
+                        value = data.get(key)
+                        if isinstance(value, list):
+                            raw_bars = value
+                            break
+                normalized: list[dict[str, Any]] = []
+                for raw in raw_bars:
+                    if not isinstance(raw, dict):
+                        continue
+                    bar_time = self._parse_datetime(
+                        raw.get("t")
+                        or raw.get("time")
+                        or raw.get("timestamp")
+                        or raw.get("barTime")
+                        or raw.get("startTime")
+                    )
+                    if bar_time is None:
+                        continue
+                    normalized.append(
+                        {
+                            "time": bar_time,
+                            "open": self._coerce_float(raw.get("o", raw.get("open")), 0.0),
+                            "high": self._coerce_float(raw.get("h", raw.get("high")), 0.0),
+                            "low": self._coerce_float(raw.get("l", raw.get("low")), 0.0),
+                            "close": self._coerce_float(raw.get("c", raw.get("close")), 0.0),
+                            "volume": int(
+                                self._coerce_float(raw.get("v", raw.get("volume")), 0.0)
+                            ),
+                            "contract_id": contract_id,
+                            "symbol": self._normalize_symbol(symbol),
+                        }
+                    )
+                normalized.sort(key=lambda item: item["time"])
+                return normalized
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Historical bars request failed via %s: %s", url, exc)
+        if last_error is not None:
+            logger.error("Unable to retrieve historical bars for %s: %s", symbol, last_error)
+        return []
+
+    def backfill_market_history(
+        self,
+        symbol: str = "ES",
+        *,
+        start_time: datetime | str,
+        end_time: datetime | str,
+        run_id: Optional[str] = None,
+        source: str = "HistoryBar",
+        unit: str | int = "minute",
+        unit_number: int = 1,
+        include_partial_bar: bool = False,
+    ) -> dict[str, Any]:
+        """Import historical bars into the observability market tape for chart continuity."""
+        start_dt = self._parse_datetime(start_time)
+        end_dt = self._parse_datetime(end_time)
+        result: dict[str, Any] = {
+            "symbol": self._normalize_symbol(symbol),
+            "run_id": run_id or self.observability.get_run_id(),
+            "start_time": start_dt.isoformat() if start_dt is not None else None,
+            "end_time": end_dt.isoformat() if end_dt is not None else None,
+            "requests": 0,
+            "bars_imported": 0,
+            "attempted": False,
+        }
+        if start_dt is None or end_dt is None or start_dt >= end_dt:
+            result["error"] = "invalid_window"
+            return result
+        if not self.has_credentials() and not self._access_token:
+            result["error"] = "missing_credentials"
+            return result
+
+        contract_id = self._resolve_contract_id(symbol)
+        if not contract_id:
+            result["error"] = "contract_resolution_failed"
+            return result
+
+        history_unit = self._history_unit_value(unit)
+        chunk_span = timedelta(days=7 if history_unit == 2 and int(unit_number) == 1 else 14)
+        current = start_dt
+        seen_times: set[str] = set()
+        while current < end_dt:
+            chunk_end = min(current + chunk_span, end_dt)
+            bars = self.retrieve_bars(
+                symbol,
+                start_time=current,
+                end_time=chunk_end,
+                unit=unit,
+                unit_number=unit_number,
+                limit=20000,
+                include_partial_bar=include_partial_bar,
+            )
+            result["attempted"] = True
+            result["requests"] += 1
+            for bar in bars:
+                timestamp = bar.get("time")
+                if timestamp is None:
+                    continue
+                timestamp_key = timestamp.isoformat()
+                if timestamp_key in seen_times:
+                    continue
+                seen_times.add(timestamp_key)
+                self.observability.record_market_tick(
+                    {
+                        "run_id": result["run_id"],
+                        "symbol": bar.get("symbol") or result["symbol"],
+                        "contract_id": bar.get("contract_id") or contract_id,
+                        "last": bar.get("close"),
+                        "volume": bar.get("volume"),
+                        "volume_is_cumulative": False,
+                        "quote_is_synthetic": True,
+                        "source": source,
+                        "timestamp": timestamp,
+                        "open": bar.get("open"),
+                        "high": bar.get("high"),
+                        "low": bar.get("low"),
+                        "close": bar.get("close"),
+                        "historical": True,
+                    }
+                )
+                result["bars_imported"] += 1
+            current = chunk_end
+        self.observability.force_flush()
+        return result
+
     def list_accounts(self, only_active_accounts: bool = True) -> list[Dict[str, Any]]:
         """Return tradable accounts available to the authenticated user."""
         if not self._ensure_auth():

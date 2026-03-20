@@ -554,6 +554,7 @@ class ObservabilityStore:
         ascending: bool = False,
         run_id: Optional[str] = None,
         symbol: Optional[str] = None,
+        source: Optional[str] = None,
         search: Optional[str] = None,
         start_time: Optional[datetime | str] = None,
         end_time: Optional[datetime | str] = None,
@@ -573,6 +574,9 @@ class ObservabilityStore:
             if symbol:
                 clauses.append("symbol = ?")
                 params.append(symbol)
+            if source:
+                clauses.append("source = ?")
+                params.append(source)
             if start_time is not None:
                 clauses.append("captured_at >= ?")
                 params.append(self._coerce_datetime_value(start_time))
