@@ -8,7 +8,6 @@ import json
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
-import requests
 import signal
 import subprocess
 import sys
@@ -27,7 +26,12 @@ from src.cli.launchd import (
     stop_launch_agent,
     uninstall_launch_agent,
 )
-from src.server import get_server, get_state, set_state
+from src.runtime import get_state, set_state
+from src.runtime.inspection import (
+    fetch_runtime_debug_state,
+    fetch_runtime_health_dict,
+    health_dict_from_debug,
+)
 from src.market import get_client
 from src.execution import get_executor
 from src.engine import ReplayRunner, get_scheduler, get_risk_manager, get_trading_engine
@@ -37,6 +41,8 @@ from src.analysis import (
     build_launch_readiness,
     build_regime_packet,
     build_trade_review,
+    build_fill_quality_report,
+    build_stress_periods_dict,
     render_regime_packet_markdown,
 )
 
@@ -549,12 +555,10 @@ def _shutdown_runtime(
     config_path: str,
     log_path: Path,
     observability,
-    server,
     engine,
     symbol: Optional[str],
     shutdown_request: dict[str, Any],
     started_engine: bool,
-    started_server: bool,
     startup_completed: bool,
 ) -> None:
     shutdown_reason = str(shutdown_request.get("operator_reason") or "shutdown_requested")
@@ -615,21 +619,6 @@ def _shutdown_runtime(
                     symbol=symbol,
                     action="stop",
                     reason="engine_shutdown_failed",
-                )
-    if started_server:
-        try:
-            server.stop()
-        except Exception as exc:
-            logger.exception("Debug server shutdown failed")
-            shutdown_error = shutdown_error or str(exc)
-            if observability:
-                _record_system_event(
-                    observability,
-                    event_type="shutdown_server_failed",
-                    payload={"error": str(exc)},
-                    symbol=symbol,
-                    action="stop",
-                    reason="server_shutdown_failed",
                 )
     final_status = "error" if shutdown_error else "stopped"
     final_reason = shutdown_error or shutdown_reason
@@ -697,9 +686,7 @@ def _log_startup_summary(cfg, log_path: Path, current_zone: Optional[str], zone_
         log_path,
     )
     logger.info(
-        "startup_endpoints health_url=%s debug_url=%s current_zone=%s zone_state=%s",
-        f"http://{cfg.server.host}:{cfg.server.health_port}/health",
-        f"http://{cfg.server.host}:{cfg.server.debug_port}/debug",
+        "startup_operator_surface=cli+sqlite current_zone=%s zone_state=%s",
         current_zone,
         zone_state,
     )
@@ -721,8 +708,6 @@ def _startup_payload(
         "preferred_account_match": cfg.safety.preferred_account_match,
         "trade_outside_hotzones": cfg.strategy.trade_outside_hotzones,
         "log_file": str(log_path),
-        "health_port": cfg.server.health_port,
-        "debug_port": cfg.server.debug_port,
         "current_zone": current_zone,
         "zone_state": zone_state,
     }
@@ -748,49 +733,17 @@ def _resolve_config_path(config: Optional[str]) -> str:
     )
 
 
-def _runtime_urls(cfg) -> dict:
-    return {
-        "health_url": f"http://{cfg.server.host}:{cfg.server.health_port}/health",
-        "debug_url": f"http://{cfg.server.host}:{cfg.server.debug_port}/debug",
-    }
-
-
-def _fetch_remote_debug_state(cfg, timeout_seconds: float = 1.5) -> Optional[dict[str, Any]]:
-    debug_url = f"http://{cfg.server.host}:{cfg.server.debug_port}/debug"
-    try:
-        response = requests.get(debug_url, timeout=timeout_seconds)
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, dict) else None
-    except Exception:
-        return None
-
-
-def _fetch_remote_health(cfg, timeout_seconds: float = 1.5) -> Optional[dict[str, Any]]:
-    health_url = f"http://{cfg.server.host}:{cfg.server.health_port}/health"
-    try:
-        response = requests.get(health_url, timeout=timeout_seconds)
-        response.raise_for_status()
-        payload = response.json()
-        return payload if isinstance(payload, dict) else None
-    except Exception:
-        return None
-
-
 def _record_runtime_provenance(
     cfg, observability, *, config_path: str, log_path: Path, data_mode: str
 ):
-    urls = _runtime_urls(cfg)
     manifest = collect_run_provenance(
         cfg,
         config_path=config_path,
         log_path=log_path,
         sqlite_path=observability.get_db_path(),
         data_mode=data_mode,
-        health_url=urls["health_url"],
-        debug_url=urls["debug_url"],
     )
-    debug_state = _fetch_remote_debug_state(cfg) or {}
+    debug_state = get_state().to_dict()
     account_payload = (
         debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
     )
@@ -946,8 +899,9 @@ def _service_doctor_payload(cfg) -> dict[str, Any]:
     log_path = _resolve_log_path(cfg)
     runtime_status = _read_runtime_status(cfg, log_path)
     observability = get_observability_store()
-    remote_health = _fetch_remote_health(cfg)
-    remote_debug = _fetch_remote_debug_state(cfg)
+    remote_debug, _src = fetch_runtime_debug_state(cfg, log_path=log_path)
+    remote_debug = remote_debug or {}
+    remote_health = health_dict_from_debug(remote_debug) if remote_debug else None
     execution_payload = remote_debug.get("execution") if isinstance(remote_debug, dict) else {}
     focus_timestamp = None
     if isinstance(execution_payload, dict):
@@ -995,7 +949,6 @@ def start(config: Optional[str]):
     get_risk_manager(force_recreate=True)
     engine = get_trading_engine(force_recreate=True)
     symbol = cfg.symbols[0] if cfg.symbols else None
-    started_server = False
     started_engine = False
     startup_completed = False
     shutdown_signal = {"name": None}
@@ -1030,13 +983,7 @@ def start(config: Optional[str]):
         last_start_requested_at=_utc_now().isoformat(),
     )
 
-    # Start debug servers
-    server = get_server(force_recreate=True)
-    server.start()
-    started_server = True
-    click.secho(f"Console:      http://127.0.0.1:{cfg.server.debug_port}/", fg="blue")
-    click.secho(f"Health JSON:  http://127.0.0.1:{cfg.server.health_port}/health", fg="blue")
-    click.secho(f"Debug JSON:   http://127.0.0.1:{cfg.server.debug_port}/debug", fg="blue")
+    click.secho("Runtime status: use `es-trade status`, `es-trade health`, `es-trade debug`.", fg="blue")
 
     # Update state
     set_state(
@@ -1110,7 +1057,7 @@ def start(config: Optional[str]):
         started_engine = True
         # Re-record run manifest now that engine has populated account info
         if getattr(cfg.observability, "capture_run_provenance", True):
-            debug_state = _fetch_remote_debug_state(cfg) or {}
+            debug_state = get_state().to_dict()
             account_payload = (
                 debug_state.get("account") if isinstance(debug_state.get("account"), dict) else {}
             )
@@ -1155,8 +1102,6 @@ def start(config: Optional[str]):
         )
         set_state(running=False, status="error")
         _clear_lifecycle_request(cfg, log_path)
-        if started_server:
-            server.stop()
         observability.stop()
         raise click.ClickException(str(exc))
     startup_completed = True
@@ -1165,6 +1110,8 @@ def start(config: Optional[str]):
         last_startup_completed_at=_utc_now().isoformat(),
         last_startup_error=None,
         active_run_id=observability.get_run_id(),
+        recovery_verified=True,
+        recovery_verified_at=_utc_now().isoformat(),
     )
     _mark_runtime_phase(
         cfg,
@@ -1200,12 +1147,10 @@ def start(config: Optional[str]):
         config_path=config_path,
         log_path=log_path,
         observability=observability,
-        server=server,
         engine=engine,
         symbol=symbol,
         shutdown_request=shutdown_request,
         started_engine=started_engine,
-        started_server=started_server,
         startup_completed=startup_completed,
     )
     if shutdown_request.get("requested_action") != "restart":
@@ -1324,6 +1269,167 @@ def replay(path: str, config: Optional[str]):
         raise
 
 
+@cli.command("replay-topstep")
+@click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to replay")
+@click.option("--days", "days_back", default=30, show_default=True, type=int, help="Days of history to replay")
+@click.option("--start", "start_date", type=str, help="Start date (YYYY-MM-DD)")
+@click.option("--end", "end_date", type=str, help="End date (YYYY-MM-DD)")
+@click.option("--config", type=click.Path(exists=True), help="Config file path")
+def replay_topstep(symbol: str, days_back: int, start_date: Optional[str], end_date: Optional[str], config: Optional[str]):
+    """Replay historical Topstep data through the live engine path."""
+    config_path = _resolve_config_path(config)
+    if config:
+        cfg = load_config(config)
+    else:
+        cfg = get_config()
+    set_config(cfg)
+    log_path = _configure_logging(cfg)
+    _ensure_runtime_is_not_active(cfg, log_path=log_path)
+    observability = get_observability_store(force_recreate=True)
+    observability.start()
+    _mark_runtime_active(cfg, log_path=log_path, config_path=config_path, data_mode="replay")
+    _set_lifecycle_state(
+        phase="replay",
+        requested_action="replay_topstep",
+        operator_reason="cli_replay_topstep",
+        last_start_requested_at=_utc_now().isoformat(),
+    )
+    set_state(
+        status="replay",
+        running=False,
+        data_mode="replay",
+        replay_summary=None,
+        start_time=time.time(),
+    )
+    get_client(force_recreate=True)
+    get_executor(force_recreate=True)
+    get_scheduler(force_recreate=True)
+    get_risk_manager(force_recreate=True)
+    engine = get_trading_engine(force_recreate=True)
+    _record_runtime_provenance(
+        cfg, observability, config_path=config_path, log_path=log_path, data_mode="replay"
+    )
+
+    try:
+        runner = ReplayRunner(config=cfg, engine=engine)
+        result = runner.run_from_topstep(
+            symbol=symbol,
+            days_back=days_back,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        run_id = observability.get_run_id()
+        observability.update_run_manifest_payload(
+            run_id,
+            {
+                "replay_source": "topstep",
+                "replay_symbol": symbol,
+                "replay_events": result.events,
+                "replay_summary": result.summary,
+            },
+        )
+        _record_system_event(
+            observability,
+            event_type="replay_topstep_completed",
+            payload={"symbol": symbol, "events": result.events, "segments": result.segments},
+            symbol=symbol,
+            action="replay_topstep",
+            reason="cli_replay_topstep",
+        )
+        _set_lifecycle_state(
+            phase="stopped",
+            last_startup_completed_at=_utc_now().isoformat(),
+            last_shutdown_completed_at=_utc_now().isoformat(),
+            last_shutdown_reason="replay_topstep_completed",
+            last_requested_action="replay_topstep",
+        )
+        _mark_runtime_inactive(
+            cfg,
+            log_path=log_path,
+            config_path=config_path,
+            data_mode="replay",
+            run_id=observability.get_run_id(),
+            status="stopped",
+        )
+        observability.stop()
+        click.echo(
+            json.dumps(
+                {
+                    "path": result.path,
+                    "events": result.events,
+                    "segments": result.segments,
+                    "summary": result.summary,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+    except Exception:
+        _mark_runtime_inactive(
+            cfg,
+            log_path=log_path,
+            config_path=config_path,
+            data_mode="replay",
+            run_id=observability.get_run_id(),
+            status="error",
+        )
+        observability.stop()
+        raise
+
+
+@cli.command("fill-quality")
+@click.option("--days", "days_back", default=30, show_default=True, type=int, help="Days of history to analyze")
+@click.option(
+    "--account-id", type=str, help="Account id override; defaults to the current selected account"
+)
+@click.option(
+    "--source",
+    type=click.Choice(["both", "observability", "topstep"]),
+    default="both",
+    show_default=True,
+    help="Data source for fill analysis",
+)
+def fill_quality(days_back: int, account_id: Optional[str], source: str):
+    """Analyze fill quality from recent trades."""
+    effective_account = account_id or _resolve_analysis_account_id()
+    report = build_fill_quality_report(
+        account_id=effective_account,
+        days_back=days_back,
+        source=source,
+    )
+    _print_json(report)
+
+
+@cli.command("stress-periods")
+@click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to analyze")
+@click.option("--days", "days_back", default=30, show_default=True, type=int, help="Days of history to analyze")
+@click.option(
+    "--source",
+    type=click.Choice(["topstep", "observability"]),
+    default="topstep",
+    show_default=True,
+    help="Data source for stress detection",
+)
+@click.option("--atr-threshold", default=2.0, show_default=True, type=float, help="ATR multiplier threshold")
+@click.option("--spread-threshold", default=5.0, show_default=True, type=float, help="Spread ticks threshold")
+def stress_periods(
+    symbol: str,
+    days_back: int,
+    source: str,
+    atr_threshold: float,
+    spread_threshold: float,
+):
+    """Detect stress periods in recent market data."""
+    report = build_stress_periods_dict(
+        symbol=symbol,
+        days_back=days_back,
+        source=source,
+        atr_threshold=atr_threshold,
+        spread_threshold=spread_threshold,
+    )
+    _print_json(report)
+
+
 @cli.command()
 @click.option(
     "--reason",
@@ -1404,30 +1510,23 @@ def restart(ctx: click.Context, config: Optional[str], reason: str, timeout_seco
 def status():
     """Show current trading status."""
     cfg = get_config()
-    remote = _fetch_remote_debug_state(cfg)
-    if remote:
-        status_value = str(remote.get("status", "unknown"))
-        running_value = bool(remote.get("running", False))
-        data_mode = str(remote.get("data_mode", "unknown"))
-        zone_name = str((remote.get("zone") or {}).get("name") or "None")
-        zone_state = str((remote.get("zone") or {}).get("state") or "inactive")
-        strategy = str(remote.get("strategy", "None"))
-        position_contracts = int((remote.get("position") or {}).get("contracts") or 0)
-        position_pnl = float((remote.get("position") or {}).get("unrealized_pnl") or 0.0)
-        daily_pnl = float((remote.get("account") or {}).get("daily_pnl") or 0.0)
-        risk_state = str((remote.get("risk") or {}).get("state") or "normal")
-    else:
-        state = get_state()
-        status_value = str(state.effective_status())
-        running_value = bool(state.running)
-        data_mode = str(state.data_mode)
-        zone_name = str(state.current_zone or "None")
-        zone_state = str(state.zone_state)
-        strategy = str(state.current_strategy or "None")
-        position_contracts = int(state.position)
-        position_pnl = float(state.position_pnl)
-        daily_pnl = float(state.daily_pnl)
-        risk_state = str(state.risk_state)
+    log_path = _resolve_log_path(cfg)
+    remote, source = fetch_runtime_debug_state(cfg, log_path=log_path)
+    stale_local = False
+    if not remote:
+        remote = get_state().to_dict()
+        stale_local = True
+    status_value = str(remote.get("status", "unknown"))
+    running_value = bool(remote.get("running", False))
+    data_mode = str(remote.get("data_mode", "unknown"))
+    zone_name = str((remote.get("zone") or {}).get("name") or "None")
+    zone_state = str((remote.get("zone") or {}).get("state") or "inactive")
+    strategy = str(remote.get("strategy", "None"))
+    pos = remote.get("position") or {}
+    position_contracts = int(pos.get("contracts") or 0)
+    position_pnl = float(pos.get("pnl") or pos.get("unrealized_pnl") or 0.0)
+    daily_pnl = float((remote.get("account") or {}).get("daily_pnl") or 0.0)
+    risk_state = str((remote.get("risk") or {}).get("state") or "normal")
 
     _print_banner("Trading Status", color="blue")
     click.secho(
@@ -1445,9 +1544,15 @@ def status():
         f"Risk State: {risk_state}", fg="red" if risk_state.lower() != "normal" else "green"
     )
     click.secho("=" * 50, fg="blue")
-    if not remote:
+    if stale_local:
         click.secho(
-            "Note: runtime endpoints unavailable; showing local process state only.", fg="yellow"
+            "Note: no live snapshot from another process; showing local in-process state only.",
+            fg="yellow",
+        )
+    elif source == "status_file":
+        click.secho(
+            "Note: SQLite snapshot not yet available; showing runtime control-plane fields only.",
+            fg="yellow",
         )
 
 
@@ -1455,8 +1560,8 @@ def status():
 def health():
     """Show health check results."""
     cfg = get_config()
-    remote_health = _fetch_remote_health(cfg)
-    health = remote_health or get_state().to_health_dict()
+    log_path = _resolve_log_path(cfg)
+    health, source = fetch_runtime_health_dict(cfg, log_path=log_path)
 
     click.echo("Health Check:")
     click.echo(f"  Status:      {health['status']}")
@@ -1465,16 +1570,21 @@ def health():
     click.echo(f"  Position:    {health['position']}")
     click.echo(f"  Daily PnL:   ${health['daily_pnl']:.2f}")
     click.echo(f"  Risk State:  {health['risk_state']}")
-    if not remote_health:
-        click.echo("  Note: runtime health endpoint unavailable; showing local process state.")
+    click.echo(f"  Source:      {source}")
 
 
 @cli.command()
 def debug():
     """Show full debug information."""
     cfg = get_config()
-    data = _fetch_remote_debug_state(cfg) or get_state().to_dict()
-    click.echo(json.dumps(data, indent=2))
+    log_path = _resolve_log_path(cfg)
+    data, source = fetch_runtime_debug_state(cfg, log_path=log_path)
+    if not data:
+        data = get_state().to_dict()
+        source = "in_process"
+    payload = dict(data)
+    payload["_runtime_state_source"] = source
+    click.echo(json.dumps(payload, indent=2, default=str))
 
 
 @cli.command("broker-truth")
@@ -1826,9 +1936,7 @@ def config():
     click.echo(f"  Max Consecutive:     {cfg.risk.max_consecutive_losses}")
     click.echo(f"  Max Trades/Hour:     {cfg.risk.max_trades_per_hour}")
     click.echo("")
-    click.echo("Servers:")
-    click.echo(f"  Health: {cfg.server.host}:{cfg.server.health_port}")
-    click.echo(f"  Debug:  {cfg.server.host}:{cfg.server.debug_port}")
+    click.echo("Operator surface: CLI + SQLite (`es-trade status`, `es-trade debug`, `es-trade db`).")
 
 
 @cli.command()

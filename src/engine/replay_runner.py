@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import math
 from pathlib import Path
@@ -16,12 +17,13 @@ from src.engine.risk_manager import TradeRecord
 from src.engine.scheduler import HotZoneScheduler
 from src.engine.trading_engine import TradingEngine, get_trading_engine
 from src.market import MarketData
-from src.server import get_state, set_state
+from src.runtime import get_state, set_state
 from src.strategies.base import SignalDirection
 from src.strategies.flatten_strategy import FlattenStrategy
 from src.strategies.orb_strategy import ORBStrategy
 from src.strategies.vwap_mr import VWAPMeanReversionStrategy
 from src.strategies.vwap_trend import VWAPTrendStrategy
+from src.market import MarketData as TopstepMarketData
 
 
 @dataclass
@@ -143,6 +145,186 @@ class ReplayRunner:
 
         return ReplayResult(
             path=str(replay_path), events=processed, segments=walk_forward, summary=summary
+        )
+
+    def run_from_topstep(
+        self,
+        symbol: str = "ES",
+        days_back: int = 30,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> ReplayResult:
+        """Replay recent Topstep historical bars through the engine."""
+        from datetime import datetime, timedelta, timezone
+
+        # Resolve date range
+        end_dt: datetime
+        start_dt: datetime
+        if start_date and end_date:
+            start_dt = pd.Timestamp(start_date).to_pydatetime()
+            end_dt = pd.Timestamp(end_date).to_pydatetime()
+        else:
+            end_dt = datetime.now(timezone.utc)
+            start_dt = end_dt - timedelta(days=max(int(days_back), 1))
+
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+
+        # Fetch bars from Topstep API
+        bars = self.engine.client.retrieve_bars(
+            symbol=symbol,
+            start_time=start_dt,
+            end_time=end_dt,
+            unit="minute",
+            unit_number=1,
+            limit=50000,
+        )
+
+        if not bars:
+            logger.warning("No bars returned from Topstep for %s", symbol)
+            return ReplayResult(
+                path=f"topstep://{symbol}",
+                events=0,
+                segments=[],
+                summary={"error": "no_data", "bars_returned": 0},
+            )
+
+        self.engine.reset_runtime_state(clear_history=True)
+        self.engine.enable_mock_mode()
+
+        processed = 0
+        for bar in bars:
+            market_data = self._bar_to_market_data(bar, symbol)
+            self.engine.observability.record_market_tick(
+                {
+                    "run_id": self.engine.observability.get_run_id(),
+                    "symbol": symbol,
+                    "bid": bar.get("low", 0),
+                    "ask": bar.get("high", 0),
+                    "last": bar.get("close", 0),
+                    "volume": bar.get("volume", 0),
+                    "volume_is_cumulative": False,
+                    "quote_is_synthetic": True,
+                    "source": "TopstepHistory",
+                    "timestamp": bar.get("time"),
+                    "open": bar.get("open"),
+                    "high": bar.get("high"),
+                    "low": bar.get("low"),
+                    "close": bar.get("close"),
+                    "historical": True,
+                }
+            )
+            self.engine.on_market_data(market_data)
+            processed += 1
+
+        self.engine.flush_pending_bar()
+        self.engine.observability.force_flush()
+
+        matrix_trades = list(self.engine.risk_manager.get_trade_history())
+        bars_df = self.engine._bars.copy()  # noqa: SLF001
+        matrix_summary = self.engine.build_performance_summary()
+        matrix_cost_summary = self._costed_trade_summary(
+            matrix_trades, strategy_name="WEIGHTED_SCORE_MATRIX"
+        )
+
+        benchmark_trades = self._run_benchmark_portfolio(bars_df)
+        benchmark_cost_summary = self._costed_trade_summary(
+            benchmark_trades, strategy_name="BENCHMARK_PORTFOLIO"
+        )
+
+        walk_forward = self._walk_forward_segments(bars_df, matrix_trades, benchmark_trades)
+        approx_dsr = self._deflated_sharpe_ratio(
+            [trade.pnl for trade in matrix_trades],
+            max(self.config.replay_execution.dsr_trials, max(len(walk_forward), 1)),
+        )
+        acceptance = self._acceptance_gates(
+            matrix_cost_summary=matrix_cost_summary,
+            benchmark_cost_summary=benchmark_cost_summary,
+            walk_forward=walk_forward,
+            synthetic_quotes_detected=True,  # Historical data is always synthetic
+        )
+
+        summary = {
+            **matrix_summary,
+            "matrix": matrix_cost_summary,
+            "benchmarks": {
+                "enabled": self.config.validation.benchmarks_enabled,
+                "strategy_by_zone": dict(self.config.validation.benchmark_zone_strategies),
+                "portfolio": benchmark_cost_summary,
+            },
+            "comparison": {
+                "net_pnl_delta": round(
+                    matrix_cost_summary["net_pnl"] - benchmark_cost_summary["net_pnl"], 2
+                ),
+                "stressed_net_pnl_delta": round(
+                    matrix_cost_summary["stressed_net_pnl"]
+                    - benchmark_cost_summary["stressed_net_pnl"],
+                    2,
+                ),
+                "trade_count_delta": matrix_cost_summary["trade_count"]
+                - benchmark_cost_summary["trade_count"],
+            },
+            "cost_assumptions": {
+                "commission_per_contract": self.config.replay_execution.commission_per_contract,
+                "exchange_fee_per_contract": self.config.replay_execution.exchange_fee_per_contract,
+                "market_slippage_ticks": self.config.replay_execution.market_slippage_ticks,
+                "stress_slippage_ticks": self.config.replay_execution.stress_slippage_ticks,
+                "limit_fill_penalty_ticks": self.config.replay_execution.limit_fill_penalty_ticks,
+            },
+            "deflated_sharpe_ratio_approx": approx_dsr,
+            "deflated_sharpe_ratio_is_approximation": True,
+            "synthetic_quotes_detected": True,
+            "decision_ready": acceptance["decision_ready"],
+            "decision_ready_reason": acceptance["decision_ready_reason"],
+            "walk_forward": walk_forward,
+            "acceptance": acceptance,
+            "source": "topstep",
+            "symbol": symbol,
+            "start_date": start_dt.isoformat(),
+            "end_date": end_dt.isoformat(),
+            "bars_processed": processed,
+        }
+        set_state(replay_summary=summary)
+
+        return ReplayResult(
+            path=f"topstep://{symbol}",
+            events=processed,
+            segments=walk_forward,
+            summary=summary,
+        )
+
+    def _bar_to_market_data(self, bar: dict, symbol: str = "ES") -> MarketData:
+        """Convert a Topstep bar dict to MarketData event."""
+        bar_time = bar.get("time")
+        if bar_time is None:
+            bar_time = pd.Timestamp.now()
+        elif isinstance(bar_time, str):
+            bar_time = pd.Timestamp(bar_time)
+        elif isinstance(bar_time, datetime):
+            bar_time = pd.Timestamp(bar_time)
+
+        if bar_time.tzinfo is None:
+            bar_time = bar_time.tz_localize("UTC")
+        else:
+            bar_time = bar_time.tz_convert("UTC")
+
+        close = float(bar.get("close", 0))
+        return MarketData(
+            symbol=symbol,
+            bid=float(bar.get("low", close)),
+            ask=float(bar.get("high", close)),
+            last=close,
+            volume=int(bar.get("volume", 0)),
+            volume_is_cumulative=False,
+            quote_is_synthetic=True,
+            bid_size=0.0,
+            ask_size=0.0,
+            last_size=float(bar.get("volume", 0)),
+            trade_side="",
+            latency_ms=0,
+            timestamp=bar_time.to_pydatetime(),
         )
 
     def _load_events(self, replay_path: Path) -> Iterable[MarketData]:
