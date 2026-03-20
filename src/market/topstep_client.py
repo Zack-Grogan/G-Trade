@@ -2188,7 +2188,7 @@ class TopstepClient:
             symbol_name = str(payload.get("symbolName", payload.get("symbol", "ES")) or "ES")
             root_symbol = self._normalize_symbol(symbol_name or payload.get("symbol", "ES"))
 
-            # Extract and validate price fields - reject malformed quotes
+            # Extract price fields - fall back to previous quote for missing sides
             bid_raw = payload.get("bestBid", payload.get("bid"))
             ask_raw = payload.get("bestAsk", payload.get("ask"))
             last_raw = payload.get("lastPrice", payload.get("last"))
@@ -2197,13 +2197,20 @@ class TopstepClient:
             ask = float(ask_raw) if ask_raw is not None else 0.0
             last = float(last_raw) if last_raw is not None else 0.0
 
-            # Reject quotes with no valid price data
-            # Need at least: last non-zero, OR both bid and ask non-zero (for valid mid)
-            has_valid_last = last != 0.0
-            has_valid_mid = bid != 0.0 and ask != 0.0
-            if not has_valid_last and not has_valid_mid:
-                logger.warning(
-                    "Rejecting malformed GatewayQuote for %s: bid=%s ask=%s last=%s",
+            # Get previous quote to fill in missing sides (Topstep sends one-sided updates)
+            prior = self._lookup_market_snapshot(contract_id) or self._lookup_market_snapshot(root_symbol)
+            if prior is not None:
+                if bid == 0.0 and prior.bid != 0.0:
+                    bid = prior.bid
+                if ask == 0.0 and prior.ask != 0.0:
+                    ask = prior.ask
+                if last == 0.0 and prior.last != 0.0:
+                    last = prior.last
+
+            # Only reject if we have absolutely no price information
+            if bid == 0.0 and ask == 0.0 and last == 0.0:
+                logger.debug(
+                    "Skipping empty GatewayQuote for %s: bid=%s ask=%s last=%s",
                     root_symbol, bid_raw, ask_raw, last_raw,
                 )
                 return
