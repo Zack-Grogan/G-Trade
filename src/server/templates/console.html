@@ -40,15 +40,15 @@
     <article class="panel">
       <div class="panel-head">
         <h2>Live state</h2>
-        <span class="panel-chip" id="state-zone">{{ model.summary.zone }}</span>
       </div>
       <dl class="facts">
-        <div><dt>Status</dt><dd id="state-status">{{ model.summary.status }}</dd></div>
         <div><dt>Run</dt><dd id="state-run">{{ model.summary.run_id }}</dd></div>
         <div><dt>Account</dt><dd>{{ model.state.account.name or 'n/a' }}</dd></div>
         <div><dt>Account ID</dt><dd>{{ model.state.account.id or 'n/a' }}</dd></div>
         <div><dt>Last entry</dt><dd id="state-last-entry">{{ model.state.alpha.last_entry_reason or '-' }}</dd></div>
         <div><dt>Last exit</dt><dd id="state-last-exit">{{ model.state.alpha.last_exit_reason or '-' }}</dd></div>
+        <div><dt>Decisions/min</dt><dd id="state-decisions">{{ model.state.heartbeat.decisions_last_min if model.state.heartbeat else '-' }}</dd></div>
+        <div><dt>Fail-safe</dt><dd id="state-failsafe">{% set hb = model.state.heartbeat %}{% if hb %}{{ hb.get('fail_safe_lockout', hb.get('fail_safe', '-')) }}{% else %}-{% endif %}</dd></div>
       </dl>
     </article>
 
@@ -96,33 +96,31 @@
       </div>
       <div class="stack">
         {% for row in model.recent_logs %}
-          <div class="stack-item">
-            <div class="stack-title">{{ row.logged_at|dt }}</div>
-            <div class="stack-subtle">{{ row.level }} · {{ row.display_source or row.logger_name or row.source }}</div>
-            <div>{{ row.display_message or row.message }}</div>
-          </div>
+          {% include "partials/log_row.html" %}
         {% else %}
           <div class="empty-cell">No logs captured yet.</div>
         {% endfor %}
       </div>
     </article>
 
-    <article class="panel">
-      <div class="panel-head">
-        <h2>Recent events</h2>
-        <span class="panel-chip">runtime</span>
-      </div>
-      <div class="stack">
-        {% for event in model.recent_events %}
-          <div class="stack-item">
-            <div class="stack-title">{{ event.event_timestamp|dt }}</div>
-            <div class="stack-subtle">{{ event.category }} · {{ event.event_type }}</div>
-            <div>{{ event.reason or event.action or '-' }}</div>
-          </div>
-        {% else %}
-          <div class="empty-cell">No events captured yet.</div>
-        {% endfor %}
-      </div>
+    <article class="panel panel-secondary">
+      <details class="disclosure">
+        <summary class="disclosure-summary">
+          <span class="disclosure-title">Recent events</span>
+          <span class="panel-chip">{{ model.recent_events|length }} shown</span>
+        </summary>
+        <div class="stack disclosure-body">
+          {% for event in model.recent_events %}
+            <div class="stack-item">
+              <div class="stack-title">{{ event.event_timestamp|dt }}</div>
+              <div class="stack-subtle">{{ event.category }} · {{ event.event_type }}</div>
+              <div>{{ event.reason or event.action or '-' }}</div>
+            </div>
+          {% else %}
+            <div class="empty-cell">No events captured yet.</div>
+          {% endfor %}
+        </div>
+      </details>
     </article>
   </section>
 
@@ -132,8 +130,8 @@
 {% block scripts %}
   <script>
     window.GTradeConsole.initStateStream("/stream/state", {
-      status: "#state-status",
-      zone: "#state-zone, #topbar-zone",
+      status: "#topbar-status",
+      zone: "#topbar-zone",
       position: "#state-position",
       longScore: "#state-long-score",
       shortScore: "#state-short-score",
@@ -141,6 +139,8 @@
       runId: "#state-run",
       lastEntry: "#state-last-entry",
       lastExit: "#state-last-exit",
+      decisions: "#state-decisions",
+      failSafe: "#state-failsafe",
     });
   </script>
 {% endblock %}

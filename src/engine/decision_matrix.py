@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -15,6 +16,8 @@ from src.engine.risk_manager import RiskState
 from src.engine.scheduler import ZoneInfo, ZoneState
 from src.indicators import atr, build_volume_profile, rsi, session_labels, session_vwap_bands
 from src.market import MarketData
+
+logger = logging.getLogger(__name__)
 
 
 def _clip(value: float, lower: float = -2.0, upper: float = 2.0) -> float:
@@ -514,6 +517,16 @@ class DecisionMatrixEvaluator:
         long_score = round(sum(snapshot.long_features.get(name, 0.0) * weight for name, weight in weights.get("long", {}).items()), 4)
         short_score = round(sum(snapshot.short_features.get(name, 0.0) * weight for name, weight in weights.get("short", {}).items()), 4)
         flat_bias = round(sum(snapshot.flat_features.get(name, 0.0) * weight for name, weight in weights.get("flat", {}).items()), 4)
+
+        # Log diagnostic info for score calculation
+        logger.debug(
+            "matrix_debug zone=%s weights_found=%s long_weights=%s short_weights=%s flat_weights=%s",
+            zone.name,
+            bool(weights),
+            list(weights.get("long", {}).keys()) if weights else [],
+            list(weights.get("short", {}).keys()) if weights else [],
+            list(weights.get("flat", {}).keys()) if weights else [],
+        )
 
         vetoes = self._evaluate_vetoes(zone, snapshot, event_context.blackout_active)
         if risk_state == RiskState.CIRCUIT_BREAKER:

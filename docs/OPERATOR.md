@@ -25,12 +25,12 @@ The primary operator interfaces are the **CLI** and the **local Flask console**.
 `es-trade start` brings up the trading engine and the local Flask console on the Mac. The console is the main browser-based operator surface for the current launch cut.
 
 The console is local-only and serves these pages:
-- `/` — console overview
-- `/chart` — live chart and indicators
+- `/` — console overview (status and zone in the header; live state omits duplicate status/zone; a short log teaser links to `/logs`; recent events are behind an expandable section)
+- `/chart` — live chart and indicators (compact symbol/price/zone strip; recent broker fills capped with a link to `/trades`)
 - `/trades` — local trade list and account-trade context
 - `/trades/<id>` — trade review
-- `/logs` — runtime and broker/order events
-- `/system` — config, health, and launch readiness
+- `/logs` — runtime log stream as the primary view; events and orders are behind an expandable section
+- `/system` — config, health, and launch readiness (bridge health behind an expandable section)
 - `/health` and `/debug` — JSON compatibility endpoints for the CLI and service checks
 
 Chart notes:
