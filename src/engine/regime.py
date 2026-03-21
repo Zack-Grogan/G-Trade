@@ -40,18 +40,25 @@ class DeterministicRegimeClassifier:
         value_area_position: float,
         event_active: bool,
         post_event_cooling: bool,
+        quote_is_synthetic: bool = False,
     ) -> RegimeSnapshot:
         if event_active or post_event_cooling:
             return RegimeSnapshot(RegimeState.STRESS, 1.0, "event_cooling")
-        if spread_ticks >= self.config.stress_spread_ticks:
+        # Skip spread-based stress detection for synthetic quotes (replay/backtest mode)
+        # Spread is bar range, not real bid-ask spread
+        if not quote_is_synthetic and spread_ticks >= self.config.stress_spread_ticks:
             return RegimeSnapshot(RegimeState.STRESS, 1.0, "spread_widening")
-        if atr_ratio >= self.config.stress_vol_ratio:
+        # Skip volatility-based stress detection for synthetic quotes
+        # ATR ratio can be inflated due to bar-level data characteristics
+        if not quote_is_synthetic and atr_ratio >= self.config.stress_vol_ratio:
             return RegimeSnapshot(
                 RegimeState.STRESS,
                 min(2.0, atr_ratio / self.config.stress_vol_ratio),
                 "volatility_spike",
             )
-        if quote_rate > 0 and quote_rate <= self.config.stress_quote_rate:
+        # Skip quote rate stress detection for synthetic quotes
+        # Quote rate is not meaningful for replay data
+        if not quote_is_synthetic and quote_rate > 0 and quote_rate <= self.config.stress_quote_rate:
             return RegimeSnapshot(RegimeState.STRESS, 0.8, "quote_rate_collapse")
 
         slope_strength = abs(ema_slope)

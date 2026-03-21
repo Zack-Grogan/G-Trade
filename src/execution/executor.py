@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import random
@@ -111,6 +112,26 @@ class OrderExecutor:
         self._protection_requested_at: Dict[str, datetime] = {}
         self._last_protective_fill_reason: Optional[str] = None
         self._recent_fills: List[Dict[str, Any]] = []
+        self._mock_fill_rng: Optional[random.Random] = None
+
+    def _limit_touch_fills_this_tick(self, order: Order, market_data: MarketData) -> bool:
+        """Probabilistic gate for mock limit fills when price touches the limit.
+
+        ``limit_touch_fill_ratio`` is 1.0 = always fill on touch (legacy). Lower values
+        simulate queue uncertainty. Deterministic when ``mock_fill_random_seed`` is unset:
+        SHA-256(order_id, tick timestamp) drives a uniform draw so replays match bit-for-bit.
+        """
+        ratio = float(getattr(self.replay_config, "limit_touch_fill_ratio", 1.0))
+        if ratio >= 1.0:
+            return True
+        if ratio <= 0.0:
+            return False
+        if self._mock_fill_rng is not None:
+            return self._mock_fill_rng.random() < ratio
+        seed_material = f"{order.order_id}|{market_data.timestamp.isoformat()}"
+        digest = hashlib.sha256(seed_material.encode()).digest()
+        u = int.from_bytes(digest[:8], "big") / float(2**64)
+        return u < ratio
 
     def _record_event(
         self,
@@ -235,6 +256,11 @@ class OrderExecutor:
         """Enable offline execution (no real orders sent to broker). For replay and tests only; practice-account runs use the live path."""
         self._mock_mode = True
         self.client.enable_mock_mode()
+        seed = getattr(self.replay_config, "mock_fill_random_seed", None)
+        if seed is not None:
+            self._mock_fill_rng = random.Random(int(seed))
+        else:
+            self._mock_fill_rng = None
         logger.info("Executor offline execution enabled (replay/tests only)")
         self._record_event(
             event_type="mock_mode_enabled",
@@ -259,6 +285,7 @@ class OrderExecutor:
         self._protection_requested_at = {}
         self._last_protective_fill_reason = None
         self._recent_fills = []
+        self._mock_fill_rng = None
 
     def process_market_data(self, market_data: MarketData) -> bool:
         """Advance mock pending orders against the latest quote."""
@@ -582,6 +609,9 @@ class OrderExecutor:
                 fillable = True
                 fill_price = max(order.limit_price, market_data.bid)
                 available_size = int(market_data.bid_size or order.remaining_quantity)
+            if fillable and not self._limit_touch_fills_this_tick(order, market_data):
+                fillable = False
+                fill_price = None
         elif order.order_type == "stop":
             if (
                 order.side == "sell"

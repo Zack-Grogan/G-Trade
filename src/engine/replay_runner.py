@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -9,11 +10,12 @@ import logging
 import math
 from pathlib import Path
 from statistics import mean, pstdev
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import pandas as pd
 
 from src.config import Config, get_config
+from src.engine.replay_tape import iter_tape_rows, market_data_from_tape_row
 from src.engine.risk_manager import TradeRecord
 from src.engine.scheduler import HotZoneScheduler
 from src.engine.trading_engine import TradingEngine, get_trading_engine
@@ -38,6 +40,16 @@ class ReplayResult:
     summary: dict
 
 
+def load_execution_from_paired_run(store: Any, run_id: str) -> dict[str, Any]:
+    """Load `execution` dict from the latest state snapshot for a prior run."""
+    rows = store.query_state_snapshots(run_id=run_id, limit=1, ascending=False)
+    if not rows:
+        return {}
+    payload = rows[0].get("payload") or {}
+    ex = payload.get("execution")
+    return ex if isinstance(ex, dict) else {}
+
+
 class ReplayRunner:
     """Feed historical events through the same engine used live."""
 
@@ -45,18 +57,17 @@ class ReplayRunner:
         self.config = config or get_config()
         self.engine = engine or get_trading_engine()
 
-    def run(self, path: str) -> ReplayResult:
+    def run(self, path: str, *, paired_live_run_id: Optional[str] = None) -> ReplayResult:
         """Replay a ProjectX-style CSV or JSONL file."""
         replay_path = Path(path)
-        events = list(self._load_events(replay_path))
-        synthetic_quotes_detected = any(event.quote_is_synthetic for event in events)
-
+        synthetic_quotes_detected = False
         self.engine.reset_runtime_state(clear_history=True)
         # Replay runs with offline execution (no broker orders); state and data_mode are labeled "replay".
         self.engine.enable_mock_mode()
 
         processed = 0
-        for event in events:
+        for event in self._iter_events_from_path(replay_path):
+            synthetic_quotes_detected = synthetic_quotes_detected or bool(event.quote_is_synthetic)
             self.engine.observability.record_market_tick(
                 {
                     "run_id": self.engine.observability.get_run_id(),
@@ -101,16 +112,363 @@ class ReplayRunner:
             [trade.pnl for trade in matrix_trades],
             max(self.config.replay_execution.dsr_trials, max(len(walk_forward), 1)),
         )
+        paired_ex: Optional[dict[str, Any]] = None
+        if paired_live_run_id:
+            paired_ex = load_execution_from_paired_run(
+                self.engine.observability, paired_live_run_id
+            )
         acceptance = self._acceptance_gates(
             matrix_cost_summary=matrix_cost_summary,
             benchmark_cost_summary=benchmark_cost_summary,
             walk_forward=walk_forward,
             synthetic_quotes_detected=synthetic_quotes_detected,
+            replay_input_kind="file",
+            execution_state_override=paired_ex,
         )
 
-        summary = {
+        summary = self._replay_summary_payload(
+            matrix_summary=matrix_summary,
+            matrix_cost_summary=matrix_cost_summary,
+            benchmark_cost_summary=benchmark_cost_summary,
+            walk_forward=walk_forward,
+            approx_dsr=approx_dsr,
+            synthetic_quotes_detected=synthetic_quotes_detected,
+            acceptance=acceptance,
+            replay_input_kind="file",
+            fidelity_note="CSV/JSONL file; use sqlite_tape replay for captured BBO.",
+            extra={
+                "paired_live_run_id": paired_live_run_id,
+                "observability_drops": self.engine.observability.get_dropped_event_count(),
+            },
+        )
+        set_state(replay_summary=summary)
+
+        return ReplayResult(
+            path=str(replay_path), events=processed, segments=walk_forward, summary=summary
+        )
+
+    def run_from_topstep(
+        self,
+        symbol: str = "ES",
+        days_back: int = 30,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        *,
+        paired_live_run_id: Optional[str] = None,
+    ) -> ReplayResult:
+        """Replay Topstep **minute OHLCV** bars through the engine.
+
+        **Deprecated:** Not a validated research path — synthetic BBO, no historical ticks/L2.
+        Prefer tape replay or file replay; see ``docs/replay/replay-topstep-deprecated.md``.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        # Resolve date range
+        end_dt: datetime
+        start_dt: datetime
+        if start_date and end_date:
+            start_dt = pd.Timestamp(start_date).to_pydatetime()
+            end_dt = pd.Timestamp(end_date).to_pydatetime()
+        else:
+            end_dt = datetime.now(timezone.utc)
+            start_dt = end_dt - timedelta(days=max(int(days_back), 1))
+
+        if start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+
+        bars, bar_meta = self.engine.client.retrieve_bars_covering_range(
+            symbol,
+            start_time=start_dt,
+            end_time=end_dt,
+            unit="minute",
+            unit_number=1,
+        )
+
+        if not bars:
+            logger.warning("No bars returned from Topstep for %s", symbol)
+            return ReplayResult(
+                path=f"topstep://{symbol}",
+                events=0,
+                segments=[],
+                summary={
+                    "error": "no_data",
+                    "bars_returned": 0,
+                    "bar_fetch_meta": bar_meta,
+                },
+            )
+
+        self.engine.reset_runtime_state(clear_history=True)
+        self.engine.enable_mock_mode()
+
+        processed = 0
+        for bar in bars:
+            market_data = self._bar_to_market_data(bar, symbol)
+            # Update client's mock market data so executor uses correct prices
+            if hasattr(self.engine.client, "update_mock_price"):
+                self.engine.client.update_mock_price(market_data.last or market_data.mid or 0.0)
+            self.engine.observability.record_market_tick(
+                {
+                    "run_id": self.engine.observability.get_run_id(),
+                    "symbol": symbol,
+                    "bid": market_data.bid,
+                    "ask": market_data.ask,
+                    "last": market_data.last,
+                    "volume": bar.get("volume", 0),
+                    "volume_is_cumulative": False,
+                    "quote_is_synthetic": True,
+                    "source": "TopstepHistory",
+                    "timestamp": bar.get("time"),
+                    "open": bar.get("open"),
+                    "high": bar.get("high"),
+                    "low": bar.get("low"),
+                    "close": bar.get("close"),
+                    "historical": True,
+                }
+            )
+            self.engine.on_topstep_history_bar(bar, market_data)
+            processed += 1
+
+        self.engine.flush_pending_bar()
+        self.engine.observability.force_flush()
+
+        matrix_trades = list(self.engine.risk_manager.get_trade_history())
+        bars_df = self.engine._bars.copy()  # noqa: SLF001
+        matrix_summary = self.engine.build_performance_summary()
+        matrix_cost_summary = self._costed_trade_summary(
+            matrix_trades, strategy_name="WEIGHTED_SCORE_MATRIX"
+        )
+
+        benchmark_trades = self._run_benchmark_portfolio(bars_df)
+        benchmark_cost_summary = self._costed_trade_summary(
+            benchmark_trades, strategy_name="BENCHMARK_PORTFOLIO"
+        )
+
+        walk_forward = self._walk_forward_segments(bars_df, matrix_trades, benchmark_trades)
+        approx_dsr = self._deflated_sharpe_ratio(
+            [trade.pnl for trade in matrix_trades],
+            max(self.config.replay_execution.dsr_trials, max(len(walk_forward), 1)),
+        )
+        paired_ex: Optional[dict[str, Any]] = None
+        if paired_live_run_id:
+            paired_ex = load_execution_from_paired_run(
+                self.engine.observability, paired_live_run_id
+            )
+        acceptance = self._acceptance_gates(
+            matrix_cost_summary=matrix_cost_summary,
+            benchmark_cost_summary=benchmark_cost_summary,
+            walk_forward=walk_forward,
+            synthetic_quotes_detected=True,  # Minute bars use synthetic BBO
+            replay_input_kind="topstep_bars",
+            execution_state_override=paired_ex,
+        )
+
+        summary = self._replay_summary_payload(
+            matrix_summary=matrix_summary,
+            matrix_cost_summary=matrix_cost_summary,
+            benchmark_cost_summary=benchmark_cost_summary,
+            walk_forward=walk_forward,
+            approx_dsr=approx_dsr,
+            synthetic_quotes_detected=True,
+            acceptance=acceptance,
+            replay_input_kind="topstep_bars",
+            fidelity_note=(
+                "Minute OHLCV from Topstep history API appended with true H/L; "
+                "BBO on each step is synthetic (1 tick wide around close), not L2."
+            ),
+            extra={
+                "source": "topstep",
+                "symbol": symbol,
+                "start_date": start_dt.isoformat(),
+                "end_date": end_dt.isoformat(),
+                "bars_processed": processed,
+                "bar_fetch_meta": bar_meta,
+                "paired_live_run_id": paired_live_run_id,
+                "observability_drops": self.engine.observability.get_dropped_event_count(),
+            },
+        )
+        set_state(replay_summary=summary)
+
+        return ReplayResult(
+            path=f"topstep://{symbol}",
+            events=processed,
+            segments=walk_forward,
+            summary=summary,
+        )
+
+    def run_from_tape(
+        self,
+        store: Any,
+        *,
+        tape_run_id: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        symbol: Optional[str] = None,
+        sources: Optional[list[str]] = None,
+        paired_live_run_id: Optional[str] = None,
+    ) -> ReplayResult:
+        """Replay ticks from SQLite `market_tape` (e.g. live GatewayQuote / GatewayTrade rows)."""
+        if not tape_run_id and (start_time is None or end_time is None):
+            raise ValueError("Specify tape_run_id or both start_time and end_time")
+
+        batch = max(int(self.config.replay.segment_size), 1)
+        synthetic_quotes_detected = False
+        processed = 0
+
+        self.engine.reset_runtime_state(clear_history=True)
+        self.engine.enable_mock_mode()
+
+        for row in iter_tape_rows(
+            store,
+            batch_size=batch,
+            run_id=tape_run_id,
+            start_time=start_time,
+            end_time=end_time,
+            symbol=symbol,
+            sources=sources,
+        ):
+            event = market_data_from_tape_row(row)
+            synthetic_quotes_detected = synthetic_quotes_detected or bool(event.quote_is_synthetic)
+            self.engine.observability.record_market_tick(
+                {
+                    "run_id": self.engine.observability.get_run_id(),
+                    "symbol": event.symbol,
+                    "bid": event.bid,
+                    "ask": event.ask,
+                    "last": event.last,
+                    "volume": event.volume,
+                    "bid_size": event.bid_size,
+                    "ask_size": event.ask_size,
+                    "last_size": event.last_size,
+                    "volume_is_cumulative": event.volume_is_cumulative,
+                    "quote_is_synthetic": event.quote_is_synthetic,
+                    "trade_side": event.trade_side,
+                    "latency_ms": event.latency_ms,
+                    "source": "ReplayTape",
+                    "timestamp": event.timestamp,
+                }
+            )
+            self.engine.on_market_data(event)
+            processed += 1
+
+        self.engine.flush_pending_bar()
+        self.engine.observability.force_flush()
+
+        matrix_trades = list(self.engine.risk_manager.get_trade_history())
+        bars = self.engine._bars.copy()  # noqa: SLF001
+        matrix_summary = self.engine.build_performance_summary()
+        matrix_cost_summary = self._costed_trade_summary(
+            matrix_trades, strategy_name="WEIGHTED_SCORE_MATRIX"
+        )
+
+        benchmark_trades = self._run_benchmark_portfolio(bars)
+        benchmark_cost_summary = self._costed_trade_summary(
+            benchmark_trades, strategy_name="BENCHMARK_PORTFOLIO"
+        )
+
+        walk_forward = self._walk_forward_segments(bars, matrix_trades, benchmark_trades)
+        approx_dsr = self._deflated_sharpe_ratio(
+            [trade.pnl for trade in matrix_trades],
+            max(self.config.replay_execution.dsr_trials, max(len(walk_forward), 1)),
+        )
+        paired_ex: Optional[dict[str, Any]] = None
+        if paired_live_run_id:
+            paired_ex = load_execution_from_paired_run(store, paired_live_run_id)
+        acceptance = self._acceptance_gates(
+            matrix_cost_summary=matrix_cost_summary,
+            benchmark_cost_summary=benchmark_cost_summary,
+            walk_forward=walk_forward,
+            synthetic_quotes_detected=synthetic_quotes_detected,
+            replay_input_kind="sqlite_tape",
+            execution_state_override=paired_ex,
+        )
+
+        label = f"sqlite_tape://{tape_run_id or 'range'}"
+        summary = self._replay_summary_payload(
+            matrix_summary=matrix_summary,
+            matrix_cost_summary=matrix_cost_summary,
+            benchmark_cost_summary=benchmark_cost_summary,
+            walk_forward=walk_forward,
+            approx_dsr=approx_dsr,
+            synthetic_quotes_detected=synthetic_quotes_detected,
+            acceptance=acceptance,
+            replay_input_kind="sqlite_tape",
+            fidelity_note="Replay from persisted market_tape (captured live stream rows).",
+            extra={
+                "tape_run_id": tape_run_id,
+                "tape_start": start_time.isoformat() if start_time else None,
+                "tape_end": end_time.isoformat() if end_time else None,
+                "tape_symbol_filter": symbol,
+                "tape_sources_filter": sources,
+                "paired_live_run_id": paired_live_run_id,
+                "ticks_replayed": processed,
+                "observability_drops": self.engine.observability.get_dropped_event_count(),
+            },
+        )
+        set_state(replay_summary=summary)
+
+        return ReplayResult(path=label, events=processed, segments=walk_forward, summary=summary)
+
+    def _bar_to_market_data(self, bar: dict, symbol: str = "ES") -> MarketData:
+        """Convert a Topstep bar dict to MarketData for replay (synthetic 1-tick BBO, not H/L as bid/ask)."""
+        bar_time = bar.get("time")
+        if bar_time is None:
+            bar_time = pd.Timestamp.now()
+        elif isinstance(bar_time, str):
+            bar_time = pd.Timestamp(bar_time)
+        elif isinstance(bar_time, datetime):
+            bar_time = pd.Timestamp(bar_time)
+
+        if bar_time.tzinfo is None:
+            bar_time = bar_time.tz_localize("UTC")
+        else:
+            bar_time = bar_time.tz_convert("UTC")
+
+        close = float(bar.get("close", 0) or 0)
+        if close <= 0:
+            close = float(bar.get("open", 0) or 0)
+        tick = float(getattr(self.config.volume_profile, "tick_size", 0.25) or 0.25)
+        half = tick / 2.0
+        bid = close - half
+        ask = close + half
+        vol = int(bar.get("volume", 0) or 0)
+        return MarketData(
+            symbol=symbol,
+            bid=bid,
+            ask=ask,
+            last=close,
+            volume=vol,
+            volume_is_cumulative=False,
+            quote_is_synthetic=True,
+            bid_size=0.0,
+            ask_size=0.0,
+            last_size=float(vol),
+            trade_side="",
+            latency_ms=0,
+            timestamp=bar_time.to_pydatetime(),
+        )
+
+    def _replay_summary_payload(
+        self,
+        *,
+        matrix_summary: dict,
+        matrix_cost_summary: dict,
+        benchmark_cost_summary: dict,
+        walk_forward: list[dict],
+        approx_dsr: float,
+        synthetic_quotes_detected: bool,
+        acceptance: dict,
+        replay_input_kind: str,
+        fidelity_note: str,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        """Shared JSON summary for all replay entry points."""
+        base = {
             **matrix_summary,
             "matrix": matrix_cost_summary,
+            "replay_input_kind": replay_input_kind,
+            "fidelity_note": fidelity_note,
             "benchmarks": {
                 "enabled": self.config.validation.benchmarks_enabled,
                 "strategy_by_zone": dict(self.config.validation.benchmark_zone_strategies),
@@ -143,194 +501,12 @@ class ReplayRunner:
             "walk_forward": walk_forward,
             "acceptance": acceptance,
         }
-        set_state(replay_summary=summary)
+        if extra:
+            base.update(extra)
+        return base
 
-        return ReplayResult(
-            path=str(replay_path), events=processed, segments=walk_forward, summary=summary
-        )
-
-    def run_from_topstep(
-        self,
-        symbol: str = "ES",
-        days_back: int = 30,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-    ) -> ReplayResult:
-        """Replay recent Topstep historical bars through the engine."""
-        from datetime import datetime, timedelta, timezone
-
-        # Resolve date range
-        end_dt: datetime
-        start_dt: datetime
-        if start_date and end_date:
-            start_dt = pd.Timestamp(start_date).to_pydatetime()
-            end_dt = pd.Timestamp(end_date).to_pydatetime()
-        else:
-            end_dt = datetime.now(timezone.utc)
-            start_dt = end_dt - timedelta(days=max(int(days_back), 1))
-
-        if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=timezone.utc)
-        if end_dt.tzinfo is None:
-            end_dt = end_dt.replace(tzinfo=timezone.utc)
-
-        # Fetch bars from Topstep API
-        bars = self.engine.client.retrieve_bars(
-            symbol=symbol,
-            start_time=start_dt,
-            end_time=end_dt,
-            unit="minute",
-            unit_number=1,
-            limit=50000,
-        )
-
-        if not bars:
-            logger.warning("No bars returned from Topstep for %s", symbol)
-            return ReplayResult(
-                path=f"topstep://{symbol}",
-                events=0,
-                segments=[],
-                summary={"error": "no_data", "bars_returned": 0},
-            )
-
-        self.engine.reset_runtime_state(clear_history=True)
-        self.engine.enable_mock_mode()
-
-        processed = 0
-        for bar in bars:
-            market_data = self._bar_to_market_data(bar, symbol)
-            self.engine.observability.record_market_tick(
-                {
-                    "run_id": self.engine.observability.get_run_id(),
-                    "symbol": symbol,
-                    "bid": bar.get("low", 0),
-                    "ask": bar.get("high", 0),
-                    "last": bar.get("close", 0),
-                    "volume": bar.get("volume", 0),
-                    "volume_is_cumulative": False,
-                    "quote_is_synthetic": True,
-                    "source": "TopstepHistory",
-                    "timestamp": bar.get("time"),
-                    "open": bar.get("open"),
-                    "high": bar.get("high"),
-                    "low": bar.get("low"),
-                    "close": bar.get("close"),
-                    "historical": True,
-                }
-            )
-            self.engine.on_market_data(market_data)
-            processed += 1
-
-        self.engine.flush_pending_bar()
-        self.engine.observability.force_flush()
-
-        matrix_trades = list(self.engine.risk_manager.get_trade_history())
-        bars_df = self.engine._bars.copy()  # noqa: SLF001
-        matrix_summary = self.engine.build_performance_summary()
-        matrix_cost_summary = self._costed_trade_summary(
-            matrix_trades, strategy_name="WEIGHTED_SCORE_MATRIX"
-        )
-
-        benchmark_trades = self._run_benchmark_portfolio(bars_df)
-        benchmark_cost_summary = self._costed_trade_summary(
-            benchmark_trades, strategy_name="BENCHMARK_PORTFOLIO"
-        )
-
-        walk_forward = self._walk_forward_segments(bars_df, matrix_trades, benchmark_trades)
-        approx_dsr = self._deflated_sharpe_ratio(
-            [trade.pnl for trade in matrix_trades],
-            max(self.config.replay_execution.dsr_trials, max(len(walk_forward), 1)),
-        )
-        acceptance = self._acceptance_gates(
-            matrix_cost_summary=matrix_cost_summary,
-            benchmark_cost_summary=benchmark_cost_summary,
-            walk_forward=walk_forward,
-            synthetic_quotes_detected=True,  # Historical data is always synthetic
-        )
-
-        summary = {
-            **matrix_summary,
-            "matrix": matrix_cost_summary,
-            "benchmarks": {
-                "enabled": self.config.validation.benchmarks_enabled,
-                "strategy_by_zone": dict(self.config.validation.benchmark_zone_strategies),
-                "portfolio": benchmark_cost_summary,
-            },
-            "comparison": {
-                "net_pnl_delta": round(
-                    matrix_cost_summary["net_pnl"] - benchmark_cost_summary["net_pnl"], 2
-                ),
-                "stressed_net_pnl_delta": round(
-                    matrix_cost_summary["stressed_net_pnl"]
-                    - benchmark_cost_summary["stressed_net_pnl"],
-                    2,
-                ),
-                "trade_count_delta": matrix_cost_summary["trade_count"]
-                - benchmark_cost_summary["trade_count"],
-            },
-            "cost_assumptions": {
-                "commission_per_contract": self.config.replay_execution.commission_per_contract,
-                "exchange_fee_per_contract": self.config.replay_execution.exchange_fee_per_contract,
-                "market_slippage_ticks": self.config.replay_execution.market_slippage_ticks,
-                "stress_slippage_ticks": self.config.replay_execution.stress_slippage_ticks,
-                "limit_fill_penalty_ticks": self.config.replay_execution.limit_fill_penalty_ticks,
-            },
-            "deflated_sharpe_ratio_approx": approx_dsr,
-            "deflated_sharpe_ratio_is_approximation": True,
-            "synthetic_quotes_detected": True,
-            "decision_ready": acceptance["decision_ready"],
-            "decision_ready_reason": acceptance["decision_ready_reason"],
-            "walk_forward": walk_forward,
-            "acceptance": acceptance,
-            "source": "topstep",
-            "symbol": symbol,
-            "start_date": start_dt.isoformat(),
-            "end_date": end_dt.isoformat(),
-            "bars_processed": processed,
-        }
-        set_state(replay_summary=summary)
-
-        return ReplayResult(
-            path=f"topstep://{symbol}",
-            events=processed,
-            segments=walk_forward,
-            summary=summary,
-        )
-
-    def _bar_to_market_data(self, bar: dict, symbol: str = "ES") -> MarketData:
-        """Convert a Topstep bar dict to MarketData event."""
-        bar_time = bar.get("time")
-        if bar_time is None:
-            bar_time = pd.Timestamp.now()
-        elif isinstance(bar_time, str):
-            bar_time = pd.Timestamp(bar_time)
-        elif isinstance(bar_time, datetime):
-            bar_time = pd.Timestamp(bar_time)
-
-        if bar_time.tzinfo is None:
-            bar_time = bar_time.tz_localize("UTC")
-        else:
-            bar_time = bar_time.tz_convert("UTC")
-
-        close = float(bar.get("close", 0))
-        return MarketData(
-            symbol=symbol,
-            bid=float(bar.get("low", close)),
-            ask=float(bar.get("high", close)),
-            last=close,
-            volume=int(bar.get("volume", 0)),
-            volume_is_cumulative=False,
-            quote_is_synthetic=True,
-            bid_size=0.0,
-            ask_size=0.0,
-            last_size=float(bar.get("volume", 0)),
-            trade_side="",
-            latency_ms=0,
-            timestamp=bar_time.to_pydatetime(),
-        )
-
-    def _load_events(self, replay_path: Path) -> Iterable[MarketData]:
-        """Yield market data snapshots from a replay file."""
+    def _iter_events_from_path(self, replay_path: Path) -> Iterable[MarketData]:
+        """Stream market events from JSONL or CSV without loading the full file into memory."""
         if replay_path.suffix.lower() == ".jsonl":
             with replay_path.open("r", encoding="utf-8") as handle:
                 for line in handle:
@@ -339,9 +515,14 @@ class ReplayRunner:
                     yield self._event_to_market_data(json.loads(line))
             return
 
-        frame = pd.read_csv(replay_path)
-        for _, row in frame.iterrows():
-            yield self._event_to_market_data(row.to_dict())
+        with replay_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                yield self._event_to_market_data(row)
+
+    def _load_events(self, replay_path: Path) -> Iterable[MarketData]:
+        """Yield market data snapshots from a replay file."""
+        return self._iter_events_from_path(replay_path)
 
     def _event_to_market_data(self, raw: dict) -> MarketData:
         """Map raw replay event payload into MarketData."""
@@ -760,9 +941,15 @@ class ReplayRunner:
         benchmark_cost_summary: dict,
         walk_forward: list[dict],
         synthetic_quotes_detected: bool,
+        *,
+        replay_input_kind: Optional[str] = None,
+        execution_state_override: Optional[dict[str, Any]] = None,
     ) -> dict:
         """Apply fixed promotion gates for the current matrix version."""
-        execution_state = get_state().execution or {}
+        if execution_state_override is not None:
+            execution_state = execution_state_override
+        else:
+            execution_state = get_state().execution or {}
         zone_stats = matrix_cost_summary.get("zone_stats", {})
         total_positive_zone_pnl = sum(
             max(stats.get("net_pnl", 0.0), 0.0) for stats in zone_stats.values()
@@ -789,6 +976,21 @@ class ReplayRunner:
         if not decision_ready:
             decision_ready_reason = "synthetic_quotes_rejected"
 
+        prac_applicable = False
+        if replay_input_kind is None:
+            prac_applicable = True
+        elif execution_state_override is not None:
+            prac_applicable = True
+        prac_observability_ok: Optional[bool]
+        if prac_applicable:
+            prac_observability_ok = (
+                int(execution_state.get("protection_failures", 0)) == 0
+                and int(execution_state.get("fail_safe_count", 0)) == 0
+                and fill_drift_ok
+            )
+        else:
+            prac_observability_ok = None
+
         gates = {
             "decision_ready": decision_ready,
             "decision_ready_reason": decision_ready_reason,
@@ -801,22 +1003,19 @@ class ReplayRunner:
             "walk_forward_ok": positive_window_ratio
             >= float(self.config.validation.min_positive_test_window_ratio),
             "positive_test_window_ratio": round(positive_window_ratio, 4),
-            "prac_observability_ok": (
-                int(execution_state.get("protection_failures", 0)) == 0
-                and int(execution_state.get("fail_safe_count", 0)) == 0
-                and fill_drift_ok
-            ),
+            "prac_observability_applicable": prac_applicable,
+            "prac_observability_ok": prac_observability_ok,
         }
-        gates["promotable"] = decision_ready and all(
-            gates[name]
-            for name in (
-                "benchmark_outperformance",
-                "stress_survival_ok",
-                "zone_diversity_ok",
-                "walk_forward_ok",
-                "prac_observability_ok",
-            )
+        promotion_core = (
+            "benchmark_outperformance",
+            "stress_survival_ok",
+            "zone_diversity_ok",
+            "walk_forward_ok",
         )
+        promotion_ok = all(gates[name] for name in promotion_core)
+        if prac_applicable:
+            promotion_ok = promotion_ok and bool(prac_observability_ok)
+        gates["promotable"] = bool(decision_ready and promotion_ok)
         return gates
 
     def _trade_in_window(self, trade: TradeRecord, start: pd.Timestamp, end: pd.Timestamp) -> bool:

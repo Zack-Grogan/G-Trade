@@ -50,6 +50,7 @@ class FeatureSnapshot:
     mean_reversion_ready_long: bool = False
     mean_reversion_ready_short: bool = False
     execution_tradeable: bool = True
+    quote_is_synthetic: bool = False
     active_session: str = "RTH"
     regime_state: str = RegimeState.RANGE.value
     regime_reason: str = ""
@@ -459,11 +460,14 @@ class DecisionMatrixEvaluator:
         freshness_proxy = _clip(2.0 - (quote_age / 2.0))
         bar_range_spread_ratio = _clip((bar_range / max(spread, 0.25)) / 4.0)
         slippage_proxy = _clip(2.0 - (spread / 0.5))
+        quote_is_synthetic = getattr(market_data, "quote_is_synthetic", False)
         execution_tradeable = (
             spread <= (self.config.order_execution.max_slippage_ticks * 0.25) and quote_age <= 5.0
         )
-        if market_data is None:
+        # Relax execution tradeable for synthetic quotes (replay/backtest mode)
+        if market_data is None or quote_is_synthetic:
             execution_tradeable = True
+        if market_data is None:
             freshness_proxy = 1.0
             spread_proxy = 1.0
             slippage_proxy = 1.0
@@ -625,6 +629,7 @@ class DecisionMatrixEvaluator:
             mean_reversion_ready_long=mean_reversion_ready_long,
             mean_reversion_ready_short=mean_reversion_ready_short,
             execution_tradeable=execution_tradeable,
+            quote_is_synthetic=quote_is_synthetic,
             active_session=active_session,
             event_tags=list(event_context.active_tags),
             capabilities={"trade_side_available": flow_snapshot.trade_side_available},
@@ -639,6 +644,7 @@ class DecisionMatrixEvaluator:
             value_area_position=value_area_position,
             event_active=event_context.blackout_active,
             post_event_cooling=event_context.post_event_cooling,
+            quote_is_synthetic=quote_is_synthetic,
         )
         snapshot.regime_state = regime_snapshot.state.value
         snapshot.regime_reason = regime_snapshot.reason
@@ -706,6 +712,16 @@ class DecisionMatrixEvaluator:
             4,
         )
 
+        # Apply side adjustments from config
+        side_adj = self.alpha.side_adjustment
+        long_score += side_adj.get("long", 0.0)
+        short_score += side_adj.get("short", 0.0)
+
+        # Apply regime-based multipliers
+        regime_mult = self.alpha.regime_multipliers.get(snapshot.regime_state, {})
+        long_score *= regime_mult.get("long", 1.0)
+        short_score *= regime_mult.get("short", 1.0)
+
         # Log diagnostic info for score calculation
         logger.debug(
             "matrix_debug zone=%s weights_found=%s long_weights=%s short_weights=%s flat_weights=%s",
@@ -727,6 +743,15 @@ class DecisionMatrixEvaluator:
         opposing_score = short_score if dominant_side == "long" else long_score
         score_gap = dominant_score - opposing_score
 
+        # Zone floor cannot be below global min (stricter-only overrides)
+        min_entry_threshold = max(
+            self.alpha.min_entry_score,
+            float(self.alpha.zone_min_entry_score.get(zone.name, self.alpha.min_entry_score)),
+        )
+        exit_decay_threshold = self.alpha.zone_exit_decay_score.get(
+            zone.name, self.alpha.exit_decay_score
+        )
+
         if zone.state.value == "flatten_only" or self.alpha.zone_vetoes.get(zone.name, {}).get(
             "flatten_only"
         ):
@@ -743,10 +768,10 @@ class DecisionMatrixEvaluator:
             ):
                 action = "FLAT"
                 reason = "opposite_score_dominance"
-            elif long_score < self.alpha.exit_decay_score:
+            elif long_score < exit_decay_threshold:
                 action = "FLAT"
                 reason = "matrix_decay"
-            elif held_minutes >= self._zone_hold_limit(zone.name):
+            elif self._zone_hold_limit(zone.name) > 0 and held_minutes >= self._zone_hold_limit(zone.name):
                 action = "FLAT"
                 reason = "time_stop"
             elif (
@@ -770,10 +795,10 @@ class DecisionMatrixEvaluator:
             ):
                 action = "FLAT"
                 reason = "opposite_score_dominance"
-            elif short_score < self.alpha.exit_decay_score:
+            elif short_score < exit_decay_threshold:
                 action = "FLAT"
                 reason = "matrix_decay"
-            elif held_minutes >= self._zone_hold_limit(zone.name):
+            elif self._zone_hold_limit(zone.name) > 0 and held_minutes >= self._zone_hold_limit(zone.name):
                 action = "FLAT"
                 reason = "time_stop"
             elif (
@@ -788,7 +813,7 @@ class DecisionMatrixEvaluator:
                 reason = "short_still_valid"
         elif (
             allow_entries
-            and dominant_score >= self.alpha.min_entry_score
+            and dominant_score >= min_entry_threshold
             and score_gap >= self.alpha.min_score_gap
             and dominant_score >= (flat_bias + self.alpha.flat_bias_buffer)
             and not [item for item in vetoes if item != "reduced_risk"]
@@ -839,8 +864,11 @@ class DecisionMatrixEvaluator:
             vetoes.append("execution_degraded")
 
         max_spread_ticks = rules.get("max_spread_ticks")
-        if max_spread_ticks is not None and signed.get("spread_ticks", 0.0) > float(
-            max_spread_ticks
+        # Skip spread veto for synthetic quotes (replay/backtest mode) - spread is bar range, not real bid-ask
+        if (
+            max_spread_ticks is not None
+            and not snapshot.quote_is_synthetic
+            and signed.get("spread_ticks", 0.0) > float(max_spread_ticks)
         ):
             vetoes.append("spread_too_wide")
 
@@ -918,4 +946,5 @@ class DecisionMatrixEvaluator:
         return (current_ts - entry_ts).total_seconds() / 60.0
 
     def _zone_hold_limit(self, zone_name: str) -> int:
-        return int(self.alpha.max_hold_minutes.get(zone_name, 20))
+        """Return max hold minutes for zone. 0 means no time limit."""
+        return int(self.alpha.max_hold_minutes.get(zone_name, 0))

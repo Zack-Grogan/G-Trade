@@ -89,13 +89,18 @@ class RiskConfig:
     max_position_loss: float = 200
     max_consecutive_losses: int = 3
     max_trades_per_hour: int = 6
-    max_trades_per_zone: int = 3
-    max_daily_trades: int = 10
+    max_trades_per_zone: int = 2
+    max_daily_trades: int = 5
     enable_circuit_breakers: bool = True
     vol_spike_threshold: float = 1.75
     session_timezone: str = "America/Chicago"
     session_reset_hour: int = 17
     session_reset_minute: int = 0
+    # Optional prop-style trailing drawdown mirror — see docs/risk/topstep-evaluation-mirror.md
+    evaluation_drawdown_mirror_enabled: bool = False
+    evaluation_starting_equity: float = 50_000.0
+    evaluation_trailing_drawdown_dollars: float = 2_000.0
+    evaluation_mirror_buffer_dollars: float = 0.0
 
 
 def _default_zone_weights() -> Dict[str, Dict[str, Dict[str, float]]]:
@@ -249,12 +254,45 @@ def _default_zone_vetoes() -> Dict[str, Dict[str, Any]]:
 class AlphaConfig:
     matrix_version: str = "hotzone-v3"
     decision_interval: str = "tick_and_bar"
+    # Global entry thresholds
     min_entry_score: float = 5.0
     min_score_gap: float = 2.0
     exit_decay_score: float = 1.5
     reverse_score_gap: float = 2.5
     full_size_score: float = 6.5
     flat_bias_buffer: float = 0.5
+    # Per-zone entry score overrides
+    zone_min_entry_score: Dict[str, float] = field(
+        default_factory=lambda: {
+            "Pre-Open": 5.5,
+            "Post-Open": 5.0,
+            "Midday": 5.5,
+            "Outside": 6.0,
+        }
+    )
+    # Per-side score adjustments
+    side_adjustment: Dict[str, float] = field(
+        default_factory=lambda: {"long": 0.0, "short": 0.0}
+    )
+    # Minimum dominant feature score requirement
+    min_dominant_feature_score: float = 0.0
+    # Regime-based score multipliers
+    regime_multipliers: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "TREND": {"long": 1.0, "short": 1.0},
+            "RANGE": {"long": 1.0, "short": 1.0},
+            "STRESS": {"long": 1.0, "short": 1.0},
+        }
+    )
+    # Per-zone exit decay thresholds
+    zone_exit_decay_score: Dict[str, float] = field(
+        default_factory=lambda: {
+            "Pre-Open": 1.2,
+            "Post-Open": 1.5,
+            "Midday": 1.0,
+            "Outside": 1.5,
+        }
+    )
     stop_loss_atr: float = 1.2
     take_profit_atr: Dict[str, float] = field(
         default_factory=lambda: {
@@ -343,6 +381,7 @@ class ReplayExecutionConfig:
     latency_ms_jitter: int = 25
     allow_partial_fills: bool = True
     limit_touch_fill_ratio: float = 1.0
+    mock_fill_random_seed: Optional[int] = None
     dsr_trials: int = 20
     volume_mode: str = "auto"
     commission_per_contract: float = 2.5
@@ -424,6 +463,7 @@ class ObservabilityConfig:
     queue_max_size: int = 10000
     retention_days: int = 14
     capture_run_provenance: bool = True
+    record_decision_latency: bool = True
     persist_completed_trades: bool = True
     backfill_missing_trade_records: bool = True
     sync_account_trade_history_on_startup: bool = True

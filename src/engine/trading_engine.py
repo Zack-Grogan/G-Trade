@@ -123,6 +123,12 @@ class BarAggregator:
         self._bucket_start = None
         return completed_bar
 
+    def reset(self) -> None:
+        """Clear in-progress aggregation (e.g. after ingesting an external completed bar)."""
+        self._bucket_start = None
+        self._bar = None
+        self._last_total_volume = None
+
 
 @dataclass
 class WatchdogState:
@@ -215,6 +221,7 @@ class TradingEngine:
         self._last_broker_truth_refresh_at: float = 0.0
         self._broker_truth_refresh_interval_seconds: float = 30.0
         self._last_broker_truth_contradictions: Dict[str, Any] = {}
+        self._last_feed_perf_counter: Optional[float] = None
         self._decision_sequence: int = 0
         self._attempt_sequence: int = 0
         self._position_sequence: int = 0
@@ -285,6 +292,8 @@ class TradingEngine:
         attempt_id: Optional[str] = None,
         position_id: Optional[str] = None,
         trade_id: Optional[str] = None,
+        latency_ms_market_to_decision: Optional[float] = None,
+        latency_ms_decision_to_submit: Optional[float] = None,
     ) -> None:
         decision_id = decision_id or self._next_stable_id("decision")
         self._last_decision_id = decision_id
@@ -307,6 +316,7 @@ class TradingEngine:
                 if zone
                 else ("active" if self.config.strategy.trade_outside_hotzones else "inactive")
             ),
+            "action": decision.action,
             "decision_reason": decision.reason,
             "long_score": decision.long_score,
             "short_score": decision.short_score,
@@ -368,6 +378,11 @@ class TradingEngine:
             "entry_guard": dict(self._last_entry_guard_snapshot),
             "unresolved_entry": self._unresolved_entry_snapshot(),
         }
+        if getattr(self.config.observability, "record_decision_latency", True):
+            if latency_ms_market_to_decision is not None:
+                payload["latency_ms_market_to_decision"] = round(latency_ms_market_to_decision, 3)
+            if latency_ms_decision_to_submit is not None:
+                payload["latency_ms_decision_to_submit"] = round(latency_ms_decision_to_submit, 3)
         self.observability.record_decision_snapshot(
             {
                 "decided_at": event_time,
@@ -720,29 +735,42 @@ class TradingEngine:
         )
         self._position_sync_requested = True
 
+    def _feed_step_before_bars(self, market_data: MarketData) -> bool:
+        """Update feed-derived state shared by tick replay and Topstep bar replay.
+
+        Returns True if the caller should stop (evaluation mirror flatten), else False.
+        """
+        self._latest_market_data = market_data
+        self._last_feed_perf_counter = time.perf_counter()
+        self._watchdog_state.last_feed_time = market_data.timestamp
+        self.risk_manager.observe_time(market_data.timestamp)
+        self._last_price = market_data.last or market_data.mid or self._last_price
+        self.risk_manager.observe_market_price(
+            market_data.mid or market_data.last, market_data.timestamp
+        )
+        if self._last_position != 0 and self.risk_manager.is_evaluation_mirror_breached():
+            self._flatten_position("evaluation_drawdown_mirror")
+            return True
+        self._latest_flow_snapshot = self.microstructure.update(market_data)
+        set_state(last_price=self._last_price)
+
+        if self._last_position != 0 and self._last_price:
+            self._position_high_water = max(
+                self._position_high_water or self._last_price, self._last_price
+            )
+            self._position_low_water = min(
+                self._position_low_water or self._last_price, self._last_price
+            )
+        if self.executor.process_market_data(market_data):
+            self._position_sync_requested = True
+            self._sync_position_state()
+        return False
+
     def on_market_data(self, market_data: MarketData) -> None:
         """Handle incoming market data."""
         with self._lock:
-            self._latest_market_data = market_data
-            self._watchdog_state.last_feed_time = market_data.timestamp
-            self.risk_manager.observe_time(market_data.timestamp)
-            self._last_price = market_data.last or market_data.mid or self._last_price
-            self.risk_manager.observe_market_price(
-                market_data.mid or market_data.last, market_data.timestamp
-            )
-            self._latest_flow_snapshot = self.microstructure.update(market_data)
-            set_state(last_price=self._last_price)
-
-            if self._last_position != 0 and self._last_price:
-                self._position_high_water = max(
-                    self._position_high_water or self._last_price, self._last_price
-                )
-                self._position_low_water = min(
-                    self._position_low_water or self._last_price, self._last_price
-                )
-            if self.executor.process_market_data(market_data):
-                self._position_sync_requested = True
-                self._sync_position_state()
+            if self._feed_step_before_bars(market_data):
+                return
 
             flattened = self._enforce_tick_level_risk(self._last_price)
             completed_bar = self.bar_aggregator.update(market_data)
@@ -760,6 +788,62 @@ class TradingEngine:
                 and not self._bars.empty
             ):
                 self._evaluate_current_state(allow_entries=False)
+
+    def _api_bar_to_completed_ohlc(self, api_bar: dict[str, Any]) -> dict[str, Any]:
+        """Map Topstep history bar dict to the shape consumed by `_append_bar` (timestamp in default_tz)."""
+        bar_time = api_bar.get("time")
+        if bar_time is None:
+            raise ValueError("Topstep history bar missing 'time'")
+        ts = pd.Timestamp(bar_time)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        local = ts.tz_convert(self.default_tz).to_pydatetime()
+        bucket_start = local.replace(second=0, microsecond=0)
+        close = float(api_bar.get("close") or 0)
+        if close <= 0:
+            close = float(api_bar.get("open") or api_bar.get("last") or 0)
+        o = float(api_bar.get("open", close))
+        hi = float(api_bar.get("high", close))
+        lo = float(api_bar.get("low", close))
+        c = float(api_bar.get("close", close))
+        vol = max(int(api_bar.get("volume", 0) or 0), 0)
+        return {
+            "timestamp": bucket_start,
+            "open": o,
+            "high": hi,
+            "low": lo,
+            "close": c,
+            "volume": vol,
+        }
+
+    def on_topstep_history_bar(self, api_bar: dict[str, Any], market_data: MarketData) -> None:
+        """Apply one Topstep OHLCV minute: risk/execution/microstructure + true OHLC in `_bars`.
+
+        Used only by deprecated ``ReplayRunner.run_from_topstep`` (see
+        ``docs/replay/replay-topstep-deprecated.md``). Minute-bar replay must not route
+        through `BarAggregator` with a single tick per bar (that collapses high/low to the
+        close). Synthetic BBO on `market_data` should be tick-sized; see
+        `ReplayRunner._bar_to_market_data`.
+        """
+        with self._lock:
+            if self._feed_step_before_bars(market_data):
+                return
+
+            flattened = self._enforce_tick_level_risk(self._last_price)
+            try:
+                completed = self._api_bar_to_completed_ohlc(api_bar)
+            except ValueError:
+                logger.warning("Skipping Topstep history bar without valid time/open/close")
+                return
+            self._append_bar(completed)
+            self.bar_aggregator.reset()
+            if flattened:
+                return
+            self._evaluate_current_state(
+                allow_entries=not self._watchdog_state.fail_safe_lockout
+            )
 
     def flush_pending_bar(self) -> None:
         """Flush the in-progress bar and evaluate it."""
@@ -1436,6 +1520,12 @@ class TradingEngine:
             event_context=self._latest_event_context,
             flow_snapshot=self._latest_flow_snapshot,
         )
+        matrix_end_perf = time.perf_counter()
+        latency_ms_market_to_decision: Optional[float] = None
+        if self._last_feed_perf_counter is not None:
+            latency_ms_market_to_decision = (
+                matrix_end_perf - self._last_feed_perf_counter
+            ) * 1000.0
         self._last_decision = decision
         self._record_matrix_state(decision)
 
@@ -1452,6 +1542,7 @@ class TradingEngine:
                     else obs.OUTCOME_ALREADY_FLAT
                 ),
                 outcome_reason=decision.reason,
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             if self._last_position != 0:
                 self._flatten_position(decision.reason)
@@ -1467,6 +1558,7 @@ class TradingEngine:
                     obs.OUTCOME_NO_TRADE if decision.action == "NO_TRADE" else obs.OUTCOME_HOLD
                 ),
                 outcome_reason=decision.reason,
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
         if not zone_live_entries_allowed:
@@ -1479,6 +1571,7 @@ class TradingEngine:
                 allow_entries=allow_entries,
                 outcome=obs.OUTCOME_SHADOW_ONLY_ZONE,
                 outcome_reason=zone_gate_reason or "shadow_only_zone",
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
         if not allow_entries:
@@ -1490,6 +1583,7 @@ class TradingEngine:
                 allow_entries=allow_entries,
                 outcome=obs.OUTCOME_ENTRIES_DISABLED,
                 outcome_reason="allow_entries_false",
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
         if self._last_position != 0:
@@ -1501,6 +1595,7 @@ class TradingEngine:
                 allow_entries=allow_entries,
                 outcome=obs.OUTCOME_POSITION_OPEN,
                 outcome_reason="position_already_open",
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
         if self._watchdog_state.fail_safe_lockout:
@@ -1512,6 +1607,7 @@ class TradingEngine:
                 allow_entries=allow_entries,
                 outcome=obs.OUTCOME_FAIL_SAFE_LOCKOUT,
                 outcome_reason="watchdog_lockout",
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
         if self.executor.has_active_entry_order(self.symbol):
@@ -1526,6 +1622,7 @@ class TradingEngine:
                 allow_entries=allow_entries,
                 outcome=obs.OUTCOME_ACTIVE_ENTRY_ORDER,
                 outcome_reason="active_entry_order",
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
 
@@ -1548,6 +1645,7 @@ class TradingEngine:
                 allow_entries=allow_entries,
                 outcome=obs.OUTCOME_RISK_BLOCKED,
                 outcome_reason=reason,
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
 
@@ -1562,6 +1660,7 @@ class TradingEngine:
                 outcome=obs.OUTCOME_SIZE_ZERO if contracts <= 0 else obs.OUTCOME_MISSING_SIDE,
                 outcome_reason="contracts_non_positive" if contracts <= 0 else "missing_order_side",
                 contracts=contracts,
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
 
@@ -1586,6 +1685,7 @@ class TradingEngine:
                 outcome=obs.OUTCOME_MARKET_CLOSED_ENTRY_BLOCK,
                 outcome_reason=market_reason or "market_closed",
                 contracts=contracts,
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
 
@@ -1630,6 +1730,7 @@ class TradingEngine:
                     contracts=contracts,
                     order_type=order_type,
                     limit_price=limit_price,
+                    latency_ms_market_to_decision=latency_ms_market_to_decision,
                 )
                 return
             self._record_decision_event(
@@ -1643,6 +1744,7 @@ class TradingEngine:
                 contracts=contracts,
                 order_type=order_type,
                 limit_price=limit_price,
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
             )
             return
         decision_id = self._next_stable_id("decision")
@@ -1664,6 +1766,8 @@ class TradingEngine:
             position_id=position_id,
             trade_id=trade_id,
         )
+        submit_end_perf = time.perf_counter()
+        latency_ms_decision_to_submit = (submit_end_perf - matrix_end_perf) * 1000.0
         if order is None:
             self._record_decision_event(
                 decision,
@@ -1680,6 +1784,8 @@ class TradingEngine:
                 attempt_id=attempt_id,
                 position_id=position_id,
                 trade_id=trade_id,
+                latency_ms_market_to_decision=latency_ms_market_to_decision,
+                latency_ms_decision_to_submit=latency_ms_decision_to_submit,
             )
             self._local_tts.speak("submit_failed", mock_mode=self._mock_mode)
             self._clear_pending_entry_metadata()
@@ -1715,6 +1821,8 @@ class TradingEngine:
             attempt_id=attempt_id,
             position_id=position_id,
             trade_id=trade_id,
+            latency_ms_market_to_decision=latency_ms_market_to_decision,
+            latency_ms_decision_to_submit=latency_ms_decision_to_submit,
         )
         set_state(
             last_signal={

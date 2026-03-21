@@ -115,6 +115,86 @@ class TopstepClientHistoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["payload"]["open"], 6000.0)
         self.assertEqual(rows[0]["payload"]["close"], 6001.0)
 
+    def test_retrieve_bars_covering_range_merges_chunks(self) -> None:
+        start_time = datetime(2026, 3, 20, 14, 30, tzinfo=UTC)
+        end_time = start_time + timedelta(days=8)
+        self.client.get_account = Mock(
+            return_value=Account(account_id="1", name="Practice", is_practice=True)
+        )
+        self.client._resolve_contract_id = Mock(return_value="CON.F.US.EP.M26")
+
+        bars_by_chunk: list[list] = [
+            [
+                {
+                    "time": start_time,
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0,
+                    "volume": 1,
+                    "symbol": "ES",
+                    "contract_id": "CON.F.US.EP.M26",
+                }
+            ],
+            [
+                {
+                    "time": start_time + timedelta(days=7, minutes=1),
+                    "open": 2.0,
+                    "high": 2.0,
+                    "low": 2.0,
+                    "close": 2.0,
+                    "volume": 1,
+                    "symbol": "ES",
+                    "contract_id": "CON.F.US.EP.M26",
+                }
+            ],
+        ]
+
+        def fake_retrieve(symbol, *args, start_time, end_time, **kwargs):
+            return bars_by_chunk.pop(0)
+
+        self.client.retrieve_bars = Mock(side_effect=fake_retrieve)
+
+        merged, meta = self.client.retrieve_bars_covering_range(
+            "ES",
+            start_time=start_time,
+            end_time=end_time,
+        )
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(meta["chunks_fetched"], 2)
+        self.assertTrue(meta["coverage_complete"])
+        self.assertFalse(meta["truncated_chunk"])
+
+    def test_retrieve_bars_covering_range_marks_truncated_chunk(self) -> None:
+        start_time = datetime(2026, 3, 20, 14, 30, tzinfo=UTC)
+        self.client.get_account = Mock(
+            return_value=Account(account_id="1", name="Practice", is_practice=True)
+        )
+        self.client._resolve_contract_id = Mock(return_value="CON.F.US.EP.M26")
+        huge = [
+            {
+                "time": start_time + timedelta(minutes=i),
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1,
+                "symbol": "ES",
+                "contract_id": "CON.F.US.EP.M26",
+            }
+            for i in range(20000)
+        ]
+        self.client.retrieve_bars = Mock(return_value=huge)
+
+        merged, meta = self.client.retrieve_bars_covering_range(
+            "ES",
+            start_time=start_time,
+            end_time=start_time + timedelta(days=7),
+        )
+        self.assertEqual(len(merged), 20000)
+        self.assertTrue(meta["truncated_chunk"])
+        self.assertFalse(meta["coverage_complete"])
+
 
 class TopstepClientAuthTests(unittest.TestCase):
     """Tests for authentication and session management in TopstepClient."""

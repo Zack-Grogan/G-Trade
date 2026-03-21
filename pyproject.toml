@@ -52,3 +52,4 @@ target-version = ["py311"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+pythonpath = ["."]

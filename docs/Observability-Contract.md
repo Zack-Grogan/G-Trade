@@ -8,7 +8,7 @@ Authoritative rules for logging, SQLite durability, and operator debugging. **Do
 |--------|------|------|
 | **Rotating file** (`config.logging.file`, default `logs/trading.log`) | Human-readable lines; same records mirrored to SQLite `runtime_logs` when observability is enabled | Process lifetime; level from `config.logging.level` |
 | **SQLite `events`** | Structured `category` + `event_type` + JSON payload | `ObservabilityStore.record_event` |
-| **SQLite `decision_snapshots`** (and related rows) | Full matrix decision snapshot including `feature_snapshot` | `record_decision_snapshot` from `TradingEngine._record_decision_event` |
+| **SQLite `decision_snapshots`** (and related rows) | Full matrix decision snapshot including `feature_snapshot`; optional `latency_ms_market_to_decision` / `latency_ms_decision_to_submit` when `observability.record_decision_latency` is true | `record_decision_snapshot` from `TradingEngine._record_decision_event` |
 | **SQLite `state_snapshots`** | Periodic `TradingState.to_dict()` | Engine `_update_server_state` |
 | **SQLite `order_lifecycle`** | Order/protection lifecycle | Executor + engine |
 | **SQLite `market_tape`** | Tick/bar telemetry | Market client / replay |
@@ -49,9 +49,17 @@ See [OPERATOR.md](OPERATOR.md).
 
 If `ObservabilityStore` hits an unexpected error, it may set **`_failed`** and stop accepting new records for the process. Failures in **executor** observability are fail-open and logged; failures in **log mirroring** must surface to stderr or the file log (see implementation). Full per-subsystem isolation is not implemented; treat global disable as a follow-up.
 
+## Replay / mock execution fill model
+
+- **Market orders** in mock mode use `replay_execution.market_slippage_ticks` (see `OrderExecutor._mock_market_fill_price`).
+- **Limit orders** use touch-based fills; `replay_execution.limit_touch_fill_ratio` (0–1) is the probability that a given quote update fills a working limit when price has crossed (`1.0` = legacy always-fill). When `mock_fill_random_seed` is set, draws use a fixed `random.Random` stream; when null, draws are deterministic from `SHA-256(order_id + tick timestamp)` so replays are repeatable.
+- **`limit_fill_penalty_ticks`** in `replay_execution` is applied in **replay benchmark summaries** (`ReplayRunner._costed_trade_summary`) as a conservative dollar haircut per trade, not as an extra tick adjustment inside the executor fill price (avoids double-counting).
+
 ## CLI
 
 - `es-trade events` and `es-trade db events` both query `events`; both support `run_id` filtering when you need to scope to one process run.
+- `es-trade db export-tape` exports `market_tape` rows as JSONL for backup or offline analysis.
+- Replay CLI emits **system** `replay_completed` / `replay_failed` (file or tape mode) and `replay_topstep_completed` / `replay_topstep_failed` as structured events. **`replay-topstep` is deprecated** as a research path (see `docs/replay/replay-topstep-deprecated.md`); events are retained for continuity. Replay JSON summaries include `observability_drops` (store queue drop count) when relevant; under load, the observability queue may drop tape rows—see `ObservabilityStore.get_dropped_event_count()`.
 
 ## Related
 

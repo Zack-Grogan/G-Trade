@@ -121,6 +121,11 @@ class RiskManager:
         self._last_market_price: Optional[float] = None
         self._last_market_price_time: Optional[datetime] = None
 
+        # Optional evaluation drawdown mirror (session cumulative realized; see docs/risk/)
+        self._mirror_session_realized_pnl: float = 0.0
+        self._evaluation_hwm: Optional[float] = None
+        self._evaluation_mirror_breached: bool = False
+
         logger.info(
             "RiskManager initialized with max_daily_loss=$%s", self.risk_config.max_daily_loss
         )
@@ -182,6 +187,53 @@ class RiskManager:
         if price > 0:
             self._last_market_price = price
             self._last_market_price_time = self._coerce_time(observed_at)
+            self._update_evaluation_drawdown_mirror(price)
+
+    def _evaluation_equity_proxy(self, current_price: float) -> float:
+        unrealized = self._calculate_unrealized_pnl(current_price)
+        return (
+            float(self.risk_config.evaluation_starting_equity)
+            + self._mirror_session_realized_pnl
+            + unrealized
+        )
+
+    def _update_evaluation_drawdown_mirror(self, current_price: float) -> None:
+        if not self.risk_config.evaluation_drawdown_mirror_enabled:
+            return
+        if self._evaluation_mirror_breached:
+            return
+        if current_price <= 0:
+            return
+        eq = self._evaluation_equity_proxy(current_price)
+        if self._evaluation_hwm is None:
+            self._evaluation_hwm = max(float(self.risk_config.evaluation_starting_equity), eq)
+        else:
+            self._evaluation_hwm = max(self._evaluation_hwm, eq)
+        floor = self._evaluation_hwm - float(self.risk_config.evaluation_trailing_drawdown_dollars)
+        stop_line = floor + float(self.risk_config.evaluation_mirror_buffer_dollars)
+        if eq <= stop_line:
+            self._evaluation_mirror_breached = True
+            self._risk_state = RiskState.CIRCUIT_BREAKER
+            logger.warning(
+                "evaluation_drawdown_mirror tripped equity=%.2f stop_line=%.2f hwm=%.2f",
+                eq,
+                stop_line,
+                self._evaluation_hwm,
+            )
+            self._record_event(
+                event_type="risk_state_changed",
+                payload={
+                    "reason": "evaluation_drawdown_mirror",
+                    "equity_proxy": eq,
+                    "high_water_mark": self._evaluation_hwm,
+                    "trailing_floor": floor,
+                    "stop_line": stop_line,
+                },
+                event_time=self._clock_time,
+                action="set_circuit_breaker",
+                reason="evaluation_drawdown_mirror",
+                zone=self._current_zone_name,
+            )
 
     def _calculate_unrealized_pnl(self, current_price: float) -> float:
         """Calculate current unrealized PnL without mutating other state."""
@@ -257,6 +309,17 @@ class RiskManager:
                 zone=zone_name,
             )
             return False, self._blackout_reason or "blackout_active"
+
+        if self.risk_config.evaluation_drawdown_mirror_enabled and self._evaluation_mirror_breached:
+            self._record_event(
+                event_type="trade_blocked",
+                payload={"zone_name": zone_name},
+                event_time=self._coerce_time(current_time),
+                action="block_trade",
+                reason="evaluation_drawdown_mirror",
+                zone=zone_name,
+            )
+            return False, "evaluation_drawdown_mirror"
 
         # Check daily loss limit
         if self._daily_pnl <= -self.risk_config.max_daily_loss:
@@ -512,6 +575,7 @@ class RiskManager:
         self._trades_this_zone += 1
         self._last_trade_time = trade.exit_time
         self._daily_pnl += trade.pnl
+        self._mirror_session_realized_pnl += trade.pnl
 
         if trade.pnl < 0:
             self._consecutive_losses += 1
@@ -825,6 +889,19 @@ class RiskManager:
             )
             return True, self._blackout_reason or "blackout_active"
 
+        if self.risk_config.evaluation_drawdown_mirror_enabled and self._evaluation_mirror_breached:
+            self._record_event(
+                event_type="flatten_required",
+                payload={
+                    "current_price": effective_price,
+                    "reason": "evaluation_drawdown_mirror",
+                },
+                event_time=self._coerce_time(current_time),
+                action="flatten",
+                reason="evaluation_drawdown_mirror",
+            )
+            return True, "evaluation_drawdown_mirror"
+
         if self._risk_state == RiskState.CIRCUIT_BREAKER:
             self._record_event(
                 event_type="flatten_required",
@@ -909,6 +986,9 @@ class RiskManager:
         self._current_position_id = ""
         self._current_decision_id = ""
         self._current_attempt_id = ""
+        self._mirror_session_realized_pnl = 0.0
+        self._evaluation_hwm = None
+        self._evaluation_mirror_breached = False
         if clear_history:
             self._trade_history = []
 
@@ -919,6 +999,10 @@ class RiskManager:
     def is_reduced_risk(self) -> bool:
         """Return whether size should be reduced."""
         return self._risk_state == RiskState.REDUCED
+
+    def is_evaluation_mirror_breached(self) -> bool:
+        """True after optional trailing drawdown mirror has latched (see docs/risk/)."""
+        return self._evaluation_mirror_breached
 
 
 # Global risk manager instance

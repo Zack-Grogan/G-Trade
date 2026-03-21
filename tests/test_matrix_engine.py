@@ -1594,6 +1594,30 @@ class ReplayRunnerTests(unittest.TestCase):
         self.assertTrue(gates["walk_forward_ok"])
         self.assertTrue(gates["promotable"])
 
+    def test_acceptance_gates_skip_prac_for_file_replay_without_paired_run(self) -> None:
+        runner = ReplayRunner(config=self.config, engine=self.engine)
+        gates = runner._acceptance_gates(
+            matrix_cost_summary={
+                "net_pnl": 100.0,
+                "stressed_net_pnl": 20.0,
+                "zone_stats": {
+                    "Pre-Open": {"net_pnl": 60.0},
+                    "Post-Open": {"net_pnl": 40.0},
+                },
+            },
+            benchmark_cost_summary={"net_pnl": 50.0, "stressed_net_pnl": 0.0, "trade_count": 1},
+            walk_forward=[
+                {"matrix_positive": True},
+                {"matrix_positive": True},
+            ],
+            synthetic_quotes_detected=False,
+            replay_input_kind="file",
+            execution_state_override=None,
+        )
+        self.assertFalse(gates["prac_observability_applicable"])
+        self.assertIsNone(gates["prac_observability_ok"])
+        self.assertTrue(gates["promotable"])
+
 
 class EngineRiskExecutionTests(unittest.TestCase):
     def setUp(self) -> None:

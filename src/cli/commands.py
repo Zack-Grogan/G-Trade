@@ -2,6 +2,8 @@
 
 import click
 from datetime import UTC, datetime, timedelta
+
+import pandas as pd
 import hashlib
 import logging
 import json
@@ -48,7 +50,12 @@ from src.analysis import (
     build_trade_review,
     build_fill_quality_report,
     build_stress_periods_dict,
+    build_matrix_correlation_report,
+    build_optimization_report,
+    build_trade_analysis_report,
     render_regime_packet_markdown,
+    render_optimization_yaml_patch,
+    render_trade_analysis_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -1182,13 +1189,76 @@ def start(config: Optional[str]):
         click.secho("Done.", fg="green")
 
 
+def _parse_cli_timestamp(value: str) -> datetime:
+    return pd.Timestamp(value).to_pydatetime(warn=False)
+
+
 @cli.command()
+@click.option("--path", type=click.Path(exists=True), help="Replay CSV or JSONL file")
 @click.option(
-    "--path", required=True, type=click.Path(exists=True), help="Replay CSV or JSONL file"
+    "--tape-run-id",
+    type=str,
+    default=None,
+    help="Replay market_tape rows for this observability run_id (local SQLite)",
+)
+@click.option(
+    "--tape-start",
+    type=str,
+    default=None,
+    help="With --tape-end: filter tape by captured_at >= this ISO timestamp",
+)
+@click.option(
+    "--tape-end",
+    type=str,
+    default=None,
+    help="With --tape-start: filter tape by captured_at <= this ISO timestamp",
+)
+@click.option(
+    "--tape-symbol",
+    type=str,
+    default=None,
+    help="Optional symbol filter when replaying from tape",
+)
+@click.option(
+    "--tape-source",
+    type=str,
+    default=None,
+    help="Optional source filter (comma-separated, e.g. GatewayQuote,GatewayTrade)",
+)
+@click.option(
+    "--paired-live-run-id",
+    type=str,
+    default=None,
+    help="Optional prior live run_id; load practice execution telemetry for promotion gates",
 )
 @click.option("--config", type=click.Path(exists=True), help="Config file path")
-def replay(path: str, config: Optional[str]):
-    """Replay historical events through the live engine path."""
+def replay(
+    path: Optional[str],
+    tape_run_id: Optional[str],
+    tape_start: Optional[str],
+    tape_end: Optional[str],
+    tape_symbol: Optional[str],
+    tape_source: Optional[str],
+    paired_live_run_id: Optional[str],
+    config: Optional[str],
+):
+    """Replay historical events through the live engine path (file or SQLite market_tape)."""
+    has_file = path is not None
+    has_tape_run = bool(tape_run_id)
+    has_tape_range = bool(tape_start and tape_end)
+    if has_file and (has_tape_run or has_tape_range or tape_start or tape_end):
+        raise click.UsageError("Do not combine --path with tape replay options.")
+    if not has_file and not has_tape_run and not has_tape_range:
+        raise click.UsageError(
+            "Specify --path FILE, or --tape-run-id, or both --tape-start and --tape-end."
+        )
+    if (tape_start or tape_end) and not has_tape_range:
+        raise click.UsageError(
+            "Both --tape-start and --tape-end are required for time-range tape replay."
+        )
+    if has_tape_run and has_tape_range:
+        pass  # allowed: narrow a run by time
+
     config_path = _resolve_config_path(config)
     if config:
         cfg = load_config(config)
@@ -1222,9 +1292,26 @@ def replay(path: str, config: Optional[str]):
         cfg, observability, config_path=config_path, log_path=log_path, data_mode="replay"
     )
 
+    sources_list: Optional[list[str]] = None
+    if tape_source:
+        sources_list = [s.strip() for s in tape_source.split(",") if s.strip()]
+
     try:
         runner = ReplayRunner(config=cfg, engine=engine)
-        result = runner.run(path)
+        if has_file:
+            result = runner.run(str(path), paired_live_run_id=paired_live_run_id)
+        else:
+            t_start = _parse_cli_timestamp(tape_start) if tape_start else None
+            t_end = _parse_cli_timestamp(tape_end) if tape_end else None
+            result = runner.run_from_tape(
+                observability,
+                tape_run_id=tape_run_id,
+                start_time=t_start,
+                end_time=t_end,
+                symbol=tape_symbol,
+                sources=sources_list,
+                paired_live_run_id=paired_live_run_id,
+            )
         run_id = observability.get_run_id()
         if getattr(cfg.observability, "backfill_missing_trade_records", True):
             backfill_result = observability.backfill_completed_trades_from_events(run_id=run_id)
@@ -1237,14 +1324,30 @@ def replay(path: str, config: Optional[str]):
                 action="backfill_completed_trades",
                 reason="replay_backfill_check",
             )
-        observability.update_run_manifest_payload(
-            run_id,
-            {"replay_path": path, "replay_events": result.events, "replay_summary": result.summary},
-        )
+        manifest_extra: dict[str, Any] = {
+            "replay_events": result.events,
+            "replay_summary": result.summary,
+        }
+        if has_file:
+            manifest_extra["replay_path"] = path
+        else:
+            manifest_extra["replay_tape_run_id"] = tape_run_id
+            manifest_extra["replay_tape_range"] = {
+                "start": tape_start,
+                "end": tape_end,
+            }
+            manifest_extra["tape_sources_filter"] = sources_list
+        observability.update_run_manifest_payload(run_id, manifest_extra)
         _record_system_event(
             observability,
             event_type="replay_completed",
-            payload={"path": str(path), "events": result.events, "segments": result.segments},
+            payload={
+                "path": result.path,
+                "events": result.events,
+                "segments": result.segments,
+                "tape_run_id": tape_run_id,
+                "tape_sources_filter": sources_list,
+            },
             symbol=cfg.symbols[0] if cfg.symbols else None,
             action="replay",
             reason="cli_replay",
@@ -1277,7 +1380,21 @@ def replay(path: str, config: Optional[str]):
                 default=str,
             )
         )
-    except Exception:
+    except Exception as exc:
+        _record_system_event(
+            observability,
+            event_type="replay_failed",
+            payload={
+                "error_class": type(exc).__name__,
+                "message": str(exc),
+                "input_mode": "file" if has_file else "sqlite_tape",
+                "path": path,
+                "tape_run_id": tape_run_id,
+            },
+            symbol=cfg.symbols[0] if cfg.symbols else None,
+            action="replay",
+            reason="cli_replay_failed",
+        )
         _mark_runtime_inactive(
             cfg,
             log_path=log_path,
@@ -1290,22 +1407,33 @@ def replay(path: str, config: Optional[str]):
         raise
 
 
-@cli.command("replay-topstep")
+@cli.command("replay-topstep", deprecated=True)
 @click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to replay")
 @click.option(
     "--days", "days_back", default=30, show_default=True, type=int, help="Days of history to replay"
 )
 @click.option("--start", "start_date", type=str, help="Start date (YYYY-MM-DD)")
 @click.option("--end", "end_date", type=str, help="End date (YYYY-MM-DD)")
+@click.option(
+    "--paired-live-run-id",
+    type=str,
+    default=None,
+    help="Optional prior live run_id; load practice execution telemetry for promotion gates",
+)
 @click.option("--config", type=click.Path(exists=True), help="Config file path")
 def replay_topstep(
     symbol: str,
     days_back: int,
     start_date: Optional[str],
     end_date: Optional[str],
+    paired_live_run_id: Optional[str],
     config: Optional[str],
 ):
-    """Replay historical Topstep data through the live engine path."""
+    """Replay Topstep minute OHLCV bars — not a validated research path.
+
+    Prefer ``es-trade replay`` with ``market_tape`` or ``--path``; see
+    ``docs/replay/replay-topstep-deprecated.md``.
+    """
     config_path = _resolve_config_path(config)
     if config:
         cfg = load_config(config)
@@ -1339,6 +1467,14 @@ def replay_topstep(
         cfg, observability, config_path=config_path, log_path=log_path, data_mode="replay"
     )
 
+    dep_msg = (
+        "DEPRECATED: replay-topstep is not a validated research path (synthetic BBO, no historical "
+        "L2/ticks). Prefer: es-trade replay --tape-run-id / --tape-start + --tape-end, or "
+        "--path. See docs/replay/replay-topstep-deprecated.md"
+    )
+    logger.warning(dep_msg)
+    click.echo(click.style(dep_msg, fg="yellow"), err=True)
+
     try:
         runner = ReplayRunner(config=cfg, engine=engine)
         result = runner.run_from_topstep(
@@ -1346,8 +1482,20 @@ def replay_topstep(
             days_back=days_back,
             start_date=start_date,
             end_date=end_date,
+            paired_live_run_id=paired_live_run_id,
         )
         run_id = observability.get_run_id()
+        if getattr(cfg.observability, "backfill_missing_trade_records", True):
+            backfill_result = observability.backfill_completed_trades_from_events(run_id=run_id)
+            observability.record_event(
+                category="system",
+                event_type="trade_backfill_checked",
+                source=__name__,
+                payload=backfill_result,
+                symbol=symbol,
+                action="backfill_completed_trades",
+                reason="replay_topstep_backfill_check",
+            )
         observability.update_run_manifest_payload(
             run_id,
             {
@@ -1388,12 +1536,26 @@ def replay_topstep(
                     "events": result.events,
                     "segments": result.segments,
                     "summary": result.summary,
+                    "deprecated": True,
+                    "deprecated_reason": "replay_topstep_not_validated_see_docs_replay_replay_topstep_deprecated_md",
                 },
                 indent=2,
                 default=str,
             )
         )
-    except Exception:
+    except Exception as exc:
+        _record_system_event(
+            observability,
+            event_type="replay_topstep_failed",
+            payload={
+                "error_class": type(exc).__name__,
+                "message": str(exc),
+                "symbol": symbol,
+            },
+            symbol=symbol,
+            action="replay_topstep",
+            reason="cli_replay_topstep_failed",
+        )
         _mark_runtime_inactive(
             cfg,
             log_path=log_path,
@@ -1475,6 +1637,33 @@ def stress_periods(
         spread_threshold=spread_threshold,
     )
     _print_json(report)
+
+
+@cli.command("emergency-halt")
+@click.option(
+    "--reason",
+    default="cli_emergency_halt",
+    show_default=True,
+    type=str,
+    help="Short note written into the halt file (for your own audit trail)",
+)
+@click.option("--config", type=click.Path(exists=True), help="Config file path")
+def emergency_halt(reason: str, config: Optional[str]):
+    """Create or refresh the emergency halt flag file (blackout + risk flatten when the engine polls it)."""
+    cfg = load_config(config) if config else get_config()
+    root = Path(__file__).resolve().parent.parent.parent
+    raw_path = cfg.event_provider.emergency_halt_path
+    halt_path = Path(raw_path) if Path(raw_path).is_absolute() else root / raw_path
+    halt_path.parent.mkdir(parents=True, exist_ok=True)
+    halt_path.write_text(f"{reason}\n", encoding="utf-8")
+    refresh = max(int(getattr(cfg.event_provider, "refresh_seconds", 60)), 1)
+    max_age = max(int(getattr(cfg.event_provider, "emergency_halt_max_age_minutes", 1440)), 1)
+    click.echo(
+        f"Emergency halt flag written: {halt_path}\n"
+        f"Running engine should pick this up within ~{refresh}s (event_provider.refresh_seconds). "
+        f"Stale files older than {max_age} minutes are ignored.\n"
+        f"Then: es-trade stop — verify flat in Topstep if needed."
+    )
 
 
 @cli.command()
@@ -1747,6 +1936,236 @@ def analyze_launch_readiness(account_id: Optional[str]) -> None:
     _print_json(build_launch_readiness(account_id=effective_account))
 
 
+@analyze.command("matrix-correlation")
+@click.option("--run-id", required=True, type=str, help="Run ID from replay to analyze")
+@click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to analyze")
+@click.option("--output", type=click.Path(), help="Optional output path for the JSON report")
+def analyze_matrix_correlation(run_id: str, symbol: str, output: Optional[str]) -> None:
+    """Analyze matrix score-to-outcome correlation for a replay run."""
+    report = build_matrix_correlation_report(run_id=run_id, symbol=symbol)
+
+    result = {
+        "run_id": report.run_id,
+        "symbol": report.symbol,
+        "total_decisions": report.total_decisions,
+        "generated_at": report.generated_at.isoformat(),
+        "score_distribution": report.score_distribution,
+        "zone_breakdown": report.zone_breakdown,
+        "regime_breakdown": report.regime_breakdown,
+        "threshold_analysis": [
+            {
+                "threshold": r.threshold,
+                "trade_count": r.trade_count,
+                "win_rate": round(r.win_rate, 4),
+                "avg_move_atr": round(r.avg_move_atr, 4),
+                "false_positive_rate": round(r.false_positive_rate, 4),
+                "profit_factor": round(r.profit_factor, 4) if r.profit_factor else None,
+            }
+            for r in report.threshold_results
+        ],
+    }
+
+    if output:
+        target = Path(output).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
+        click.echo(f"Report saved to {target}")
+
+    _print_json(result)
+
+
+@analyze.command("optimize-thresholds")
+@click.option("--run-id", required=True, type=str, help="Run ID from replay to analyze")
+@click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to analyze")
+@click.option(
+    "--target-min-hold",
+    default=15,
+    show_default=True,
+    type=int,
+    help="Target minimum hold time in minutes",
+)
+@click.option(
+    "--target-max-hold",
+    default=360,
+    show_default=True,
+    type=int,
+    help="Target maximum hold time in minutes",
+)
+@click.option(
+    "--output", type=click.Path(), help="Optional output path for the JSON recommendations"
+)
+@click.option("--yaml-patch", is_flag=True, help="Output as YAML patch instead of JSON")
+def analyze_optimize_thresholds(
+    run_id: str,
+    symbol: str,
+    target_min_hold: int,
+    target_max_hold: int,
+    output: Optional[str],
+    yaml_patch: bool,
+) -> None:
+    """Get threshold recommendations based on historical replay analysis."""
+    report = build_optimization_report(run_id=run_id, symbol=symbol)
+
+    if yaml_patch:
+        result = render_optimization_yaml_patch(report)
+        click.echo(result)
+        if output:
+            target = Path(output).expanduser().resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(result, encoding="utf-8")
+            click.echo(f"YAML patch saved to {target}")
+        return
+
+    result = {
+        "run_id": report.run_id,
+        "symbol": report.symbol,
+        "generated_at": report.generated_at.isoformat(),
+        "recommendations": {
+            "min_entry_score": {
+                "current": report.min_entry_score.current,
+                "recommended": report.min_entry_score.recommended,
+                "reason": report.min_entry_score.reason,
+                "trade_off": report.min_entry_score.trade_off,
+                "confidence": report.min_entry_score.confidence,
+            },
+            "exit_decay_score": {
+                "current": report.exit_decay_score.current,
+                "recommended": report.exit_decay_score.recommended,
+                "reason": report.exit_decay_score.reason,
+                "confidence": report.exit_decay_score.confidence,
+            },
+            "reverse_score_gap": {
+                "current": report.reverse_score_gap.current,
+                "recommended": report.reverse_score_gap.recommended,
+                "reason": report.reverse_score_gap.reason,
+                "confidence": report.reverse_score_gap.confidence,
+            },
+            "full_size_score": {
+                "current": report.full_size_score.current,
+                "recommended": report.full_size_score.recommended,
+                "reason": report.full_size_score.reason,
+                "confidence": report.full_size_score.confidence,
+            },
+        },
+        "current_threshold_trades": report.current_threshold_trades,
+        "recommended_threshold_trades": report.recommended_threshold_trades,
+        "expected_win_rate_change": report.expected_win_rate_change,
+    }
+
+    if report.trailing_stop_atr:
+        result["trailing_stop_atr"] = {
+            "current": report.trailing_stop_atr.current,
+            "recommended": report.trailing_stop_atr.recommended,
+            "reason": report.trailing_stop_atr.reason,
+            "pct_trades_reaching_target": report.trailing_stop_atr.pct_trades_reaching_target,
+        }
+
+    if report.max_hold_minutes:
+        result["max_hold_minutes"] = {}
+        for hold_rec in report.max_hold_minutes:
+            result["max_hold_minutes"][hold_rec.zone] = {
+                "current": hold_rec.current,
+                "recommended": hold_rec.recommended,
+                "reason": hold_rec.reason,
+            }
+
+    if output:
+        target = Path(output).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
+        click.echo(f"Recommendations saved to {target}")
+
+    _print_json(result)
+
+
+@analyze.command("trades")
+@click.option("--run-id", required=True, type=str, help="Run ID from replay to analyze")
+@click.option("--symbol", default="ES", show_default=True, type=str, help="Symbol to analyze")
+@click.option("--output", type=click.Path(), help="Optional output path for the Markdown report")
+@click.option("--json-output", is_flag=True, help="Print JSON instead of Markdown")
+def analyze_trades(
+    run_id: str,
+    symbol: str,
+    output: Optional[str],
+    json_output: bool,
+) -> None:
+    """Analyze ACTUAL TRADES from a replay run.
+
+    This analyzes completed trades that were simulated chronologically with:
+    - Position tracking and capital constraints
+    - Slippage and fill simulation
+    - Risk limits (daily loss, max trades, etc.)
+
+    IMPORTANT: For valid threshold testing, you MUST re-run the replay
+    with different config values - you cannot backtest threshold changes
+    on individual signals.
+    """
+    report = build_trade_analysis_report(run_id=run_id, symbol=symbol)
+
+    if json_output:
+        result = {
+            "run_id": report.run_id,
+            "symbol": report.symbol,
+            "generated_at": report.generated_at.isoformat(),
+            "overall_stats": {
+                "trade_count": report.overall_stats.trade_count,
+                "win_rate": report.overall_stats.win_rate,
+                "total_pnl": report.overall_stats.total_pnl,
+                "profit_factor": report.overall_stats.profit_factor,
+                "avg_win": report.overall_stats.avg_win,
+                "avg_loss": report.overall_stats.avg_loss,
+                "avg_hold_minutes": report.overall_stats.avg_hold_minutes,
+                "max_consecutive_wins": report.overall_stats.max_consecutive_wins,
+                "max_consecutive_losses": report.overall_stats.max_consecutive_losses,
+            },
+            "zone_stats": [
+                {
+                    "zone": zs.zone,
+                    "trade_count": zs.stats.trade_count,
+                    "win_rate": zs.stats.win_rate,
+                    "total_pnl": zs.stats.total_pnl,
+                    "avg_hold_minutes": zs.stats.avg_hold_minutes,
+                    "trades_per_hour": zs.trades_per_hour,
+                    "avg_entry_score": zs.avg_entry_score,
+                    "most_common_strategy": zs.most_common_strategy,
+                }
+                for zs in report.zone_stats
+            ],
+            "threshold_sensitivity": [
+                {
+                    "threshold": ts.threshold,
+                    "trades_would_pass": ts.trades_would_pass,
+                    "trades_would_be_filtered": ts.trades_would_be_filtered,
+                    "win_rate_of_passing_trades": ts.win_rate_of_passing_trades,
+                    "pnl_of_passing_trades": ts.pnl_of_passing_trades,
+                    "filtered_trades_were_winners": ts.filtered_trades_were_winners,
+                    "filtered_trades_were_losers": ts.filtered_trades_were_losers,
+                }
+                for ts in report.threshold_sensitivity
+            ],
+            "hold_time_distribution": report.hold_time_distribution,
+            "hourly_breakdown": report.hourly_breakdown,
+            "entry_score_distribution": report.entry_score_distribution,
+            "warnings": report.warnings,
+        }
+        _print_json(result)
+        if output:
+            target = Path(output).expanduser().resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
+            click.echo(f"Report saved to {target}")
+        return
+
+    # Markdown output
+    rendered = render_trade_analysis_summary(report)
+    click.echo(rendered)
+    if output:
+        target = Path(output).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered, encoding="utf-8")
+        click.echo(f"\nReport saved to {target}")
+
+
 @cli.group()
 def service():
     """Manage the macOS launchd service wrapper."""
@@ -1891,6 +2310,77 @@ def db_snapshots(limit: int, kind: str, run_id: Optional[str], search: Optional[
     else:
         rows = store.query_order_lifecycle(limit=limit, run_id=run_id, search=search)
     _print_json(rows)
+
+
+@db.command("export-tape")
+@click.option("--run-id", type=str, help="Filter to a single process run id")
+@click.option("--symbol", type=str, help="Symbol filter (e.g. ES)")
+@click.option("--source", type=str, help="Single source filter (e.g. GatewayQuote)")
+@click.option("--out", "out_path", type=click.Path(writable=True), help="Write JSONL to this path")
+@click.option(
+    "--limit",
+    default=500000,
+    show_default=True,
+    type=int,
+    help="Safety cap on rows exported",
+)
+def db_export_tape(
+    run_id: Optional[str],
+    symbol: Optional[str],
+    source: Optional[str],
+    out_path: Optional[str],
+    limit: int,
+) -> None:
+    """Export market_tape rows as JSONL (stdout if --out omitted)."""
+    store = get_observability_store()
+    after_id: Optional[int] = None
+    total = 0
+    lines: list[str] = []
+
+    def flush_chunk() -> None:
+        nonlocal lines
+        if not lines:
+            return
+        block = "".join(lines)
+        if out_path:
+            with open(out_path, "a", encoding="utf-8") as handle:
+                handle.write(block)
+        else:
+            click.echo(block, nl=False)
+        lines = []
+
+    if out_path:
+        Path(out_path).write_text("", encoding="utf-8")
+
+    batch = 5000
+    while total < limit:
+        chunk = store.query_market_tape(
+            limit=min(batch, limit - total),
+            after_id=after_id,
+            ascending=True,
+            run_id=run_id,
+            symbol=symbol,
+            source=source,
+        )
+        if not chunk:
+            break
+        for row in chunk:
+            rid = row.get("id")
+            if rid is not None:
+                after_id = int(rid)
+            payload = {k: v for k, v in row.items() if k != "payload"}
+            if isinstance(row.get("payload"), dict):
+                payload["payload"] = row["payload"]
+            lines.append(json.dumps(payload, default=str) + "\n")
+            total += 1
+            if total >= limit:
+                break
+        flush_chunk()
+        if len(chunk) < batch:
+            break
+    flush_chunk()
+    if out_path:
+        click.echo(f"Wrote {total} rows to {out_path}", err=True)
 
 
 @db.command("bridge-health")

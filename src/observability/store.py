@@ -644,6 +644,7 @@ class ObservabilityStore:
         run_id: Optional[str] = None,
         symbol: Optional[str] = None,
         source: Optional[str] = None,
+        sources: Optional[list[str]] = None,
         search: Optional[str] = None,
         start_time: Optional[datetime | str] = None,
         end_time: Optional[datetime | str] = None,
@@ -663,7 +664,16 @@ class ObservabilityStore:
             if symbol:
                 clauses.append("symbol = ?")
                 params.append(symbol)
-            if source:
+            if sources:
+                cleaned = [str(s).strip() for s in sources if str(s).strip()]
+                if len(cleaned) == 1:
+                    clauses.append("source = ?")
+                    params.append(cleaned[0])
+                elif len(cleaned) > 1:
+                    placeholders = ",".join("?" * len(cleaned))
+                    clauses.append(f"source IN ({placeholders})")
+                    params.extend(cleaned)
+            elif source:
                 clauses.append("source = ?")
                 params.append(source)
             if start_time is not None:

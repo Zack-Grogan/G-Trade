@@ -10,14 +10,22 @@ Operational view: what is in place, what has been validated, and what is not yet
 
 | Component | Status | Notes |
 |-----------|--------|--------|
-| **CLI** | Operational | No TUI; `es-trade` (no args) shows help. Commands include start/stop/restart/status/debug/events/config/balance/health/replay plus `broker-truth`, `analyze ...`, `service ...`, and `db ...` for launchd and local durability operations. |
+| **CLI** | Operational | No TUI; `es-trade` (no args) shows help. Commands include start/stop/restart/`emergency-halt`/status/debug/events/config/balance/health/replay plus `broker-truth`, `analyze ...`, `service ...`, and `db ...` for launchd and local durability operations. |
 | **Trading engine** | Operational | Strategy, sync, protection, adoption, launch gating, and dynamic exit. Runs in same process as `es-trade start`. |
 | **Order executor** | Operational | Orders, protection, reconciliation. Topstep API and execution stay on Mac only. |
 | **Runtime inspection** | Operational | CLI (`es-trade status`, `health`, `debug`) plus SQLite state snapshots; no local HTTP console. Optional local macOS `operator_tts` speaks order lifecycle events via `say` when enabled. |
-| **Observability store** | Operational | SQLite: events, runs, completed trades, state snapshots, decision snapshots, market tape, order lifecycle, bridge health, runtime logs, account trade history. Source of truth for replay/recovery. |
+| **Observability store** | Operational | SQLite: events, runs, completed trades, state snapshots, decision snapshots (optional `latency_ms_*` fields when enabled), market tape, order lifecycle, bridge health, runtime logs, account trade history. Source of truth for replay/recovery. Replay can consume persisted `market_tape` (live BBO/trades) via `es-trade replay --tape-run-id` / `--tape-start`+`--tape-end`. **`replay-topstep` is deprecated** (stale bar-only path; not for validated research) — see [replay/replay-topstep-deprecated.md](replay/replay-topstep-deprecated.md). |
 | **Data bridge + outbox** | Removed | Railway bridge/outbox runtime code has been removed from the active codebase; historical context remains in `docs/archive/railway-sunset/`. |
-| **Config** | In place | Launch-gate defaults are `Pre-Open` and `Outside` live with `Post-Open`/`Midday` shadow-only unless promoted. SQLite and local runtime config are the active contract. |
+| **Config** | In place | Live/shadow zones are driven by `strategy.live_entry_zones` / `shadow_entry_zones` (default repo profile targets selective Pre-Open). SQLite and local runtime config are the active contract. |
 | **Runtime artifacts** | In place | `logs/runtime/trader.pid`, `runtime_status.json`, `lifecycle_request.json`, local launchd plist/log paths, local outbox delivery cursors. |
+
+---
+
+## Research and replay fidelity
+
+- **`replay-topstep` (minute bars):** **Deprecated / not validated** — kept for smoke tests only. Does not replace tape replay for research. Canonical note: [replay/replay-topstep-deprecated.md](replay/replay-topstep-deprecated.md). Technically, bars use API OHLC with synthetic one-tick BBO; microstructure is coarse vs live.
+- **Tape replay:** For validation closer to live conditions (including multi-hour holds and Pre-Open edge), prefer `es-trade replay` with SQLite **`market_tape`** (`--tape-run-id` or `--tape-start` / `--tape-end`) over minute-bar-only replay.
+- **`alpha.max_hold_minutes`:** A zone value of **`0`** disables the matrix **time stop** for that zone (the engine applies the limit only when the configured minutes are **greater than zero**).
 
 ---
 
@@ -28,7 +36,7 @@ Operational view: what is in place, what has been validated, and what is not yet
 - **Crash recovery:** SQLite observability durability now has dedicated crash-recovery tests covering WAL mode, unclean restart, atomic batches, concurrent writes, and restart persistence.
 - **Validation pass:** Full `pytest` suite passes from repo root; coverage targets remain documented in test tooling.
 - **CLI + SQLite:** Operator visibility is CLI and SQLite only (no Flask).
-- **Launch gating:** Pre-Open and Outside are live by default; later zones remain shadow-only unless explicitly promoted in config. Zone policy does not branch on practice vs live—only `strategy.live_entry_zones` / `shadow_entry_zones` and `PREFERRED_ACCOUNT_ID` matter at runtime, session exit is enabled with a morning hard-flat cutoff, market-hours guard blocks new entries during configured closed windows while leaving signal evaluation active, and launch-readiness still requires a funded account, flat broker truth, contradiction-free broker state, and recovery proof before it returns green.
+- **Launch gating:** Live vs shadow zones follow `strategy.live_entry_zones` / `shadow_entry_zones` (see `config/default.yaml`). Zone policy does not branch on practice vs live—only those lists and `PREFERRED_ACCOUNT_ID` matter at runtime, session exit is enabled with a morning hard-flat cutoff, market-hours guard blocks new entries during configured closed windows while leaving signal evaluation active, and launch-readiness still requires a funded account, flat broker truth, contradiction-free broker state, and recovery proof before it returns green.
 - **Compliance:** Topstep/CME boundaries documented; the compliance gate is now fail-closed unless `COMPLIANCE_GATE_ACK` is explicitly set ([Compliance-Boundaries.md](Compliance-Boundaries.md)).
 - **Runbook:** Live restart, state reset, and compliance steps documented ([runbooks/ES Hot Zone Trader Live Restart Runbook.md](runbooks/ES%20Hot%20Zone%20Trader%20Live%20Restart%20Runbook.md)).
 - **Plan checklist:** The local trader launch cut is implemented and documented. Remaining tasks are trader-facing, not cloud-facing.

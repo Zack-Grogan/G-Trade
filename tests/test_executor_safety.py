@@ -57,6 +57,9 @@ class _LiveClient:
     def cancel_order(self, order_id: str) -> bool:
         return True
 
+    def enable_mock_mode(self) -> None:
+        return None
+
 
 class TestExecutorFailClosed(unittest.TestCase):
     def _make_executor(self) -> tuple[OrderExecutor, _FakeObservability]:
@@ -196,3 +199,73 @@ class TestExecutorBrokerTruthReconciliation(unittest.TestCase):
         self.assertIn(
             "broker-open-1", executor.get_watchdog_snapshot("ES")["active_entry_order_ids"]
         )
+
+
+class TestMockLimitTouchFillRatio(unittest.TestCase):
+    def test_limit_touch_fill_ratio_zero_never_fills_on_touch(self) -> None:
+        config = load_config()
+        config.replay_execution.limit_touch_fill_ratio = 0.0
+        observability = _FakeObservability()
+        with (
+            patch(
+                "src.execution.executor.get_client",
+                return_value=_LiveClient(market_timestamp=datetime.now(UTC)),
+            ),
+            patch("src.execution.executor.get_observability_store", return_value=observability),
+        ):
+            executor = OrderExecutor(config=config)
+        executor.enable_mock_mode()
+        ts = datetime(2025, 3, 1, 16, 0, tzinfo=UTC)
+        order = executor.place_order(
+            "ES",
+            1,
+            "buy",
+            "limit",
+            limit_price=6655.0,
+            use_limit_fallback=False,
+        )
+        self.assertIsNotNone(order)
+        md = MarketData(
+            symbol="ES",
+            bid=6654.0,
+            ask=6654.25,
+            last=6654.25,
+            volume=1,
+            timestamp=ts,
+        )
+        executor.process_market_data(md)
+        self.assertEqual(executor.get_position("ES"), 0)
+
+    def test_limit_touch_fill_ratio_one_fills_on_touch(self) -> None:
+        config = load_config()
+        config.replay_execution.limit_touch_fill_ratio = 1.0
+        observability = _FakeObservability()
+        with (
+            patch(
+                "src.execution.executor.get_client",
+                return_value=_LiveClient(market_timestamp=datetime.now(UTC)),
+            ),
+            patch("src.execution.executor.get_observability_store", return_value=observability),
+        ):
+            executor = OrderExecutor(config=config)
+        executor.enable_mock_mode()
+        ts = datetime(2025, 3, 1, 16, 0, tzinfo=UTC)
+        order = executor.place_order(
+            "ES",
+            1,
+            "buy",
+            "limit",
+            limit_price=6655.0,
+            use_limit_fallback=False,
+        )
+        self.assertIsNotNone(order)
+        md = MarketData(
+            symbol="ES",
+            bid=6654.0,
+            ask=6654.25,
+            last=6654.25,
+            volume=1,
+            timestamp=ts,
+        )
+        executor.process_market_data(md)
+        self.assertEqual(executor.get_position("ES"), 1)

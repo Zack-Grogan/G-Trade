@@ -7,6 +7,7 @@ This document records the compliance boundaries for the current local trader sta
 - **Source:** [Topstep Terms of Use](https://www.topstep.com/terms-of-use/)
 - **Boundary:** Execution, Topstep API calls, and live market/order streams **remain on the Mac only**. No execution from cloud; no VPN/VPS for the trading account.
 - **What we do:** All order placement, position management, market data consumption for trading, and Topstep API usage run in the local `es-trade start` process.
+- **Evaluation risk (optional):** An approximate trailing-drawdown mirror is documented in [risk/topstep-evaluation-mirror.md](risk/topstep-evaluation-mirror.md); it is **not** a certified copy of Topstep’s internal calculations.
 
 ## CME / Market Data
 

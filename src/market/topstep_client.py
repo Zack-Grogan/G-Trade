@@ -769,6 +769,72 @@ class TopstepClient:
             logger.error("Unable to retrieve historical bars for %s: %s", symbol, last_error)
         return []
 
+    # API caps per request (see retrieve_bars payload limit).
+    HISTORY_BARS_MAX_PER_REQUEST = 20000
+
+    def retrieve_bars_covering_range(
+        self,
+        symbol: str = "ES",
+        *,
+        start_time: datetime | str,
+        end_time: datetime | str,
+        unit: str | int = "minute",
+        unit_number: int = 1,
+        include_partial_bar: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Fetch OHLCV bars for [start_time, end_time) using chunked requests.
+
+        Returns (merged_sorted_bars, meta) where meta includes coverage diagnostics.
+        """
+        start_dt = self._parse_datetime(start_time)
+        end_dt = self._parse_datetime(end_time)
+        meta: dict[str, Any] = {
+            "requested_start": start_dt.isoformat() if start_dt else None,
+            "requested_end": end_dt.isoformat() if end_dt else None,
+            "chunks_fetched": 0,
+            "coverage_complete": False,
+            "truncated_chunk": False,
+            "bars_returned": 0,
+        }
+        if start_dt is None or end_dt is None or start_dt >= end_dt:
+            return [], meta
+
+        history_unit = self._history_unit_value(unit)
+        chunk_span = timedelta(days=7 if history_unit == 2 and int(unit_number) == 1 else 14)
+
+        seen_times: set[str] = set()
+        merged: list[dict[str, Any]] = []
+        current = start_dt
+        while current < end_dt:
+            chunk_end = min(current + chunk_span, end_dt)
+            chunk = self.retrieve_bars(
+                symbol,
+                start_time=current,
+                end_time=chunk_end,
+                unit=unit,
+                unit_number=unit_number,
+                limit=self.HISTORY_BARS_MAX_PER_REQUEST,
+                include_partial_bar=include_partial_bar,
+            )
+            meta["chunks_fetched"] += 1
+            if len(chunk) >= self.HISTORY_BARS_MAX_PER_REQUEST:
+                meta["truncated_chunk"] = True
+            for bar in chunk:
+                ts = bar.get("time")
+                if ts is None:
+                    continue
+                key = ts.isoformat()
+                if key in seen_times:
+                    continue
+                seen_times.add(key)
+                merged.append(bar)
+            current = chunk_end
+
+        merged.sort(key=lambda item: item["time"])
+        meta["bars_returned"] = len(merged)
+        meta["coverage_complete"] = not meta["truncated_chunk"]
+        return merged, meta
+
     def backfill_market_history(
         self,
         symbol: str = "ES",

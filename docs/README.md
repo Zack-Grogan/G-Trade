@@ -20,6 +20,8 @@ Full architecture and rationale: [Architecture-Overview.md](Architecture-Overvie
 | [Current-State.md](Current-State.md) | What is operational, validated, and not done. |
 | [Tasks.md](Tasks.md) | Checklist of trader tasks and hardening work. |
 | [Compliance-Boundaries.md](Compliance-Boundaries.md) | Topstep/CME boundaries and compliance gate. |
+| [risk/topstep-evaluation-mirror.md](risk/topstep-evaluation-mirror.md) | Optional local trailing-drawdown mirror vs Topstep rules (citations + limits). |
+| [replay/replay-topstep-deprecated.md](replay/replay-topstep-deprecated.md) | **`replay-topstep` is deprecated** — bar-only historical replay is not validated research; prefer tape replay. |
 | [runbooks/ES Hot Zone Trader Live Restart Runbook.md](runbooks/ES%20Hot%20Zone%20Trader%20Live%20Restart%20Runbook.md) | Stop/restart, state reset (retained for future upgrades). |
 | [engineering-system/overview.md](engineering-system/overview.md) | AI operating layer, workflow, and generated docs. |
 | [archive/railway-sunset/README.md](archive/railway-sunset/README.md) | Historical record of the retired Railway stack. |
