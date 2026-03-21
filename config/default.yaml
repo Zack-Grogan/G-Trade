@@ -58,7 +58,8 @@ strategy:
   mr_rsi_oversold: 35
   mr_rsi_overbought: 65
   mr_band_deviation: 2.0
-  mr_time_stop_minutes: 0
+  # CLI+ / Monday profile: restored main-style MR time stop; live entries still Pre-Open-only below.
+  mr_time_stop_minutes: 20
   mr_exit_at_vwap: true
   trade_outside_hotzones: false
   launch_gate_enabled: true
@@ -85,52 +86,49 @@ strategy:
   market_hours_weekend_open_time: "17:00"
   market_hours_holiday_dates: []
 
+# CLI+ profile: main-equivalent matrix thresholds, decay (1.5), and per-zone max holds;
+# keeps cli infrastructure (market hours guard, tape replay, synthetic-quote handling, etc.).
+# STRESS score penalty retained as a conservative improvement over legacy main.
 alpha:
   matrix_version: "hotzone-v3"
   decision_interval: "tick_and_bar"
 
-  # Global entry thresholds
   min_entry_score: 5.0
-  min_score_gap: 2.5
+  min_score_gap: 2.0
   exit_decay_score: 1.5
-  reverse_score_gap: 3.0
-  full_size_score: 7.0
+  reverse_score_gap: 2.5
+  full_size_score: 6.5
   flat_bias_buffer: 0.5
 
-  # Per-zone entry score overrides (higher = more selective, fewer trades)
+  # All 5.0 => same effective floor as legacy single global min_entry_score
   zone_min_entry_score:
-    Pre-Open: 5.5        # Selective; align with 1–3 trades/day — verify on sqlite tape replay
+    Pre-Open: 5.0
     Post-Open: 5.0
-    Midday: 5.5
-    Outside: 6.0
+    Midday: 5.0
+    Outside: 5.0
 
-  # Per-side score adjustments
   side_adjustment:
     long: 0.0
     short: 0.0
 
-  # Minimum feature contribution - if dominant feature < this, veto entry
-  min_dominant_feature_score: 1.0
-
-  # Regime-based score multipliers (applied to final score)
   regime_multipliers:
     TREND:
-      long: 1.1
-      short: 0.9
+      long: 1.0
+      short: 1.0
     RANGE:
       long: 1.0
       short: 1.0
     STRESS:
-      long: 0.3          # Heavy penalty in stress - avoid trading
+      long: 0.3
       short: 0.3
 
-  # Per-zone exit decay thresholds
-  # Use None or a value lower than any possible score to disable matrix_decay
+  # Align with legacy global exit_decay_score (1.5) for all zones
   zone_exit_decay_score:
-    Pre-Open: -999.0       # Disable matrix_decay - ATR stops/trailing manage exits
-    Post-Open: 0.0
-    Midday: 0.0
-    Outside: -999.0
+    Pre-Open: 1.5
+    Post-Open: 1.5
+    Midday: 1.5
+    Close-Scalp: 1.5
+    Outside: 1.5
 
   stop_loss_atr: 1.2
   take_profit_atr:
@@ -140,11 +138,11 @@ alpha:
     Close-Scalp: 0.8
     Outside: 1.5
   max_hold_minutes:
-    Pre-Open: 0        # No time-based exit - let ATR/stops/trailing determine exits
-    Post-Open: 0
-    Midday: 0
-    Close-Scalp: 0
-    Outside: 0
+    Pre-Open: 40
+    Post-Open: 55
+    Midday: 20
+    Close-Scalp: 5
+    Outside: 30
   zone_weights:
     Pre-Open:
       long:
@@ -267,8 +265,8 @@ risk:
   max_position_loss: 200
   max_consecutive_losses: 3
   max_trades_per_hour: 6
-  max_trades_per_zone: 2
-  max_daily_trades: 5
+  max_trades_per_zone: 3
+  max_daily_trades: 10
   enable_circuit_breakers: true
   vol_spike_threshold: 1.75
   session_timezone: "America/Chicago"

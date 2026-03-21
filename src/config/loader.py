@@ -89,8 +89,8 @@ class RiskConfig:
     max_position_loss: float = 200
     max_consecutive_losses: int = 3
     max_trades_per_hour: int = 6
-    max_trades_per_zone: int = 2
-    max_daily_trades: int = 5
+    max_trades_per_zone: int = 3
+    max_daily_trades: int = 10
     enable_circuit_breakers: bool = True
     vol_spike_threshold: float = 1.75
     session_timezone: str = "America/Chicago"
@@ -264,10 +264,10 @@ class AlphaConfig:
     # Per-zone entry score overrides
     zone_min_entry_score: Dict[str, float] = field(
         default_factory=lambda: {
-            "Pre-Open": 5.5,
+            "Pre-Open": 5.0,
             "Post-Open": 5.0,
-            "Midday": 5.5,
-            "Outside": 6.0,
+            "Midday": 5.0,
+            "Outside": 5.0,
         }
     )
     # Per-side score adjustments
@@ -281,15 +281,16 @@ class AlphaConfig:
         default_factory=lambda: {
             "TREND": {"long": 1.0, "short": 1.0},
             "RANGE": {"long": 1.0, "short": 1.0},
-            "STRESS": {"long": 1.0, "short": 1.0},
+            "STRESS": {"long": 0.3, "short": 0.3},
         }
     )
     # Per-zone exit decay thresholds
     zone_exit_decay_score: Dict[str, float] = field(
         default_factory=lambda: {
-            "Pre-Open": 1.2,
+            "Pre-Open": 1.5,
             "Post-Open": 1.5,
-            "Midday": 1.0,
+            "Midday": 1.5,
+            "Close-Scalp": 1.5,
             "Outside": 1.5,
         }
     )
@@ -300,7 +301,7 @@ class AlphaConfig:
             "Post-Open": 2.0,
             "Midday": 1.3,
             "Close-Scalp": 0.8,
-            "Outside": 1.8,
+            "Outside": 1.5,
         }
     )
     max_hold_minutes: Dict[str, int] = field(

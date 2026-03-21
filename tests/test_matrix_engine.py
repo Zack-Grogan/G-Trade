@@ -63,6 +63,8 @@ def build_config() -> Config:
         ]
     )
     config.alpha.min_entry_score = 1.25
+    for _zk in list(config.alpha.zone_min_entry_score.keys()):
+        config.alpha.zone_min_entry_score[_zk] = config.alpha.min_entry_score
     config.alpha.full_size_score = 3.5
     config.alpha.min_score_gap = 0.25
     config.alpha.flat_bias_buffer = 0.0

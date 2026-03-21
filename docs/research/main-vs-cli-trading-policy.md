@@ -173,6 +173,16 @@ risk:
 
 ---
 
+## CLI+ branch (repo default `config/default.yaml`)
+
+As of branch **`CLI+`**, the committed default config implements this blend:
+
+- **Main-equivalent:** `min_score_gap` 2.0, `reverse_score_gap` 2.5, `full_size_score` 6.5, `zone_min_entry_score` all **5.0**, `zone_exit_decay_score` all **1.5**, `max_hold_minutes` restored (Pre-Open **40**, etc.), `mr_time_stop_minutes` **20**, risk **3 / zone** and **10 / day**.
+- **Cli retained:** Pre-Open-only **live** entries, **market hours guard**, shadow zones, evaluation mirror fields (off), infrastructure and tape replay unchanged.
+- **Improvement vs legacy main:** **STRESS** `regime_multipliers` **0.3** on long/short (main had no multipliers); **`trade_outside_hotzones: false`** with live list still Pre-Open-only.
+
+---
+
 ## Related
 
 - [../Current-State.md](../Current-State.md) — replay fidelity  
