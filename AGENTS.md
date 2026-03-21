@@ -147,6 +147,7 @@ Use at most two subagents at a time.
 
 - **CLI**: `es-trade --help` for all commands. `es-trade config`, `es-trade status`, `es-trade health`, `es-trade debug` work without credentials (they read local runtime state and/or SQLite). Commands that connect to Topstep (`start`, `replay-topstep`) require `EMAIL` and `TOPSTEP_API_KEY` in a `.env` file. `es-trade replay --path` and tape replay from local SQLite do not require broker credentials.
 - **Deprecated / stale:** `es-trade replay-topstep` (minute bars from the Topstep history API) is **not** a validated research path — synthetic BBO and coarse microstructure; see [`docs/replay/replay-topstep-deprecated.md`](docs/replay/replay-topstep-deprecated.md). Prefer **tape replay** or file replay for analysis until proper historical tick data exists.
+- **Branch policy drift:** For `main` vs `cli` trading logic, thresholds, and a **config recipe** to approximate the old (`main`) policy while preserving Pre-Open weights, see [`docs/research/main-vs-cli-trading-policy.md`](docs/research/main-vs-cli-trading-policy.md).
 
 ### Testing & linting
 

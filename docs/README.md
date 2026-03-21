@@ -45,3 +45,4 @@ Procedures for operators (restart, state reset, forensics):
 The files in **[research/](research/)** are strategy, framework, and research material, not operator/runbook docs. They describe concepts like regime labeling, hot zones, order flow, and evaluation methods that inform the local trader.
 
 - [research/](research/) — Algos General, Mixture-of-Experts, Regime Labeling, Hotzones, Dataset Schema, and related strategy/framework docs.
+- [research/main-vs-cli-trading-policy.md](research/main-vs-cli-trading-policy.md) — **`main` vs `cli`** engine/policy drift, outcome effects, and **config recipe** to approximate the old setup while keeping Pre-Open `zone_weights`.
