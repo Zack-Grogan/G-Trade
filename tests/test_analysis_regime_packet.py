@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.analysis.regime_packet import build_launch_readiness
+from src.analysis.regime_packet import build_launch_readiness, render_regime_packet_markdown
 from src.config import load_config, set_config
 from src.observability import get_observability_store
 
@@ -73,3 +73,26 @@ class LaunchReadinessTests(unittest.TestCase):
         self.assertTrue(readiness["checks"]["recovery_verified"])
         self.assertEqual(readiness["runtime_state_source"], "sqlite")
         self.assertEqual(readiness["runtime_status"], "healthy")
+
+    def test_render_regime_packet_markdown_includes_session_checkpoint_and_hard_flat(self) -> None:
+        packet = {
+            "generated_at": "2026-03-20T00:00:00Z",
+            "account_id": "acct-1",
+            "trade_count": 3,
+            "morning_meta": {"summary": {"count": 3, "total_pnl": 4225.0, "avg_duration_hours": 7.39}},
+            "overnight_negative_control": {"summary": {"count": 8, "total_pnl": -1850.0}},
+            "zone_summary": {},
+            "launch_defaults": {
+                "launch_gate_enabled": True,
+                "live_entry_zones": ["Pre-Open"],
+                "shadow_entry_zones": ["Post-Open", "Midday", "Outside"],
+                "session_exit_checkpoint_time": "10:00",
+                "session_exit_hard_flat_time": "11:30",
+                "session_exit_timezone": "America/Los_Angeles",
+            },
+        }
+
+        rendered = render_regime_packet_markdown(packet)
+
+        self.assertIn("Session checkpoint: `10:00 America/Los_Angeles`", rendered)
+        self.assertIn("Session hard flat: `11:30 America/Los_Angeles`", rendered)

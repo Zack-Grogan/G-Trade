@@ -221,6 +221,11 @@ class ObservabilityStore:
                     if isinstance(payload.get("zone"), dict)
                     else payload.get("zone_state")
                 ),
+                "zone_semantics_version": (
+                    (payload.get("zone") or {}).get("semantics_version")
+                    if isinstance(payload.get("zone"), dict)
+                    else payload.get("zone_semantics_version")
+                ),
                 "position": (
                     (payload.get("position") or {}).get("contracts")
                     if isinstance(payload.get("position"), dict)
@@ -620,6 +625,7 @@ class ObservabilityStore:
                 rows = self._conn.execute(
                     f"""
                     SELECT id, captured_at, inserted_at, run_id, process_id, status, data_mode, symbol, zone, zone_state,
+                           zone_semantics_version,
                            position, position_pnl, daily_pnl, risk_state, account_id, account_name, account_mode,
                            account_is_practice, decision_id, attempt_id, position_id, trade_id,
                            payload_json
@@ -1554,6 +1560,7 @@ class ObservabilityStore:
                 symbol TEXT,
                 zone TEXT,
                 zone_state TEXT,
+                zone_semantics_version TEXT,
                 position INTEGER,
                 position_pnl REAL,
                 daily_pnl REAL,
@@ -1806,6 +1813,7 @@ class ObservabilityStore:
         self._ensure_column_locked("state_snapshots", "account_name", "TEXT")
         self._ensure_column_locked("state_snapshots", "account_mode", "TEXT")
         self._ensure_column_locked("state_snapshots", "account_is_practice", "INTEGER")
+        self._ensure_column_locked("state_snapshots", "zone_semantics_version", "TEXT")
         self._ensure_column_locked("run_manifests", "account_id", "TEXT")
         self._ensure_column_locked("run_manifests", "account_name", "TEXT")
         self._ensure_column_locked("run_manifests", "account_mode", "TEXT")
@@ -1936,6 +1944,7 @@ class ObservabilityStore:
                 symbol,
                 zone,
                 zone_state,
+                zone_semantics_version,
                 position,
                 position_pnl,
                 daily_pnl,
@@ -1949,7 +1958,7 @@ class ObservabilityStore:
                 position_id,
                 trade_id,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -1962,6 +1971,7 @@ class ObservabilityStore:
                     item["symbol"],
                     item["zone"],
                     item["zone_state"],
+                    item["zone_semantics_version"],
                     item["position"],
                     item["position_pnl"],
                     item["daily_pnl"],

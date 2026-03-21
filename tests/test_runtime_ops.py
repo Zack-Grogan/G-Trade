@@ -8,10 +8,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.cli.commands import _fetch_broker_truth, _sync_account_trade_history
+from click.testing import CliRunner
+
+from src.cli.commands import _fetch_broker_truth, _startup_zone_surface, _sync_account_trade_history, cli
 from src.cli.launchd import LAUNCHD_LABEL, render_launchd_plist
 from src.config import get_config, load_config, set_config
 from src.observability import get_observability_store
+from src.runtime.inspection import fetch_runtime_health_dict, runtime_status_path
+from src.runtime.zone_surface import resolve_launch_gate_zone_state
 
 
 class RuntimeOpsTests(unittest.TestCase):
@@ -285,3 +289,178 @@ class RuntimeOpsTests(unittest.TestCase):
         payload = render_launchd_plist()
         parsed = plistlib.loads(payload)
         self.assertEqual(parsed["EnvironmentVariables"]["PYTHONUNBUFFERED"], "1")
+
+    def test_startup_zone_surface_marks_outside_as_shadow_in_default_profile(self) -> None:
+        cfg = load_config()
+
+        current_zone, zone_state, message = _startup_zone_surface(cfg, None)
+
+        self.assertEqual(current_zone, "Outside")
+        self.assertEqual(zone_state, "shadow")
+        self.assertEqual(message, "Current zone: Outside (shadow)")
+
+    def test_startup_zone_surface_marks_outside_as_blocked_when_not_live_or_shadow(self) -> None:
+        cfg = load_config()
+        cfg.strategy.shadow_entry_zones = ["Post-Open", "Midday"]
+
+        current_zone, zone_state, message = _startup_zone_surface(cfg, None)
+
+        self.assertEqual(current_zone, "Outside")
+        self.assertEqual(zone_state, "blocked")
+        self.assertEqual(message, "Current zone: Outside (blocked)")
+
+    def test_startup_zone_surface_marks_named_shadow_zone_as_shadow(self) -> None:
+        cfg = load_config()
+
+        class ShadowZone:
+            name = "Post-Open"
+
+            class state:
+                value = "active"
+
+        current_zone, zone_state, message = _startup_zone_surface(cfg, ShadowZone())
+
+        self.assertEqual(current_zone, "Post-Open")
+        self.assertEqual(zone_state, "shadow")
+        self.assertEqual(message, "Current zone: Post-Open (shadow)")
+
+    def test_resolve_launch_gate_zone_state_marks_named_shadow_zone_as_shadow(self) -> None:
+        cfg = load_config()
+
+        zone_state = resolve_launch_gate_zone_state(
+            cfg.strategy,
+            zone_name="Post-Open",
+            scheduled_zone_state="active",
+        )
+
+        self.assertEqual(zone_state, "shadow")
+
+    def test_resolve_launch_gate_zone_state_blocks_overlap_when_gate_enabled(self) -> None:
+        cfg = load_config()
+        cfg.strategy.live_entry_zones = ["Pre-Open", "Outside"]
+        cfg.strategy.shadow_entry_zones = ["Outside"]
+
+        zone_state = resolve_launch_gate_zone_state(
+            cfg.strategy,
+            zone_name="Outside",
+            scheduled_zone_state="active",
+        )
+
+        self.assertEqual(zone_state, "blocked")
+
+    def test_resolve_launch_gate_zone_state_uses_scheduler_active_when_gate_disabled(self) -> None:
+        cfg = load_config()
+        cfg.strategy.launch_gate_enabled = False
+        cfg.strategy.live_entry_zones = []
+        cfg.strategy.shadow_entry_zones = []
+
+        zone_state = resolve_launch_gate_zone_state(
+            cfg.strategy,
+            zone_name="Post-Open",
+            scheduled_zone_state="active",
+        )
+
+        self.assertEqual(zone_state, "active")
+
+    def test_resolve_launch_gate_zone_state_preserves_flatten_only_scheduler_state(self) -> None:
+        cfg = load_config()
+
+        zone_state = resolve_launch_gate_zone_state(
+            cfg.strategy,
+            zone_name="Close-Scalp",
+            scheduled_zone_state="flatten_only",
+        )
+
+        self.assertEqual(zone_state, "flatten_only")
+
+    def test_resolve_launch_gate_zone_state_marks_missing_live_and_shadow_as_blocked(self) -> None:
+        cfg = load_config()
+        cfg.strategy.live_entry_zones = ["Pre-Open"]
+        cfg.strategy.shadow_entry_zones = ["Post-Open", "Midday"]
+
+        zone_state = resolve_launch_gate_zone_state(
+            cfg.strategy,
+            zone_name="Outside",
+            scheduled_zone_state="active",
+        )
+
+        self.assertEqual(zone_state, "blocked")
+
+    def test_fetch_runtime_health_dict_preserves_sqlite_zone_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cfg = self._build_config(temp_dir)
+            store = get_observability_store(force_recreate=True, config=cfg)
+            store.start()
+            run_id = "run-shadow-health"
+            store.record_state_snapshot(
+                {
+                    "run_id": run_id,
+                    "status": "healthy",
+                    "data_mode": "live",
+                    "zone": {
+                        "name": "Post-Open",
+                        "state": "shadow",
+                        "semantics_version": "launch_gate_aware_v1",
+                    },
+                    "position": {"contracts": 0, "pnl": 0.0},
+                    "account": {"daily_pnl": 0.0, "is_practice": True},
+                    "risk": {"state": "normal"},
+                    "alpha": {"long_score": 0.0, "short_score": 0.0},
+                    "heartbeat": {"market_stream_connected": True},
+                },
+            )
+            store.force_flush()
+
+            status_path = runtime_status_path(cfg)
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+            status_path.write_text(
+                '{"running": true, "pid": 999999, "run_id": "run-shadow-health", "data_mode": "live"}',
+                encoding="utf-8",
+            )
+
+            health, source = fetch_runtime_health_dict(cfg)
+            snapshot_rows = store.query_state_snapshots(limit=1, run_id=run_id)
+
+            self.assertEqual(source, "sqlite")
+            self.assertEqual(health["zone"], "Post-Open")
+            self.assertEqual(health["zone_state"], "shadow")
+            self.assertEqual(health["zone_semantics_version"], "launch_gate_aware_v1")
+            self.assertEqual(snapshot_rows[0]["zone_semantics_version"], "launch_gate_aware_v1")
+            store.stop()
+
+    def test_engine_update_server_state_persists_zone_semantics_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cfg = self._build_config(temp_dir)
+            store = get_observability_store(force_recreate=True, config=cfg)
+            store.start()
+            with patch("src.engine.trading_engine.get_observability_store", return_value=store):
+                from src.engine.trading_engine import TradingEngine
+
+                engine = TradingEngine(cfg)
+                engine.reset_runtime_state(clear_history=True)
+                set_config(cfg)
+                engine._update_server_state()
+                store.force_flush()
+
+            rows = store.query_state_snapshots(limit=1)
+            self.assertEqual(rows[0]["zone_semantics_version"], "launch_gate_aware_v1")
+            self.assertEqual(rows[0]["payload"]["zone"]["semantics_version"], "launch_gate_aware_v1")
+            store.stop()
+
+    def test_status_warns_when_zone_semantics_are_legacy_or_unknown(self) -> None:
+        remote = {
+            "status": "healthy",
+            "running": True,
+            "data_mode": "live",
+            "zone": {"name": "Post-Open", "state": "active"},
+            "strategy": "WEIGHTED_SCORE_MATRIX",
+            "position": {"contracts": 0, "pnl": 0.0},
+            "account": {"daily_pnl": 0.0},
+            "risk": {"state": "normal"},
+        }
+        runner = CliRunner()
+        with patch("src.cli.commands.fetch_runtime_debug_state", return_value=(remote, "sqlite")):
+            result = runner.invoke(cli, ["status"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("legacy/unknown snapshot", result.output)

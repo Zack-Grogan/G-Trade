@@ -606,6 +606,7 @@ def render_regime_packet_markdown(packet: dict[str, Any]) -> str:
             f"- Launch gate enabled: `{defaults.get('launch_gate_enabled')}`",
             f"- Live entry zones: `{defaults.get('live_entry_zones')}`",
             f"- Shadow entry zones: `{defaults.get('shadow_entry_zones')}`",
+            f"- Session checkpoint: `{defaults.get('session_exit_checkpoint_time')} {defaults.get('session_exit_timezone')}`",
             f"- Session hard flat: `{defaults.get('session_exit_hard_flat_time')} {defaults.get('session_exit_timezone')}`",
         ]
     )

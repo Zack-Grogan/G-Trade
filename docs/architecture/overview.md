@@ -37,6 +37,8 @@ Canonical architecture doc (lowercase path).
 - [docs/README.md](../README.md)
 - [OPERATOR.md](../OPERATOR.md)
 - [Current-State.md](../Current-State.md)
+- [research/morning-first-architecture.md](../research/morning-first-architecture.md)
+- [Observability-Contract.md](../Observability-Contract.md)
 - [Tasks.md](../Tasks.md)
 - [Compliance-Boundaries.md](../Compliance-Boundaries.md)
 - [archive/railway-sunset/README.md](../archive/railway-sunset/README.md)

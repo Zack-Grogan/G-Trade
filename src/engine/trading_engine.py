@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 import pytz
 
-from src.config import Config, get_config
+from src.config import Config, get_config, validate_config
 from src.engine.decision_matrix import DecisionMatrixEvaluator, MatrixDecision
 from src.engine.event_provider import EventContext, LocalEventProvider
 from src.engine.market_hours import MarketHoursGuard
@@ -30,6 +30,7 @@ from src.observability import get_observability_store
 from src.observability import taxonomy as obs
 from src.runtime import get_state, set_state
 from src.runtime.local_tts import LocalTtsNotifier
+from src.runtime.zone_surface import ZONE_SEMANTICS_VERSION, resolve_launch_gate_zone_state
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ class TradingEngine:
     """Wire together market data, matrix alpha, risk, and execution."""
 
     def __init__(self, config: Optional[Config] = None):
-        self.config = config or get_config()
+        self.config = validate_config(config or get_config())
         self.symbol = self.config.symbols[0]
         self.scheduler: HotZoneScheduler = get_scheduler()
         self.risk_manager: RiskManager = get_risk_manager()
@@ -214,6 +215,8 @@ class TradingEngine:
         self._last_reconciliation_reason: Optional[str] = None
         self._position_high_water: Optional[float] = None
         self._position_low_water: Optional[float] = None
+        self._session_checkpoint_triggered: bool = False
+        self._session_checkpoint_requested_at: Optional[pd.Timestamp] = None
         self._protection_mode: str = "static"
         self._last_dynamic_exit_update_at: float = 0.0
         self._last_sizing_telemetry: Dict[str, Any] = {}
@@ -311,11 +314,8 @@ class TradingEngine:
             "position_id": position_id or self._current_position_id,
             "trade_id": trade_id or self._current_trade_id,
             "symbol": self.symbol,
-            "zone_state": (
-                zone.state.value
-                if zone
-                else ("active" if self.config.strategy.trade_outside_hotzones else "inactive")
-            ),
+            "zone_state": self._zone_state_for_runtime(zone),
+            "zone_semantics_version": ZONE_SEMANTICS_VERSION,
             "action": decision.action,
             "decision_reason": decision.reason,
             "long_score": decision.long_score,
@@ -422,6 +422,8 @@ class TradingEngine:
             self._pending_entry_reason = ""
             self._position_entry_time = None
             self._position_entry_zone = None
+            self._session_checkpoint_triggered = False
+            self._session_checkpoint_requested_at = None
             self._last_decision = None
             self._last_entry_reason = None
             self._last_exit_reason = None
@@ -1479,11 +1481,7 @@ class TradingEngine:
 
         self._handle_zone_transition(zone)
         display_zone_name = self._zone_name_for_runtime(zone)
-        display_zone_state = (
-            zone.state.value
-            if zone
-            else ("active" if self.config.strategy.trade_outside_hotzones else "inactive")
-        )
+        display_zone_state = self._zone_state_for_runtime(zone)
         set_state(current_zone=display_zone_name, zone_state=display_zone_state)
         zone_live_entries_allowed, zone_gate_reason = self._zone_live_entry_allowed(
             display_zone_name
@@ -1925,7 +1923,7 @@ class TradingEngine:
             payload={
                 "previous_zone": previous_zone,
                 "new_zone": zone_name,
-                "zone_state": zone.state.value if zone else "inactive",
+                "zone_state": self._zone_state_for_runtime(zone),
             },
             event_time=self._current_event_time(),
             action="zone_transition",
@@ -1940,6 +1938,14 @@ class TradingEngine:
             else ("Outside" if self.config.strategy.trade_outside_hotzones else None)
         )
 
+    def _zone_state_for_runtime(self, zone: Optional[ZoneInfo]) -> str:
+        zone_name = self._zone_name_for_runtime(zone)
+        return resolve_launch_gate_zone_state(
+            self.config.strategy,
+            zone_name=zone_name,
+            scheduled_zone_state=zone.state.value if zone is not None else None,
+        )
+
     def _zone_live_entry_allowed(self, zone_name: Optional[str]) -> tuple[bool, Optional[str]]:
         if not self.config.strategy.launch_gate_enabled:
             return True, None
@@ -1947,6 +1953,8 @@ class TradingEngine:
             return False, "outside_all_zones"
         live_zones = set(self.config.strategy.live_entry_zones or [])
         shadow_zones = set(self.config.strategy.shadow_entry_zones or [])
+        if zone_name in live_zones and zone_name in shadow_zones:
+            return False, obs.OUTCOME_LAUNCH_GATE_CONFIG_INVALID
         if zone_name in live_zones:
             return True, None
         if zone_name in shadow_zones:
@@ -1975,13 +1983,23 @@ class TradingEngine:
             return False, None
         entry_zone = self._position_entry_zone or self._pending_entry_zone or ""
         live_zones = set(self.config.strategy.live_entry_zones or [])
-        if live_zones and entry_zone not in live_zones:
+        adopted_or_unknown = self._adoption_source is not None or not entry_zone
+        if live_zones and entry_zone not in live_zones and not adopted_or_unknown:
             return False, None
         timestamp = pd.Timestamp(current_time)
         if timestamp.tzinfo is None:
             timestamp = timestamp.tz_localize(self.default_tz)
         policy_tz = pytz.timezone(self.config.strategy.session_exit_timezone)
         local_time = timestamp.tz_convert(policy_tz)
+        checkpoint_hour, checkpoint_minute = self._parse_local_clock(
+            self.config.strategy.session_exit_checkpoint_time
+        )
+        checkpoint_cutoff = local_time.replace(
+            hour=checkpoint_hour,
+            minute=checkpoint_minute,
+            second=0,
+            microsecond=0,
+        )
         hard_flat_hour, hard_flat_minute = self._parse_local_clock(
             self.config.strategy.session_exit_hard_flat_time
         )
@@ -1991,6 +2009,18 @@ class TradingEngine:
             second=0,
             microsecond=0,
         )
+        if local_time >= checkpoint_cutoff and local_time < hard_flat_cutoff:
+            if not self._session_checkpoint_triggered:
+                return True, "session_checkpoint"
+            if self._session_checkpoint_requested_at is None:
+                return True, "session_checkpoint_retry"
+            requested_at = pd.Timestamp(self._session_checkpoint_requested_at)
+            if requested_at.tzinfo is None:
+                requested_at = requested_at.tz_localize(policy_tz)
+            else:
+                requested_at = requested_at.tz_convert(policy_tz)
+            if (local_time - requested_at).total_seconds() >= 30.0:
+                return True, "session_checkpoint_retry"
         if local_time >= hard_flat_cutoff:
             return True, "session_hard_flat"
         return False, None
@@ -2062,7 +2092,11 @@ class TradingEngine:
         )
         if self._last_position == 0:
             return
-        if self.executor.flatten(self.symbol):
+        flatten_requested = self.executor.flatten(self.symbol)
+        if flatten_requested:
+            if reason in {"session_checkpoint", "session_checkpoint_retry"}:
+                self._session_checkpoint_triggered = True
+                self._session_checkpoint_requested_at = pd.Timestamp(self._current_event_time())
             logger.warning("Flatten requested: %s", reason)
             if self._mock_mode:
                 self._sync_position_state()
@@ -2266,6 +2300,8 @@ class TradingEngine:
                     self._current_trade_id = trade_id
                     self._position_entry_time = pd.Timestamp(event_time)
                     self._position_entry_zone = zone_name
+                    self._session_checkpoint_triggered = False
+                    self._session_checkpoint_requested_at = None
                     self._position_high_water = actual_entry_price
                     self._position_low_water = actual_entry_price
                     self.executor.mark_position_open()
@@ -2376,6 +2412,8 @@ class TradingEngine:
                     self._pending_entry_reason = ""
                     self._position_entry_time = None
                     self._position_entry_zone = None
+                    self._session_checkpoint_triggered = False
+                    self._session_checkpoint_requested_at = None
                     self._position_high_water = None
                     self._position_low_water = None
                     self._protection_mode = "static"

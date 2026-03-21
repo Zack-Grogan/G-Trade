@@ -44,10 +44,10 @@ The active operator workflow is local-only:
 
 ## Launch posture
 
-- **Live entries:** Whichever zones are listed under `strategy.live_entry_zones` (default repo config emphasizes **Pre-Open**; adjust deliberately).
-- **Shadow-only zones:** Zones in `strategy.shadow_entry_zones` score and log without live entries until promoted to live. Launch-gate behavior is config-driven only (not tied to practice vs live); set `PREFERRED_ACCOUNT_ID` to the account you intend to trade.
+- **Live entries:** Whichever zones are listed under `strategy.live_entry_zones` (default repo config is **Pre-Open** only).
+- **Shadow-only zones:** Zones in `strategy.shadow_entry_zones` score and log without live entries until promoted to live. The default morning-first profile keeps `Post-Open`, `Midday`, and `Outside` shadow-only. Launch-gate behavior is config-driven only (not tied to practice vs live); set `PREFERRED_ACCOUNT_ID` to the account you intend to trade.
 - **Market-hours guard:** signal evaluation and logging keep running, but new entry submission is blocked during configured closed windows (daily maintenance/weekend/holiday overrides). Broker outside-hours rejections remain as fallback telemetry.
-- **Session exit:** morning entries are capped by the configured session exit policy, with a checkpoint at `10:00` PT and a hard-flat time at `11:30` PT.
+- **Session exit:** the configured morning session policy caps **live-zone positions** with a checkpoint flatten beginning at `10:00` PT and a hard-flat time at `11:30` PT. If a checkpoint flatten request is accepted but the position remains open, the engine may retry before hard-flat. Adopted or unknown-origin positions are also included as a safety fallback after restarts/broker adoption; “unknown” includes empty/missing `entry_zone` metadata. Explicitly non-live-tagged positions without adoption metadata are **not** forcibly session-flattened by this policy.
 - **Contracts:** the live launch posture remains `1` contract until the morning edge is reviewed forward and the trade tracking is clean.
 
 ## Development flow (back to coding)

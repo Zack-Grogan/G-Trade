@@ -29,6 +29,21 @@ Use only values defined in `taxonomy.py` (`OUTCOME_*`). Examples:
 - `order_submitted` — entry order placed; single snapshot per submit.
 - `order_submit_failed` — `place_order` returned `None`.
 - `risk_blocked`, `broker_entry_guard_blocked`, `market_closed_entry_block`, etc. — terminal reasons without a submit.
+- `launch_gate_config_invalid` — runtime fail-closed state when a zone is simultaneously configured as live and shadow.
+
+## Zone state semantics
+
+When a zone is emitted into runtime state, startup payloads, or decision snapshots:
+
+- `active` — the zone/session is active **and** the launch gate allows live entries there.
+- `shadow` — the zone/session is active for scoring/logging, but launch gating blocks live entries with `shadow_only_zone`.
+- `blocked` — the zone/session is present but not in the configured live/shadow lists, so launch gating blocks entries with `launch_gate_blocked`.
+- `flatten_only` / `closing` / `inactive` — direct scheduler/runtime states.
+- `zone_semantics_version` — currently `launch_gate_aware_v1` for rows emitted after this morning-first reset.
+
+When `launch_gate_enabled` is `false`, scheduler `active` means operator-facing `active`; live/shadow lists are ignored.
+
+Do not assume scheduler `active` means live-tradable; the launch gate is part of the operator-facing truth.
 
 ## Event taxonomy
 
@@ -42,6 +57,15 @@ Use only values defined in `taxonomy.py` (`OUTCOME_*`). Examples:
 - `in_process` — same PID as CLI.
 - `sqlite` — latest state snapshot for `run_id` from `runtime_status.json`.
 - `status_file` — control-plane only until SQLite has a snapshot.
+
+`fetch_runtime_health_dict` / `TradingState.to_health_dict()` expose a flatter health shape:
+
+- `zone` — current zone name
+- `zone_state` — launch-gate-aware zone state (`active|shadow|blocked|flatten_only|closing|inactive`)
+
+Legacy note:
+
+- Older persisted `state_snapshots` may have `zone.state` values that reflected the scheduler only, before launch-gate-aware `shadow` / `blocked` labeling was introduced. `health_dict_from_debug` marks these as `zone_semantics_version=legacy_or_unknown`. Treat mixed-era runs carefully during forensics.
 
 See [OPERATOR.md](OPERATOR.md).
 

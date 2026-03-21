@@ -73,8 +73,18 @@ OUTCOME_SIZE_ZERO: Final = "size_zero"
 OUTCOME_MISSING_SIDE: Final = "missing_side"
 OUTCOME_MARKET_CLOSED_ENTRY_BLOCK: Final = "market_closed_entry_block"
 OUTCOME_BROKER_ENTRY_GUARD_BLOCKED: Final = "broker_entry_guard_blocked"
+OUTCOME_LAUNCH_GATE_CONFIG_INVALID: Final = "launch_gate_config_invalid"
 OUTCOME_ORDER_SUBMIT_FAILED: Final = "order_submit_failed"
 OUTCOME_ORDER_SUBMITTED: Final = "order_submitted"
+
+# --- Zone state strings (runtime / decision snapshots / startup payloads) ---
+
+ZONE_STATE_ACTIVE: Final = "active"
+ZONE_STATE_SHADOW: Final = "shadow"
+ZONE_STATE_BLOCKED: Final = "blocked"
+ZONE_STATE_FLATTEN_ONLY: Final = "flatten_only"
+ZONE_STATE_CLOSING: Final = "closing"
+ZONE_STATE_INACTIVE: Final = "inactive"
 
 # --- Payload keys (decision_evaluated / decision_snapshot) ---
 

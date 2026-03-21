@@ -23,7 +23,7 @@ from src.cli.commands import (
     _write_lifecycle_request,
     cli,
 )
-from src.config import BlackoutConfig, Config, EventProviderConfig, HotZoneConfig, set_config
+from src.config import BlackoutConfig, Config, EventProviderConfig, HotZoneConfig, load_config, set_config
 from src.engine import (
     DecisionMatrixEvaluator,
     FeatureSnapshot,
@@ -68,6 +68,9 @@ def build_config() -> Config:
     config.alpha.full_size_score = 3.5
     config.alpha.min_score_gap = 0.25
     config.alpha.flat_bias_buffer = 0.0
+    config.strategy.launch_gate_enabled = False
+    config.strategy.live_entry_zones = []
+    config.strategy.shadow_entry_zones = []
     config.alpha.zone_vetoes["Midday"]["max_atr_percentile"] = 1.0
     config.regime.stress_quote_rate = 0.0
     config.regime.trend_slope_threshold = 0.05
@@ -575,6 +578,15 @@ class DecisionMatrixTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             DecisionMatrixEvaluator(config)
 
+    def test_trading_engine_rejects_invalid_launch_gate_overlap_config(self) -> None:
+        config = build_config()
+        config.strategy.launch_gate_enabled = True
+        config.strategy.live_entry_zones = ["Pre-Open", "Outside"]
+        config.strategy.shadow_entry_zones = ["Outside"]
+
+        with self.assertRaises(ValueError):
+            TradingEngine(config)
+
 
 class IndicatorRegressionTests(unittest.TestCase):
     def test_rsi_exact_period_length_does_not_raise(self) -> None:
@@ -601,6 +613,8 @@ class StateReportingTests(unittest.TestCase):
 
         self.assertEqual(health["status"], "degraded")
         self.assertFalse(health["market_stream_connected"])
+        self.assertEqual(health["zone_state"], "inactive")
+        self.assertEqual(health["zone_semantics_version"], "launch_gate_aware_v1")
 
     def test_health_reports_replay_mode_as_replay_not_healthy(self) -> None:
         state = TradingState()
@@ -614,6 +628,8 @@ class StateReportingTests(unittest.TestCase):
         self.assertEqual(health["status"], "replay")
         self.assertEqual(health["data_mode"], "replay")
         self.assertTrue(health["practice_account"])
+        self.assertEqual(health["zone_state"], "inactive")
+        self.assertEqual(health["zone_semantics_version"], "launch_gate_aware_v1")
 
     def test_debug_state_includes_extended_account_fields(self) -> None:
         state = TradingState()
@@ -751,6 +767,30 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.assertTrue(allowed)
         self.assertIsNone(reason)
 
+    def test_launch_gate_blocks_outside_when_lists_overlap(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open", "Outside"]
+        self.config.strategy.shadow_entry_zones = ["Outside"]
+
+        allowed, reason = self.engine._zone_live_entry_allowed("Outside")
+
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "launch_gate_config_invalid")
+
+    def test_launch_gate_fails_closed_after_runtime_overlap_mutation(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open"]
+        engine = TradingEngine(self.config)
+
+        engine.config.strategy.live_entry_zones = ["Pre-Open", "Outside"]
+        engine.config.strategy.shadow_entry_zones = ["Outside"]
+
+        allowed, reason = engine._zone_live_entry_allowed("Outside")
+
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "launch_gate_config_invalid")
+
     def test_launch_gate_blocks_outside_when_only_in_shadow_zones(self) -> None:
         self.config.strategy.launch_gate_enabled = True
         self.config.strategy.live_entry_zones = ["Pre-Open"]
@@ -760,6 +800,109 @@ class ExecutionLifecycleTests(unittest.TestCase):
 
         self.assertFalse(allowed)
         self.assertEqual(reason, "shadow_only_zone")
+
+    def test_zone_state_for_runtime_marks_outside_blocked_when_not_live_or_shadow(self) -> None:
+        self.config.strategy.trade_outside_hotzones = True
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday"]
+
+        self.assertEqual(self.engine._zone_state_for_runtime(None), "blocked")
+
+    def test_zone_state_for_runtime_marks_named_shadow_zone_as_shadow(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
+
+        self.assertEqual(
+            self.engine._zone_state_for_runtime(
+                zone("Post-Open", pd.Timestamp("2026-03-13 09:30", tz="America/Chicago"))
+            ),
+            "shadow",
+        )
+
+    def test_zone_state_for_runtime_preserves_flatten_only_scheduler_state(self) -> None:
+        self.assertEqual(
+            self.engine._zone_state_for_runtime(
+                zone(
+                    "Close-Scalp",
+                    pd.Timestamp("2026-03-13 12:50", tz="America/Chicago"),
+                    state=ZoneState.FLATTEN_ONLY,
+                )
+            ),
+            "flatten_only",
+        )
+
+    def test_zone_transition_event_uses_launch_gate_aware_shadow_state(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
+
+        with patch.object(self.engine, "_record_event") as record_event:
+            self.engine._handle_zone_transition(
+                zone("Post-Open", pd.Timestamp("2026-03-13 09:30", tz="America/Chicago"))
+            )
+
+        payload = record_event.call_args.kwargs["payload"]
+        self.assertEqual(payload["zone_state"], "shadow")
+
+    def test_repo_default_profile_scores_outside_but_keeps_it_shadow_only(self) -> None:
+        cfg = load_config()
+        cfg.observability.enabled = False
+        cfg.event_provider.calendar_path = "config/does-not-exist.yaml"
+        cfg.event_provider.emergency_halt_path = "config/does-not-exist.flag"
+        set_config(cfg)
+        engine = TradingEngine(cfg)
+        engine._bars = bars_from_prices(
+            "2026-03-15 17:05", [100.0 + (i * 0.15) for i in range(30)]
+        )
+        engine._last_price = float(engine._bars["close"].iloc[-1])
+        engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=engine._last_price - 0.25,
+            ask=engine._last_price + 0.25,
+            last=engine._last_price,
+            volume=1000,
+            timestamp=engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        decision = MatrixDecision(
+            zone_name="Outside",
+            action="LONG",
+            reason="test_signal",
+            long_score=4.0,
+            short_score=1.0,
+            flat_bias=0.0,
+            active_vetoes=[],
+            feature_snapshot=FeatureSnapshot(
+                zone_name="Outside",
+                current_price=engine._last_price,
+                atr_value=1.0,
+                long_features={},
+                short_features={},
+                flat_features={},
+                signed_features={},
+            ),
+            execution_tradeable=True,
+            side="buy",
+            stop_loss=engine._last_price - 4.0,
+            take_profit=engine._last_price + 8.0,
+            max_hold_minutes=30,
+        )
+
+        with patch.object(
+            engine.scheduler,
+            "get_current_zone",
+            return_value=None,
+        ):
+            with patch.object(engine.matrix, "evaluate", return_value=decision):
+                with patch.object(engine.risk_manager, "can_trade", return_value=(True, "")):
+                    with patch.object(engine, "_determine_contracts", return_value=1):
+                        with patch.object(engine.executor, "place_order") as place_order:
+                            engine._evaluate_current_state(allow_entries=True)
+
+        place_order.assert_not_called()
+        self.assertEqual(engine._last_entry_block_reason, "shadow_only_zone")
+        self.assertEqual(get_state().zone_state, "shadow")
 
     def test_market_hours_guard_blocks_entries_while_signal_pipeline_still_runs(self) -> None:
         self.config.strategy.market_hours_guard_enabled = True
@@ -931,6 +1074,222 @@ class ExecutionLifecycleTests(unittest.TestCase):
                     self.engine._evaluate_current_state(allow_entries=True)
 
         flatten.assert_called_once_with("session_hard_flat")
+
+    def test_session_exit_hard_flat_still_flattens_mislabeled_position(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 11:31",
+            [100.0 + (i * 0.1) for i in range(5)],
+            timezone="America/Los_Angeles",
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=500,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._last_position = 1
+        self.engine._position_entry_zone = "Post-Open"
+        self.engine._adoption_source = "broker_sync_position"
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(
+                self.engine.risk_manager, "should_flatten_position", return_value=(False, None)
+            ):
+                with patch.object(self.engine, "_flatten_position") as flatten:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        flatten.assert_called_once_with("session_hard_flat")
+
+    def test_session_exit_checkpoint_flattens_live_entry_zone_position(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 10:00",
+            [100.0 + (i * 0.1) for i in range(5)],
+            timezone="America/Los_Angeles",
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=500,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._last_position = 1
+        self.engine._position_entry_zone = "Pre-Open"
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(
+                self.engine.risk_manager, "should_flatten_position", return_value=(False, None)
+            ):
+                with patch.object(self.engine, "_flatten_position") as flatten:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        flatten.assert_called_once_with("session_checkpoint")
+
+    def test_session_exit_checkpoint_still_flattens_mislabeled_position(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 10:00",
+            [100.0 + (i * 0.1) for i in range(5)],
+            timezone="America/Los_Angeles",
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=500,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._last_position = 1
+        self.engine._position_entry_zone = "Post-Open"
+        self.engine._adoption_source = "broker_sync_position"
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(
+                self.engine.risk_manager, "should_flatten_position", return_value=(False, None)
+            ):
+                with patch.object(self.engine, "_flatten_position") as flatten:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        flatten.assert_called_once_with("session_checkpoint")
+
+    def test_session_exit_does_not_flatten_explicit_non_live_zone_without_adoption(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 10:00",
+            [100.0 + (i * 0.1) for i in range(5)],
+            timezone="America/Los_Angeles",
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=500,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._last_position = 1
+        self.engine._position_entry_zone = "Post-Open"
+        self.engine._adoption_source = None
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(
+                self.engine.risk_manager, "should_flatten_position", return_value=(False, None)
+            ):
+                with patch.object(self.engine, "_flatten_position") as flatten:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        flatten.assert_not_called()
+
+    def test_session_exit_flattens_any_open_position_when_live_zone_list_empty(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.config.strategy.live_entry_zones = []
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 10:00",
+            [100.0 + (i * 0.1) for i in range(5)],
+            timezone="America/Los_Angeles",
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=500,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._last_position = 1
+        self.engine._position_entry_zone = "Post-Open"
+        self.engine._adoption_source = None
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=zone(
+                "Post-Open", self.engine._bars.index[-1], start_time=self.engine._bars.index[0]
+            ),
+        ):
+            with patch.object(
+                self.engine.risk_manager, "should_flatten_position", return_value=(False, None)
+            ):
+                with patch.object(self.engine, "_flatten_position") as flatten:
+                    self.engine._evaluate_current_state(allow_entries=True)
+
+        flatten.assert_called_once_with("session_checkpoint")
+
+    def test_session_checkpoint_does_not_immediately_retry_before_cooldown(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.engine._last_position = 1
+        self.engine._session_checkpoint_triggered = True
+        self.engine._session_checkpoint_requested_at = pd.Timestamp(
+            "2026-03-13 10:20:00", tz="America/Los_Angeles"
+        )
+
+        should_flatten, reason = self.engine._should_flatten_for_session_policy(
+            pd.Timestamp("2026-03-13 10:20:10", tz="America/Los_Angeles")
+        )
+
+        self.assertFalse(should_flatten)
+        self.assertIsNone(reason)
+
+    def test_session_checkpoint_retries_if_flatten_request_fails(self) -> None:
+        self.engine._last_position = 1
+        with patch.object(self.engine.executor, "flatten", return_value=False):
+            self.engine._flatten_position("session_checkpoint")
+
+        self.assertFalse(self.engine._session_checkpoint_triggered)
+
+    def test_session_checkpoint_retries_after_cooldown_if_position_still_open(self) -> None:
+        self.config.strategy.session_exit_enabled = True
+        self.engine._last_position = 1
+        self.engine._session_checkpoint_triggered = True
+        self.engine._session_checkpoint_requested_at = pd.Timestamp(
+            "2026-03-13 10:20:00", tz="America/Los_Angeles"
+        )
+
+        should_flatten, reason = self.engine._should_flatten_for_session_policy(
+            pd.Timestamp("2026-03-13 10:20:31", tz="America/Los_Angeles")
+        )
+
+        self.assertTrue(should_flatten)
+        self.assertEqual(reason, "session_checkpoint_retry")
 
     def test_live_entry_skipped_when_broker_position_not_flat(self) -> None:
         executor = self.engine.executor

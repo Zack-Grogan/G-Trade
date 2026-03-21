@@ -2,7 +2,7 @@
 
 account:
   capital: 50000
-  max_contracts: 5
+  max_contracts: 1
   default_contracts: 1
   risk_per_contract: 100
   preferred_id_match: "PRAC"
@@ -61,13 +61,15 @@ strategy:
   # CLI+ / Monday profile: restored main-style MR time stop; live entries still Pre-Open-only below.
   mr_time_stop_minutes: 20
   mr_exit_at_vwap: true
-  trade_outside_hotzones: false
+  # Score/log Outside to preserve research visibility, but keep it shadow-only below.
+  trade_outside_hotzones: true
   launch_gate_enabled: true
   live_entry_zones:
     - "Pre-Open"
   shadow_entry_zones:
     - "Post-Open"
     - "Midday"
+    - "Outside"
   breakeven_trigger_atr: 0.5
   profit_lock_atr: 0.5
   trailing_stop_atr: 1.0
@@ -86,9 +88,8 @@ strategy:
   market_hours_weekend_open_time: "17:00"
   market_hours_holiday_dates: []
 
-# CLI+ profile: main-equivalent matrix thresholds, decay (1.5), and per-zone max holds;
-# keeps cli infrastructure (market hours guard, tape replay, synthetic-quote handling, etc.).
-# STRESS score penalty retained as a conservative improvement over legacy main.
+# CLI+ profile: morning-first defaults with legacy-style matrix thresholds, decay, and max holds,
+# while keeping the newer execution / replay / observability infrastructure.
 alpha:
   matrix_version: "hotzone-v3"
   decision_interval: "tick_and_bar"
@@ -217,17 +218,26 @@ alpha:
         regime_stress: 1.0
     Outside:
       long:
-        trend_state: 1.2
-        execution_state: 0.8
-        spread_regime: 0.4
+        trend_state: 1.6
+        rth_vwap_slope: 1.0
+        rth_vwap_distance_z: 0.9
+        pullback_quality: 1.2
+        ofi_zscore: 0.9
+        spread_regime: 0.45
+        execution_state: 0.55
       short:
-        trend_state: 1.2
-        execution_state: 0.8
-        spread_regime: 0.4
+        trend_state: 1.6
+        rth_vwap_slope: 1.0
+        rth_vwap_distance_z: 0.9
+        pullback_quality: 1.2
+        ofi_zscore: 0.9
+        spread_regime: 0.45
+        execution_state: 0.55
       flat:
+        range_state: 0.7
         event_state: 1.0
         execution_state: 0.9
-        regime_stress: 0.8
+        regime_stress: 1.0
   zone_vetoes:
     Pre-Open:
       max_atr_accel: 0.75

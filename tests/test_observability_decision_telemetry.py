@@ -132,6 +132,187 @@ class ObservabilityDecisionTelemetryTests(unittest.TestCase):
         store.query_events.assert_called_once()
         self.assertEqual(store.query_events.call_args.kwargs.get("run_id"), "run-xyz")
 
+    def test_shadow_outside_decision_snapshot_records_zone_state_shadow(self) -> None:
+        self.engine._mock_mode = True
+        self.engine.executor.enable_mock_mode()
+        self.engine.config.strategy.trade_outside_hotzones = True
+        self.engine.config.strategy.launch_gate_enabled = True
+        self.engine.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
+        self.engine._last_price = 100.0
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=99.75,
+            ask=100.25,
+            last=100.0,
+            volume=1000,
+            timestamp=bars_from_prices("2026-03-13 17:05", [100.0]).index[-1]
+            .tz_convert("UTC")
+            .to_pydatetime(),
+        )
+        self.engine._latest_flow_snapshot = OrderFlowSnapshot()
+        obs = MagicMock()
+        obs.get_run_id.return_value = "run-test"
+        self.engine.observability = obs
+        decision = MatrixDecision(
+            zone_name="Outside",
+            action="LONG",
+            reason="test_shadow_outside",
+            long_score=4.0,
+            short_score=1.0,
+            flat_bias=0.0,
+            active_vetoes=[],
+            feature_snapshot=FeatureSnapshot(
+                zone_name="Outside",
+                current_price=100.0,
+                atr_value=1.0,
+                long_features={},
+                short_features={},
+                flat_features={},
+                signed_features={},
+            ),
+            execution_tradeable=True,
+            size_fraction=1.0,
+            side="buy",
+            stop_loss=99.0,
+            take_profit=102.0,
+            max_hold_minutes=30,
+        )
+
+        self.engine._record_decision_event(
+            decision,
+            zone=None,
+            current_time=self.engine._latest_market_data.timestamp,
+            current_price=100.0,
+            allow_entries=True,
+            outcome="shadow_only_zone",
+            outcome_reason="shadow_only_zone",
+        )
+
+        payload = obs.record_decision_snapshot.call_args.args[0]
+        self.assertEqual(payload["zone_state"], "shadow")
+        self.assertEqual(payload["zone_semantics_version"], "launch_gate_aware_v1")
+
+    def test_named_shadow_zone_decision_snapshot_records_zone_state_shadow(self) -> None:
+        self.engine._mock_mode = True
+        self.engine.executor.enable_mock_mode()
+        self.engine.config.strategy.launch_gate_enabled = True
+        self.engine.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
+        obs = MagicMock()
+        obs.get_run_id.return_value = "run-test"
+        self.engine.observability = obs
+        decision = _long_decision(100.0)
+        decision.zone_name = "Post-Open"
+        decision.feature_snapshot.zone_name = "Post-Open"
+
+        shadow_zone = zone("Post-Open", bars_from_prices("2026-03-13 09:00", [100.0]).index[-1])
+        self.engine._record_decision_event(
+            decision,
+            zone=shadow_zone,
+            current_time=bars_from_prices("2026-03-13 09:00", [100.0]).index[-1],
+            current_price=100.0,
+            allow_entries=True,
+            outcome="shadow_only_zone",
+            outcome_reason="shadow_only_zone",
+        )
+
+        payload = obs.record_decision_snapshot.call_args.args[0]
+        self.assertEqual(payload["zone_state"], "shadow")
+        self.assertEqual(payload["zone_semantics_version"], "launch_gate_aware_v1")
+
+    def test_blocked_outside_decision_snapshot_records_zone_state_blocked(self) -> None:
+        self.engine._mock_mode = True
+        self.engine.executor.enable_mock_mode()
+        self.engine.config.strategy.trade_outside_hotzones = True
+        self.engine.config.strategy.launch_gate_enabled = True
+        self.engine.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.engine.config.strategy.shadow_entry_zones = ["Post-Open", "Midday"]
+        obs = MagicMock()
+        obs.get_run_id.return_value = "run-test"
+        self.engine.observability = obs
+        decision = _long_decision(100.0)
+        decision.zone_name = "Outside"
+        decision.feature_snapshot.zone_name = "Outside"
+
+        self.engine._record_decision_event(
+            decision,
+            zone=None,
+            current_time=bars_from_prices("2026-03-13 17:05", [100.0]).index[-1],
+            current_price=100.0,
+            allow_entries=True,
+            outcome="launch_gate_blocked",
+            outcome_reason="launch_gate_blocked",
+        )
+
+        payload = obs.record_decision_snapshot.call_args.args[0]
+        self.assertEqual(payload["zone_state"], "blocked")
+        self.assertEqual(payload["zone_semantics_version"], "launch_gate_aware_v1")
+
+    def test_launch_gate_config_invalid_records_blocked_decision_outcome(self) -> None:
+        self.engine._mock_mode = True
+        self.engine.executor.enable_mock_mode()
+        self.engine.config.strategy.launch_gate_enabled = True
+        self.engine.config.strategy.live_entry_zones = ["Pre-Open", "Outside"]
+        self.engine.config.strategy.shadow_entry_zones = ["Outside"]
+        self.engine._bars = bars_from_prices(
+            "2026-03-13 17:05", [100.0 + (i * 0.15) for i in range(30)]
+        )
+        self.engine._last_price = float(self.engine._bars["close"].iloc[-1])
+        self.engine._latest_market_data = MarketData(
+            symbol="ES",
+            bid=self.engine._last_price - 0.25,
+            ask=self.engine._last_price + 0.25,
+            last=self.engine._last_price,
+            volume=1000,
+            timestamp=self.engine._bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        self.engine._latest_flow_snapshot = OrderFlowSnapshot()
+        obs = MagicMock()
+        obs.get_run_id.return_value = "run-test"
+        self.engine.observability = obs
+        decision = MatrixDecision(
+            zone_name="Outside",
+            action="LONG",
+            reason="test_invalid_gate",
+            long_score=4.0,
+            short_score=1.0,
+            flat_bias=0.0,
+            active_vetoes=[],
+            feature_snapshot=FeatureSnapshot(
+                zone_name="Outside",
+                current_price=self.engine._last_price,
+                atr_value=1.0,
+                long_features={},
+                short_features={},
+                flat_features={},
+                signed_features={},
+            ),
+            execution_tradeable=True,
+            size_fraction=1.0,
+            side="buy",
+            stop_loss=self.engine._last_price - 4.0,
+            take_profit=self.engine._last_price + 8.0,
+            max_hold_minutes=30,
+        )
+
+        with patch.object(
+            self.engine.scheduler,
+            "get_current_zone",
+            return_value=None,
+        ):
+            with patch.object(self.engine.matrix, "evaluate", return_value=decision):
+                with patch.object(self.engine.risk_manager, "can_trade", return_value=(True, "")):
+                    with patch.object(self.engine, "_determine_contracts", return_value=1):
+                        with patch.object(self.engine.executor, "place_order") as place_order:
+                            self.engine._evaluate_current_state(allow_entries=True)
+
+        place_order.assert_not_called()
+        payload = obs.record_decision_snapshot.call_args.args[0]
+        self.assertEqual(payload["outcome"], "shadow_only_zone")
+        self.assertEqual(payload["outcome_reason"], "launch_gate_config_invalid")
+        self.assertEqual(payload["zone_state"], "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()

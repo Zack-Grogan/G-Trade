@@ -34,6 +34,7 @@ from src.runtime.inspection import (
     fetch_runtime_health_dict,
     health_dict_from_debug,
 )
+from src.runtime.zone_surface import ZONE_SEMANTICS_VERSION, resolve_launch_gate_zone_state
 from src.market import get_client
 from src.execution import get_executor
 from src.engine import ReplayRunner, get_scheduler, get_risk_manager, get_trading_engine
@@ -718,6 +719,20 @@ def _log_startup_summary(cfg, log_path: Path, current_zone: Optional[str], zone_
     )
 
 
+def _startup_zone_surface(cfg, zone) -> tuple[Optional[str], str, str]:
+    zone_name = zone.name if zone else ("Outside" if cfg.strategy.trade_outside_hotzones else None)
+    zone_state = resolve_launch_gate_zone_state(
+        cfg.strategy,
+        zone_name=zone_name,
+        scheduled_zone_state=zone.state.value if zone else None,
+    )
+    if zone:
+        return zone.name, zone_state, f"Current zone: {zone.name} ({zone_state})"
+    if not cfg.strategy.trade_outside_hotzones:
+        return None, "inactive", "Currently outside all trading zones"
+    return "Outside", zone_state, f"Current zone: Outside ({zone_state})"
+
+
 def _startup_payload(
     cfg,
     log_path: Path,
@@ -736,6 +751,7 @@ def _startup_payload(
         "log_file": str(log_path),
         "current_zone": current_zone,
         "zone_state": zone_state,
+        "zone_semantics_version": ZONE_SEMANTICS_VERSION,
     }
     if lifecycle_request:
         payload.update(
@@ -1047,21 +1063,8 @@ def start(config: Optional[str]):
 
     # Show current zone
     zone = scheduler.get_current_zone()
-    if zone:
-        click.secho(f"Current zone: {zone.name} ({zone.state.value})", fg="cyan")
-        current_zone_name = zone.name
-        zone_state = zone.state.value
-    else:
-        click.secho(
-            (
-                "Current zone: Outside (active)"
-                if cfg.strategy.trade_outside_hotzones
-                else "Currently outside all trading zones"
-            ),
-            fg="cyan",
-        )
-        current_zone_name = "Outside" if cfg.strategy.trade_outside_hotzones else None
-        zone_state = "active" if cfg.strategy.trade_outside_hotzones else "inactive"
+    current_zone_name, zone_state, zone_message = _startup_zone_surface(cfg, zone)
+    click.secho(zone_message, fg="cyan")
     _log_startup_summary(cfg, log_path, current_zone_name, zone_state)
     _record_system_event(
         observability,
@@ -1755,8 +1758,13 @@ def status():
     status_value = str(remote.get("status", "unknown"))
     running_value = bool(remote.get("running", False))
     data_mode = str(remote.get("data_mode", "unknown"))
-    zone_name = str((remote.get("zone") or {}).get("name") or "None")
-    zone_state = str((remote.get("zone") or {}).get("state") or "inactive")
+    zone_payload = remote.get("zone") or {}
+    zone_name = str(zone_payload.get("name") or "None")
+    zone_state = str(zone_payload.get("state") or "inactive")
+    zone_semantics_version = str(
+        zone_payload.get("semantics_version")
+        or ("legacy_or_unknown" if zone_payload.get("state") is not None else "")
+    )
     strategy = str(remote.get("strategy", "None"))
     pos = remote.get("position") or {}
     position_contracts = int(pos.get("contracts") or 0)
@@ -1772,6 +1780,11 @@ def status():
     click.secho(f"Running:   {running_value}", fg="green" if running_value else "yellow")
     click.secho(f"Data Mode: {data_mode}", fg="blue")
     click.secho(f"Zone:      {zone_name} ({zone_state})", fg="cyan")
+    if zone_semantics_version == "legacy_or_unknown":
+        click.secho(
+            "Note: zone semantics come from a legacy/unknown snapshot; 'active' may reflect scheduler state, not launch-gate-aware truth.",
+            fg="yellow",
+        )
     click.secho(f"Strategy:  {strategy}", fg="cyan")
     click.secho(f"Position:  {position_contracts} contracts", fg="magenta")
     click.secho(f"Position PnL: ${position_pnl:.2f}", fg="magenta")
@@ -1802,7 +1815,13 @@ def health():
     click.echo("Health Check:")
     click.echo(f"  Status:      {health['status']}")
     click.echo(f"  Data Mode:   {health['data_mode']}")
-    click.echo(f"  Zone:        {health['zone']}")
+    click.echo(f"  Zone:        {health['zone']} ({health.get('zone_state', 'inactive')})")
+    if health.get("zone_semantics_version"):
+        click.echo(f"  Zone Model:  {health['zone_semantics_version']}")
+    if health.get("zone_semantics_version") == "legacy_or_unknown":
+        click.echo(
+            "  Note:       zone semantics come from a legacy/unknown snapshot; active may reflect scheduler state only."
+        )
     click.echo(f"  Position:    {health['position']}")
     click.echo(f"  Daily PnL:   ${health['daily_pnl']:.2f}")
     click.echo(f"  Risk State:  {health['risk_state']}")

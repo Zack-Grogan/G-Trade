@@ -274,8 +274,6 @@ class AlphaConfig:
     side_adjustment: Dict[str, float] = field(
         default_factory=lambda: {"long": 0.0, "short": 0.0}
     )
-    # Minimum dominant feature score requirement
-    min_dominant_feature_score: float = 0.0
     # Regime-based score multipliers
     regime_multipliers: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
@@ -526,6 +524,9 @@ class Config:
     replay: ReplayConfig = field(default_factory=ReplayConfig)
     operator_tts: OperatorTtsConfig = field(default_factory=OperatorTtsConfig)
 
+    def __post_init__(self) -> None:
+        validate_config(self)
+
 
 _DEPRECATED_CONFIG_KEYS: dict[type, dict[str, str]] = {
     SafetyConfig: {
@@ -537,6 +538,9 @@ _DEPRECATED_CONFIG_KEYS: dict[type, dict[str, str]] = {
     RiskConfig: {
         "use_volatility_sizing": "ignored; position sizing is driven by ATR, account.risk_per_contract, max_contracts, and risk state.",
         "target_daily_risk_pct": "ignored; daily risk is enforced by max_daily_loss and related risk controls, not a target percentage knob.",
+    },
+    AlphaConfig: {
+        "min_dominant_feature_score": "ignored; this knob never affected the runtime engine and was removed to keep the morning-first config surface honest.",
     },
     ObservabilityConfig: {
         "internal_api_token": "removed; Railway bridge ingest is retired.",
@@ -585,6 +589,18 @@ def _dict_to_dataclass(d: Dict[str, Any], cls: type) -> Any:
     return cls(**kwargs)
 
 
+def validate_config(config: Config) -> Config:
+    live_zones = set(config.strategy.live_entry_zones or [])
+    shadow_zones = set(config.strategy.shadow_entry_zones or [])
+    if config.strategy.launch_gate_enabled:
+        overlap = sorted(live_zones & shadow_zones)
+        if overlap:
+            raise ValueError(
+                f"Zones cannot be both live and shadow when launch gate is enabled: {', '.join(overlap)}"
+            )
+    return config
+
+
 def load_config(config_path: Optional[str] = None) -> Config:
     """Load configuration from YAML file."""
     if config_path is None:
@@ -608,7 +624,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     hot_zones = [HotZoneConfig(**zone) for zone in data.get("hot_zones", [])]
 
-    return Config(
+    config = Config(
         account=_dict_to_dataclass(data.get("account", {}), AccountConfig),
         symbols=data.get("symbols", ["ES"]),
         hot_zones=hot_zones,
@@ -634,6 +650,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
         replay=_dict_to_dataclass(data.get("replay", {}), ReplayConfig),
         operator_tts=_dict_to_dataclass(data.get("operator_tts", {}), OperatorTtsConfig),
     )
+    return validate_config(config)
 
 
 _config: Optional[Config] = None
@@ -650,4 +667,4 @@ def get_config() -> Config:
 def set_config(config: Config) -> None:
     """Set the global config instance."""
     global _config
-    _config = config
+    _config = validate_config(config)

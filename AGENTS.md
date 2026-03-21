@@ -147,7 +147,9 @@ Use at most two subagents at a time.
 
 - **CLI**: `es-trade --help` for all commands. `es-trade config`, `es-trade status`, `es-trade health`, `es-trade debug` work without credentials (they read local runtime state and/or SQLite). Commands that connect to Topstep (`start`, `replay-topstep`) require `EMAIL` and `TOPSTEP_API_KEY` in a `.env` file. `es-trade replay --path` and tape replay from local SQLite do not require broker credentials.
 - **Deprecated / stale:** `es-trade replay-topstep` (minute bars from the Topstep history API) is **not** a validated research path — synthetic BBO and coarse microstructure; see [`docs/replay/replay-topstep-deprecated.md`](docs/replay/replay-topstep-deprecated.md). Prefer **tape replay** or file replay for analysis until proper historical tick data exists.
+- **Morning-first target:** The active repo target is the distilled morning architecture in [`docs/research/morning-first-architecture.md`](docs/research/morning-first-architecture.md): Pre-Open is the primary live edge, later zones stay shadow unless re-proved, and future changes should preserve the modern execution fixes while avoiding speculative all-zone expansion.
 - **Branch policy drift:** For `main` vs `cli` trading logic, thresholds, and a **config recipe** to approximate the old (`main`) policy while preserving Pre-Open weights, see [`docs/research/main-vs-cli-trading-policy.md`](docs/research/main-vs-cli-trading-policy.md).
+- **Config authority:** Treat `config/default.yaml` loaded via `load_config()` as the authoritative operator profile. Bare `Config()` is a library/test shape and may intentionally differ on launch-gate/session defaults.
 
 ### Testing & linting
 

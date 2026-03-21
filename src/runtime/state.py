@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 from src.observability import get_observability_store
+from src.runtime.zone_surface import ZONE_SEMANTICS_VERSION
 
 
 class TradingState:
@@ -100,7 +101,11 @@ class TradingState:
             "process_status": self.status,
             "running": self.running,
             "data_mode": self.data_mode,
-            "zone": {"name": self.current_zone, "state": self.zone_state},
+            "zone": {
+                "name": self.current_zone,
+                "state": self.zone_state,
+                "semantics_version": ZONE_SEMANTICS_VERSION,
+            },
             "strategy": self.current_strategy,
             "alpha": {
                 "long_score": self.long_score,
@@ -167,6 +172,8 @@ class TradingState:
             "status": self.effective_status(),
             "data_mode": self.data_mode,
             "zone": self.current_zone or "inactive",
+            "zone_state": self.zone_state,
+            "zone_semantics_version": ZONE_SEMANTICS_VERSION,
             "position": self.position,
             "daily_pnl": self.daily_pnl,
             "risk_state": self.risk_state,

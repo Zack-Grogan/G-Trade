@@ -68,9 +68,9 @@ This document is the **deep-dive** companion to branch comparison: what changed 
 
 ---
 
-## 2. Config-only items on `cli` that are not wired (yet)
+## 2. Config cleanup note
 
-- **`min_dominant_feature_score`** appears in `config/default.yaml` and `AlphaConfig` but **no** reference in `src/engine/` — **does not affect outcomes** until implemented.
+- **`min_dominant_feature_score`** was removed from the active config surface because it never affected the runtime engine. Older configs may still load it as a deprecated ignored key via [`src/config/loader.py`](../../src/config/loader.py).
 
 ---
 
@@ -178,8 +178,12 @@ risk:
 As of branch **`CLI+`**, the committed default config implements this blend:
 
 - **Main-equivalent:** `min_score_gap` 2.0, `reverse_score_gap` 2.5, `full_size_score` 6.5, `zone_min_entry_score` all **5.0**, `zone_exit_decay_score` all **1.5**, `max_hold_minutes` restored (Pre-Open **40**, etc.), `mr_time_stop_minutes` **20**, risk **3 / zone** and **10 / day**.
-- **Cli retained:** Pre-Open-only **live** entries, **market hours guard**, shadow zones, evaluation mirror fields (off), infrastructure and tape replay unchanged.
-- **Improvement vs legacy main:** **STRESS** `regime_multipliers` **0.3** on long/short (main had no multipliers); **`trade_outside_hotzones: false`** with live list still Pre-Open-only.
+- **Cli retained:** Pre-Open-only **live** entries, **market hours guard**, evaluation mirror fields (off), infrastructure and tape replay unchanged.
+- **Research visibility retained:** **`trade_outside_hotzones: true`** with **`Outside` shadow-only**, so later sessions still score/log without widening live execution.
+- **Conservative improvement retained:** `STRESS` `regime_multipliers` stay **0.3**, preserving the March 18 “do not hard-veto Pre-Open STRESS” fix without turning stress into a neutral live-entry regime.
+- **Session-bound runtime policy:** checkpoint flatten at `10:00 PT` and hard-flat at `11:30 PT` now cap open runtime positions under the morning-first profile, including restart/adoption cases where zone attribution may be imperfect.
+
+This section refers to the shipped **operator YAML profile** in [`config/default.yaml`](../../config/default.yaml). Bare `Config()` defaults are intentionally more neutral for library/test callers.
 
 ---
 

@@ -9,7 +9,7 @@ This document describes **how the live system thinks about the market** in tradi
 ## 1. What we are trying to do
 
 **Instrument:** ES (configurable symbol, default ES).  
-**Style:** Intraday, **time-zone segmented** (“hot zones”) with **different playbooks per zone** (breakout / trend / mean reversion), not one monolithic rule for the whole session.
+**Style:** Intraday, **morning-first**, time-zone segmented (“hot zones”) with different playbooks per zone, but only the **Pre-Open** window is live by default. Later windows continue to score/log for evidence rather than trade live unless re-promoted.
 
 **Core idea:**  
 At each decision bar, the system builds a **rich feature snapshot** (price vs VWAP bands, RSI, Bollinger-style extension, order flow, spread/quote quality, regime, etc.), converts those into **directional scores** (long / short / flat bias), then applies **hard vetoes** (risk filters) before any entry is even considered. Entries only occur when scores are **decisive** and **gates** (launch zone, risk, market-hours guard, broker) allow it.
@@ -53,6 +53,8 @@ Configured via `strategy.launch_gate_enabled`, `live_entry_zones`, `shadow_entry
 
 - **Live entry zones:** entries may be submitted when other gates pass.
 - **Shadow zones:** the system may still **score, log, and record decision snapshots** for research, but **blocks live entries** with outcome `shadow_only_zone`.
+- **Default posture:** `Pre-Open` live; `Post-Open`, `Midday`, and `Outside` shadow-only; `Close-Scalp` remains a scheduler-driven `flatten_only` window rather than a separate live edge.
+- **Stand-down posture:** you may keep `launch_gate_enabled: true` with an empty `live_entry_zones` list to force full shadow-mode operation. When `session_exit_enabled` is still on, the morning session policy can still cap any open runtime position during checkpoint / hard-flat windows; “no live zones” is not the same thing as “ignore any existing exposure.”
 
 This is a **risk / rollout** control, not a market-direction signal.
 
@@ -73,7 +75,7 @@ See [`evaluate()`](../src/engine/decision_matrix.py).
 ### 4.2 Regime (TREND / RANGE / STRESS)
 
 A lightweight **3-state classifier** ([`DeterministicRegimeClassifier`](../src/engine/regime.py)) uses EMA slope, ATR ratio, spread, quote rate, OFI, and event flags.  
-**STRESS** is treated as “do not add new risk” in many zone vetoes; **RANGE** may block trend-style zones (see Post-Open vetoes). This is a standard **meta-filter** idea: *regime first, signal second.*
+**STRESS** is treated conservatively: many zones veto it outright, and the default morning-first profile also damps score contribution with `regime_multipliers.STRESS = 0.3` rather than treating stress as a neutral live-entry regime. This preserves the March 18 fix (“Pre-Open no longer hard-vetoes STRESS at the matrix layer”) without turning stress into a free pass.
 
 ### 4.3 Stops and targets
 
@@ -159,7 +161,7 @@ Mean reversion without confirmation is **especially fragile** in index futures w
 
 - **Orders:** submitted through the execution layer after matrix + gates ([`src/execution/executor.py`](../src/execution/executor.py)).
 - **Stops / targets:** ATR-based from [`_risk_targets`](../src/engine/decision_matrix.py).
-- **Session exit:** optional flatten policy by **local clock** in PT for morning posture ([`_should_flatten_for_session_policy`](../src/engine/trading_engine.py), config in `strategy.session_exit_*`).
+- **Session exit:** morning-bounded flatten policy by **local clock** in PT for the live runtime. Default profile starts checkpoint flatten attempts at `10:00 PT`, retries if the position remains open, and hard-flats by `11:30 PT` ([`_should_flatten_for_session_policy`](../src/engine/trading_engine.py), config in `strategy.session_exit_*`). This applies to live-zone positions by default and expands to adopted/unknown-origin positions as a safety fallback for restart/adoption cases.
 
 ---
 

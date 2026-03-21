@@ -24,6 +24,7 @@ from .loader import (
     OperatorTtsConfig,
     ReplayConfig,
     load_config,
+    validate_config,
     get_config,
     set_config,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "OperatorTtsConfig",
     "ReplayConfig",
     "load_config",
+    "validate_config",
     "get_config",
     "set_config",
 ]

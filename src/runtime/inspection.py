@@ -44,8 +44,14 @@ def health_dict_from_debug(debug: dict[str, Any]) -> dict[str, Any]:
     zone = debug.get("zone") or {}
     if isinstance(zone, dict):
         zone_name = zone.get("name") or "inactive"
+        zone_state = zone.get("state") or "inactive"
+        zone_semantics_version = zone.get("semantics_version") or debug.get("zone_semantics_version") or (
+            "legacy_or_unknown" if zone.get("state") is not None else None
+        )
     else:
         zone_name = str(zone or "inactive")
+        zone_state = "inactive"
+        zone_semantics_version = None
     pos = debug.get("position") or {}
     risk = debug.get("risk") or {}
     acct = debug.get("account") or {}
@@ -56,6 +62,8 @@ def health_dict_from_debug(debug: dict[str, Any]) -> dict[str, Any]:
         "status": debug.get("status"),
         "data_mode": debug.get("data_mode"),
         "zone": zone_name,
+        "zone_state": zone_state,
+        "zone_semantics_version": zone_semantics_version,
         "position": int(contracts or 0),
         "daily_pnl": float((acct.get("daily_pnl") if isinstance(acct, dict) else None) or 0.0),
         "risk_state": (risk.get("state") if isinstance(risk, dict) else None)
@@ -85,7 +93,7 @@ def _minimal_debug_from_runtime_status(status: dict[str, Any]) -> dict[str, Any]
         "status": status.get("phase") or status.get("status") or "unknown",
         "running": bool(status.get("running")),
         "data_mode": status.get("data_mode") or "unknown",
-        "zone": {"name": None, "state": "inactive"},
+        "zone": {"name": None, "state": "inactive", "semantics_version": "launch_gate_aware_v1"},
         "account": {},
         "broker_truth": {},
         "lifecycle": {},

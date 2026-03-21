@@ -2,6 +2,8 @@
 
 Start here to understand the current system. The active operator surfaces are the **CLI** and **local SQLite** observability. Execution, Topstep access, observability, and debugging all run on the Mac.
 
+Operator/default posture is defined by **`config/default.yaml` via `load_config()`**. Bare `Config()` construction is for library/test callers and should not be treated as the shipped launch profile.
+
 ## Current state
 
 - **Local-first stack:** `es-hotzone-trader` is the active product. It owns execution, broker truth, SQLite durability, trade review, logs, and the local console.
@@ -22,6 +24,7 @@ Full architecture and rationale: [Architecture-Overview.md](Architecture-Overvie
 | [Compliance-Boundaries.md](Compliance-Boundaries.md) | Topstep/CME boundaries and compliance gate. |
 | [risk/topstep-evaluation-mirror.md](risk/topstep-evaluation-mirror.md) | Optional local trailing-drawdown mirror vs Topstep rules (citations + limits). |
 | [replay/replay-topstep-deprecated.md](replay/replay-topstep-deprecated.md) | **`replay-topstep` is deprecated** — bar-only historical replay is not validated research; prefer tape replay. |
+| [research/morning-first-architecture.md](research/morning-first-architecture.md) | Active distilled guidance from the archived March research: what actually drove the good morning trades, what was bug-contaminated, and what the repo should keep live. |
 | [runbooks/ES Hot Zone Trader Live Restart Runbook.md](runbooks/ES%20Hot%20Zone%20Trader%20Live%20Restart%20Runbook.md) | Stop/restart, state reset (retained for future upgrades). |
 | [engineering-system/overview.md](engineering-system/overview.md) | AI operating layer, workflow, and generated docs. |
 | [archive/railway-sunset/README.md](archive/railway-sunset/README.md) | Historical record of the retired Railway stack. |
@@ -45,4 +48,5 @@ Procedures for operators (restart, state reset, forensics):
 The files in **[research/](research/)** are strategy, framework, and research material, not operator/runbook docs. They describe concepts like regime labeling, hot zones, order flow, and evaluation methods that inform the local trader.
 
 - [research/](research/) — Algos General, Mixture-of-Experts, Regime Labeling, Hotzones, Dataset Schema, and related strategy/framework docs.
+- [research/morning-first-architecture.md](research/morning-first-architecture.md) — the active empirical operating profile for the trader: morning-first, Pre-Open live, later zones shadow unless re-proved.
 - [research/main-vs-cli-trading-policy.md](research/main-vs-cli-trading-policy.md) — **`main` vs `cli`** engine/policy drift, outcome effects, and **config recipe** to approximate the old setup while keeping Pre-Open `zone_weights`.
