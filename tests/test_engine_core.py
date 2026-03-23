@@ -38,6 +38,22 @@ class AccountSelectionTests(unittest.TestCase):
         self.assertEqual(selected.account_id, "ABC-PRAC-01")
         self.assertTrue(selected.is_practice)
 
+    def test_select_account_prefers_live_when_prac_only_disabled(self) -> None:
+        self.config.safety.prac_only = False
+        client = TopstepClient(self.config.api)
+        with patch.dict(os.environ, {"PREFERRED_ACCOUNT_ID": ""}, clear=False):
+            selected = client._select_account(
+                [
+                    {"id": "LIVE-123", "name": "Live", "canTrade": True, "balance": 50000},
+                    {"id": "ABC-PRAC-01", "name": "Practice", "canTrade": True, "balance": 50000},
+                ]
+            )
+
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected.account_id, "LIVE-123")
+        self.assertFalse(selected.is_practice)
+
     @patch("src.market.topstep_client.requests.post")
     def test_place_order_submits_when_authenticated_and_contract_resolved(
         self, request_post: Mock

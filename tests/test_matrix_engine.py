@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 from click.testing import CliRunner
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,14 @@ from src.cli.commands import (
     _write_lifecycle_request,
     cli,
 )
-from src.config import BlackoutConfig, Config, EventProviderConfig, HotZoneConfig, load_config, set_config
+from src.config import (
+    BlackoutConfig,
+    Config,
+    EventProviderConfig,
+    HotZoneConfig,
+    load_config,
+    set_config,
+)
 from src.engine import (
     DecisionMatrixEvaluator,
     FeatureSnapshot,
@@ -405,6 +413,49 @@ class DecisionMatrixTests(unittest.TestCase):
 
         self.assertEqual(decision.action, "SHORT")
         self.assertNotIn("regime_stress", decision.active_vetoes)
+
+    def test_reduced_risk_does_not_hard_block_valid_entry(self) -> None:
+        bars = bars_from_prices("2026-03-13 06:30", [100.0 + (i * 0.1) for i in range(20)])
+        current_zone = zone(
+            "Pre-Open", bars.index[-1], minutes_remaining=35, start_time=bars.index[0]
+        )
+        market_data = MarketData(
+            symbol="ES",
+            bid=101.8,
+            ask=102.0,
+            last=101.9,
+            volume=1200,
+            timestamp=bars.index[-1].tz_convert("UTC").to_pydatetime(),
+        )
+        snapshot = FeatureSnapshot(
+            zone_name="Pre-Open",
+            current_price=101.9,
+            atr_value=1.0,
+            long_features={},
+            short_features={"orb_break": 2.0, "opening_drive": 2.0, "trend_state": 1.0},
+            flat_features={},
+            signed_features={"spread_ticks": 1.0, "atr_accel": 0.1, "orb_position": 0.9},
+            execution_tradeable=True,
+            regime_state="RANGE",
+            regime_reason="mixed_conditions",
+        )
+
+        with patch.object(self.evaluator, "extract_features", return_value=snapshot):
+            decision = self.evaluator.evaluate(
+                bars,
+                current_zone,
+                market_data,
+                RiskState.REDUCED,
+                False,
+                0,
+                True,
+                event_context=EventContext(),
+                flow_snapshot=self.healthy_flow,
+            )
+
+        self.assertEqual(decision.action, "SHORT")
+        self.assertNotIn("risk_circuit_breaker", decision.active_vetoes)
+        self.assertNotIn("reduced_risk", decision.active_vetoes)
 
     def test_pre_open_stress_regime_still_blocks_when_circuit_breaker_active(self) -> None:
         bars = bars_from_prices("2026-03-13 06:30", [100.0 + (i * 0.1) for i in range(20)])
@@ -801,6 +852,28 @@ class ExecutionLifecycleTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertEqual(reason, "shadow_only_zone")
 
+    def test_launch_gate_allows_shadow_zone_for_practice_when_enabled(self) -> None:
+        self.config.strategy.launch_gate_enabled = True
+        self.config.strategy.practice_shadow_trading_enabled = True
+        self.config.strategy.live_entry_zones = ["Pre-Open"]
+        self.config.strategy.shadow_entry_zones = ["Post-Open", "Midday", "Outside"]
+
+        with patch(
+            "src.engine.trading_engine.get_state", return_value=Mock(account_is_practice=True)
+        ):
+            allowed, reason = self.engine._zone_live_entry_allowed("Outside")
+
+        self.assertTrue(allowed)
+        self.assertIsNone(reason)
+
+        with patch(
+            "src.engine.trading_engine.get_state", return_value=Mock(account_is_practice=False)
+        ):
+            allowed, reason = self.engine._zone_live_entry_allowed("Outside")
+
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "shadow_only_zone")
+
     def test_zone_state_for_runtime_marks_outside_blocked_when_not_live_or_shadow(self) -> None:
         self.config.strategy.trade_outside_hotzones = True
         self.config.strategy.launch_gate_enabled = True
@@ -853,9 +926,7 @@ class ExecutionLifecycleTests(unittest.TestCase):
         cfg.event_provider.emergency_halt_path = "config/does-not-exist.flag"
         set_config(cfg)
         engine = TradingEngine(cfg)
-        engine._bars = bars_from_prices(
-            "2026-03-15 17:05", [100.0 + (i * 0.15) for i in range(30)]
-        )
+        engine._bars = bars_from_prices("2026-03-15 17:05", [100.0 + (i * 0.15) for i in range(30)])
         engine._last_price = float(engine._bars["close"].iloc[-1])
         engine._latest_market_data = MarketData(
             symbol="ES",
@@ -2575,6 +2646,95 @@ class ObservabilityStoreTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["payload"]["value"], 7)
             self.assertTrue(Path(config.observability.sqlite_path).exists())
+            store.stop()
+
+    def test_observability_store_reopens_missing_connection_during_flush(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+
+            record = {
+                "record_type": "event",
+                "event_timestamp": datetime.now().isoformat(),
+                "inserted_at": datetime.now().isoformat(),
+                "run_id": "run-test",
+                "process_id": os.getpid(),
+                "category": "system",
+                "event_type": "missing_connection_test",
+                "source": "tests.test_matrix_engine",
+                "symbol": "ES",
+                "zone": "Pre-Open",
+                "action": "test",
+                "reason": "missing_connection",
+                "order_id": None,
+                "risk_state": "normal",
+                "payload_json": json.dumps({"value": 42}),
+            }
+
+            with store._lock:
+                self.assertIsNotNone(store._conn)
+                store._conn.close()
+                store._conn = None
+                store._write_records_locked([record])
+
+            rows = store.query_events(
+                limit=5, category="system", event_type="missing_connection_test"
+            )
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["payload"]["value"], 42)
+            store.stop()
+
+    def test_observability_store_retries_database_locked_flush(self) -> None:
+        config = build_config()
+        config.observability.enabled = True
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.observability.sqlite_path = str(Path(temp_dir) / "observability.db")
+            set_config(config)
+            store = get_observability_store(force_recreate=True, config=config)
+            store.start()
+
+            record = {
+                "record_type": "event",
+                "event_timestamp": datetime.now().isoformat(),
+                "inserted_at": datetime.now().isoformat(),
+                "run_id": "run-test",
+                "process_id": os.getpid(),
+                "category": "system",
+                "event_type": "locked_retry_test",
+                "source": "tests.test_matrix_engine",
+                "symbol": "ES",
+                "zone": "Pre-Open",
+                "action": "test",
+                "reason": "database_locked",
+                "order_id": None,
+                "risk_state": "normal",
+                "payload_json": json.dumps({"value": 7}),
+            }
+
+            real_write_events = store._write_events_locked
+            call_count = {"count": 0}
+
+            def flaky_write_events(events):
+                call_count["count"] += 1
+                if call_count["count"] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                return real_write_events(events)
+
+            store._write_events_locked = flaky_write_events  # type: ignore[method-assign]
+
+            with store._lock:
+                store._write_records_locked([record])
+
+            rows = store.query_events(limit=5, category="system", event_type="locked_retry_test")
+
+            self.assertEqual(call_count["count"], 2)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["payload"]["value"], 7)
             store.stop()
 
     def test_observability_store_query_after_id_filters_old_rows(self) -> None:

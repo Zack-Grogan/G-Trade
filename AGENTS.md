@@ -9,7 +9,7 @@ This file is the repository operating contract for AI agents working in `G-Trade
 - `src/`, `config/`, `tests/`, and `pyproject.toml` — the active local trading system
 - `docs/` — operator, architecture, research, and archive notes
 - `scripts/` — repo and trader utilities
-- `.cursor/` and `.codex/` — project-specific AI operating assets
+- `.cursor/`, `.codex/`, and `.windsurf/` — project-specific AI operating assets (Cursor, Codex CLI, and Windsurf Cascade respectively)
 
 The active stack is local-only:
 
@@ -44,6 +44,7 @@ Railway and MCP are retired from the active workflow. Historical references live
 - `docs/` — active docs
 - `docs/archive/` — historical materials
 - `scripts/` — repo and trader utilities
+- `.windsurf/` — Windsurf workspace rules, skills, and workflows (see `.windsurf/rules/windsurf-routing.md`)
 
 ## Start here
 
@@ -93,7 +94,7 @@ Useful commands:
 
 - Do not add execution or broker logic outside `src/`.
 - Do not add secrets or live credentials to the repo.
-- Treat `.env`, `.cursor/mcp.json`, and `.codex/config.toml` as local-only files.
+- Treat `.env`, `.cursor/mcp.json`, `.codex/config.toml`, and `~/.codeium/windsurf/mcp_config.json` as local-only files.
 - Use example files for committed config scaffolding.
 - Avoid destructive commands like `git reset --hard` or `git checkout --` unless explicitly requested.
 
@@ -103,6 +104,13 @@ Useful commands:
 - `es-hotzone-debug`
 - `g-trade-observability`
 - `issue-to-pr`
+
+Skills and extra personas are also under `.windsurf/skills/` and `.windsurf/rules/personas/` for Windsurf Cascade (see **Windsurf** below).
+
+## Windsurf (Cascade)
+
+- **Rules / skills / workflows:** `.windsurf/rules/`, `.windsurf/skills/`, `.windsurf/workflows/` — same intent as `.cursor/` and `.codex/`; there is no `mcp_task` subagent launcher. Use **Fast Context**, **terminal**, **MCP** (`~/.codeium/windsurf/mcp_config.json`), **`@` manual persona rules** (`.windsurf/rules/personas/`), and **`@` skills** per `.windsurf/rules/windsurf-routing.md` and `.windsurf/rules/windsurf-cascade-tools.md`.
+- **Slash workflows:** e.g. `/route-by-task`, `/review`, `/test`, `/pr`, `/status` from `.windsurf/workflows/`.
 
 ## Subagent routing
 

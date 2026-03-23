@@ -29,6 +29,7 @@ def collect_run_provenance(
         "started_at": _iso_now(),
         "process_id": os.getpid(),
         "project_root": str(PROJECT_ROOT),
+        "tenant_id": getattr(config, "tenant_id", None),
         "symbols": list(config.symbols),
         "data_mode": data_mode,
         "app_version": _read_package_version(),

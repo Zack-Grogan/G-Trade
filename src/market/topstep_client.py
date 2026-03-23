@@ -28,6 +28,12 @@ load_dotenv(_env_path)
 
 logger = logging.getLogger(__name__)
 
+# Order/cancel API: errorCode 5 is overloaded in the wild — documented tests use it with a
+# non-empty errorMessage ("Unknown error"); live responses sometimes use 5 with null
+# errorMessage when the order is no longer cancelable. Treat 5 as terminal only when
+# errorMessage is missing/empty so local tracking can be dropped.
+CANCEL_ORDER_AMBIGUOUS_ERROR_CODE: int = 5
+
 
 @dataclass
 class MarketData:
@@ -205,19 +211,49 @@ class TopstepClient:
             account.get("description"),
         ]
 
-        if any(
+        name_match = any(
             preferred_match in str(value).upper() for value in candidate_fields if value is not None
-        ):
-            return True
+        )
+        simulated_flag = bool(account.get("simulated"))
+        is_practice = name_match or simulated_flag
 
-        return bool(account.get("simulated"))
+        logger.debug(
+            "account_practice_detection account_id=%s name=%s preferred_match=%s name_match=%s simulated=%s is_practice=%s",
+            account.get("id"),
+            account.get("name"),
+            preferred_match,
+            name_match,
+            simulated_flag,
+            is_practice,
+        )
+
+        return is_practice
+
+    def _account_matches_preferred_marker(self, account: Dict[str, Any]) -> bool:
+        """True when id/name/description contains ``preferred_id_match`` (case-insensitive)."""
+        preferred_match = (
+            getattr(self.safety_config, "preferred_account_match", None)
+            or self.account_config.preferred_id_match
+            or "PRAC"
+        ).upper()
+        candidate_fields = [
+            account.get("id"),
+            account.get("name"),
+            account.get("accountId"),
+            account.get("description"),
+        ]
+        return any(
+            preferred_match in str(value).upper()
+            for value in candidate_fields
+            if value is not None
+        )
 
     def _practice_account_required(self) -> bool:
         """Used only when PREFERRED_ACCOUNT_ID is unset (fallback account pick)."""
-        return bool(
-            getattr(self.safety_config, "prac_only", False)
-            or self.account_config.require_preferred_account
-        )
+        prac_only = getattr(self.safety_config, "prac_only", None)
+        if prac_only is not None:
+            return bool(prac_only)
+        return bool(self.account_config.require_preferred_account)
 
     @staticmethod
     def _coerce_float(value: Any, default: float = 0.0) -> float:
@@ -302,11 +338,39 @@ class TopstepClient:
 
         require_practice = self._practice_account_required()
         practice_accounts = [acc for acc in tradable_accounts if self._is_practice_account(acc)]
+        live_accounts = [acc for acc in tradable_accounts if not self._is_practice_account(acc)]
 
-        if practice_accounts:
-            return self._account_summary(practice_accounts[0])
+        logger.info(
+            "account_selection require_practice=%s practice_accounts=%s live_accounts=%s selected=%s",
+            require_practice,
+            len(practice_accounts),
+            len(live_accounts),
+            "practice" if require_practice and practice_accounts else ("live" if live_accounts else "none"),
+        )
 
         if require_practice:
+            if practice_accounts:
+                preferred_marker = (
+                    getattr(self.safety_config, "preferred_account_match", None)
+                    or self.account_config.preferred_id_match
+                    or "PRAC"
+                )
+                preferred_matches = [
+                    acc for acc in practice_accounts if self._account_matches_preferred_marker(acc)
+                ]
+                if preferred_matches:
+                    selected_raw = preferred_matches[0]
+                elif self.account_config.require_preferred_account:
+                    logger.warning(
+                        "No account name/id contains preferred marker '%s' among practice/simulated "
+                        "accounts; selecting the first practice account. Set PREFERRED_ACCOUNT_ID to pin "
+                        "a specific account id.",
+                        preferred_marker,
+                    )
+                    selected_raw = practice_accounts[0]
+                else:
+                    selected_raw = practice_accounts[0]
+                return self._account_summary(selected_raw)
             logger.error(
                 "No practice account matched preferred marker '%s'; refusing to select a non-practice account.",
                 getattr(self.safety_config, "preferred_account_match", None)
@@ -315,21 +379,25 @@ class TopstepClient:
             )
             return None
 
-        target_balance = os.getenv("TARGET_ACCOUNT_BALANCE", "50000")
-        try:
-            target = float(target_balance)
-        except ValueError:
-            target = 50000.0
+        if live_accounts:
+            return self._account_summary(live_accounts[0])
 
-        for acc in tradable_accounts:
-            if abs(acc.get("balance", 0) - target) < 100:
-                return self._account_summary(acc)
+        if practice_accounts:
+            logger.error(
+                "No live account available; refusing to fall back to a practice account while live mode is requested."
+            )
+            return None
 
-        for acc in tradable_accounts:
-            if acc.get("isVisible"):
-                return self._account_summary(acc)
+        if tradable_accounts:
+            return self._account_summary(tradable_accounts[0])
 
-        return self._account_summary(tradable_accounts[0])
+        logger.error(
+            "No tradable account matched preferred marker '%s'; refusing to select a non-practice account.",
+            getattr(self.safety_config, "preferred_account_match", None)
+            or self.account_config.preferred_id_match
+            or "PRAC",
+        )
+        return None
 
     def authenticate(
         self, client_id: Optional[str] = None, client_secret: Optional[str] = None
@@ -2092,18 +2160,48 @@ class TopstepClient:
             )
             data = response.json()
             if not data.get("success"):
+                err_msg = data.get("errorMessage") or data.get("error") or data.get("message")
+                err_code = data.get("errorCode")
+                if err_code == CANCEL_ORDER_AMBIGUOUS_ERROR_CODE and not (err_msg and str(err_msg).strip()):
+                    logger.info(
+                        "broker_order_cancel_skipped_non_cancellable order_id=%s account_id=%s "
+                        "errorCode=%s (empty errorMessage; treat as terminal for local tracking) response=%s",
+                        order_id,
+                        self._account_id,
+                        err_code,
+                        data,
+                    )
+                    self._record_event(
+                        category="execution",
+                        event_type="broker_order_cancel_non_cancellable",
+                        payload={
+                            "account_id": self._account_id,
+                            "error": err_msg,
+                            "errorCode": err_code,
+                            "response": data,
+                            "note": "order_not_cancelable_treat_as_terminal",
+                        },
+                        event_time=datetime.now(timezone.utc),
+                        symbol=self._stream_symbol,
+                        action="cancel_order",
+                        reason="broker_order_cancel_non_cancellable",
+                        order_id=order_id,
+                    )
+                    return True
                 logger.error(
-                    "broker_order_cancel_failed order_id=%s account_id=%s error=%s",
+                    "broker_order_cancel_failed order_id=%s account_id=%s error=%s response=%s",
                     order_id,
                     self._account_id,
-                    data.get("errorMessage", "Unknown error"),
+                    err_msg,
+                    data,
                 )
                 self._record_event(
                     category="execution",
                     event_type="broker_order_cancel_failed",
                     payload={
                         "account_id": self._account_id,
-                        "error": data.get("errorMessage", "Unknown error"),
+                        "error": err_msg or "Unknown error",
+                        "response": data,
                     },
                     event_time=datetime.now(timezone.utc),
                     symbol=self._stream_symbol,
@@ -2262,20 +2360,22 @@ class TopstepClient:
             # Extract incoming price fields (may be partial/sparse)
             bid_raw = payload.get("bestBid", payload.get("bid"))
             ask_raw = payload.get("bestAsk", payload.get("ask"))
-            last_raw = payload.get("lastPrice", payload.get("last"))
 
             incoming_bid = float(bid_raw) if bid_raw is not None else None
             incoming_ask = float(ask_raw) if ask_raw is not None else None
-            incoming_last = float(last_raw) if last_raw is not None else None
 
             # Track if this is a partial update
             has_partial = (
-                incoming_bid is None or incoming_bid == 0.0
-                or incoming_ask is None or incoming_ask == 0.0
+                incoming_bid is None
+                or incoming_bid == 0.0
+                or incoming_ask is None
+                or incoming_ask == 0.0
             )
 
             # Get cached state - never let 0.0 overwrite valid values
-            prior = self._lookup_market_snapshot(contract_id) or self._lookup_market_snapshot(root_symbol)
+            prior = self._lookup_market_snapshot(contract_id) or self._lookup_market_snapshot(
+                root_symbol
+            )
             cached_bid = prior.bid if prior else 0.0
             cached_ask = prior.ask if prior else 0.0
             cached_last = prior.last if prior else 0.0
@@ -2292,7 +2392,11 @@ class TopstepClient:
                 self._rejected_quote_count += 1
                 logger.debug(
                     "Rejecting empty GatewayQuote for %s: bid=%s ask=%s (cached: bid=%.2f ask=%.2f)",
-                    root_symbol, bid_raw, ask_raw, cached_bid, cached_ask,
+                    root_symbol,
+                    bid_raw,
+                    ask_raw,
+                    cached_bid,
+                    cached_ask,
                 )
                 return
 
@@ -2346,7 +2450,10 @@ class TopstepClient:
                     self._stream_ready.set()
                     logger.info(
                         "Received valid BBO for %s: bid=%.2f ask=%.2f mid=%.2f",
-                        root_symbol, bid, ask, (bid + ask) / 2
+                        root_symbol,
+                        bid,
+                        ask,
+                        (bid + ask) / 2,
                     )
                     self._record_event(
                         category="market",

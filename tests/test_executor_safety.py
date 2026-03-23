@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 
 from src.config import load_config
 from src.execution.executor import Order, OrderExecutor, OrderStatus
 from src.market import MarketData
+from src.market.topstep_client import TopstepClient
 
 
 class _FakeObservability:
@@ -59,6 +60,18 @@ class _LiveClient:
 
     def enable_mock_mode(self) -> None:
         return None
+
+
+class _TrackingCancelClient(_LiveClient):
+    """Records cancel_order calls; returns True so local state can be cleared."""
+
+    def __init__(self, *, market_timestamp: datetime) -> None:
+        super().__init__(market_timestamp=market_timestamp)
+        self.cancelled_ids: list[str] = []
+
+    def cancel_order(self, order_id: str) -> bool:
+        self.cancelled_ids.append(order_id)
+        return True
 
 
 class TestExecutorFailClosed(unittest.TestCase):
@@ -199,6 +212,83 @@ class TestExecutorBrokerTruthReconciliation(unittest.TestCase):
         self.assertIn(
             "broker-open-1", executor.get_watchdog_snapshot("ES")["active_entry_order_ids"]
         )
+
+
+class TestReconcileStaleOrders(unittest.TestCase):
+    """Stale order reconciliation must not cancel working protective orders by age."""
+
+    def _make_executor(self, *, client: _LiveClient) -> OrderExecutor:
+        config = load_config()
+        config.watchdog.stale_order_seconds = 1
+        observability = _FakeObservability()
+        with (
+            patch("src.execution.executor.get_client", return_value=client),
+            patch(
+                "src.execution.executor.get_observability_store",
+                return_value=observability,
+            ),
+        ):
+            executor = OrderExecutor(config=config)
+        executor.reset_state(mock_mode=False)
+        return executor
+
+    def test_reconcile_pending_orders_skips_protective_orders(self) -> None:
+        ts = datetime.now(UTC)
+        old = ts - timedelta(seconds=120)
+        client = _TrackingCancelClient(market_timestamp=ts)
+        executor = self._make_executor(client=client)
+
+        executor._pending_orders["stop-1"] = Order(
+            order_id="stop-1",
+            symbol="ES",
+            side="sell",
+            quantity=1,
+            order_type="stop",
+            stop_price=6500.0,
+            status=OrderStatus.OPEN,
+            created_time=old,
+            updated_time=old,
+            is_protective=True,
+            role="stop_loss",
+        )
+        executor._pending_orders["entry-1"] = Order(
+            order_id="entry-1",
+            symbol="ES",
+            side="buy",
+            quantity=1,
+            order_type="limit",
+            limit_price=6654.25,
+            status=OrderStatus.OPEN,
+            created_time=old,
+            updated_time=old,
+            is_protective=False,
+            role="entry",
+        )
+
+        cancelled = executor.reconcile_pending_orders()
+
+        self.assertEqual(cancelled, 1)
+        self.assertEqual(client.cancelled_ids, ["entry-1"])
+        self.assertIn("stop-1", executor._pending_orders)
+        self.assertNotIn("entry-1", executor._pending_orders)
+
+
+class TestTopstepCancelNonCancellable(unittest.TestCase):
+    def test_cancel_order_returns_true_for_error_code_5_empty_message(self) -> None:
+        client = TopstepClient()
+        client._account_id = 1
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "success": False,
+            "errorCode": 5,
+            "errorMessage": None,
+        }
+        with (
+            patch.object(client, "_ensure_auth", return_value=True),
+            patch.object(client, "_post_with_retry", return_value=mock_resp),
+            patch.object(client, "_record_event"),
+        ):
+            self.assertTrue(client.cancel_order("12345"))
 
 
 class TestMockLimitTouchFillRatio(unittest.TestCase):

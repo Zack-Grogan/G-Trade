@@ -578,7 +578,8 @@ class DecisionMatrixEvaluator:
                 "range_state": abs(range_state),
                 "trend_state": _clip(2.0 - max(trend_long, trend_short)),
                 "spread_regime": _clip(
-                    2.0 - max(
+                    2.0
+                    - max(
                         (
                             flow_snapshot.spread_regime
                             if flow_snapshot.spread_regime is not None
@@ -735,8 +736,6 @@ class DecisionMatrixEvaluator:
         vetoes = self._evaluate_vetoes(zone, snapshot, event_context.blackout_active)
         if risk_state == RiskState.CIRCUIT_BREAKER:
             vetoes.append("risk_circuit_breaker")
-        elif risk_state == RiskState.REDUCED:
-            vetoes.append("reduced_risk")
 
         dominant_side = "long" if long_score >= short_score else "short"
         dominant_score = long_score if dominant_side == "long" else short_score
@@ -771,7 +770,9 @@ class DecisionMatrixEvaluator:
             elif long_score < exit_decay_threshold:
                 action = "FLAT"
                 reason = "matrix_decay"
-            elif self._zone_hold_limit(zone.name) > 0 and held_minutes >= self._zone_hold_limit(zone.name):
+            elif self._zone_hold_limit(zone.name) > 0 and held_minutes >= self._zone_hold_limit(
+                zone.name
+            ):
                 action = "FLAT"
                 reason = "time_stop"
             elif (
@@ -798,7 +799,9 @@ class DecisionMatrixEvaluator:
             elif short_score < exit_decay_threshold:
                 action = "FLAT"
                 reason = "matrix_decay"
-            elif self._zone_hold_limit(zone.name) > 0 and held_minutes >= self._zone_hold_limit(zone.name):
+            elif self._zone_hold_limit(zone.name) > 0 and held_minutes >= self._zone_hold_limit(
+                zone.name
+            ):
                 action = "FLAT"
                 reason = "time_stop"
             elif (
@@ -816,7 +819,7 @@ class DecisionMatrixEvaluator:
             and dominant_score >= min_entry_threshold
             and score_gap >= self.alpha.min_score_gap
             and dominant_score >= (flat_bias + self.alpha.flat_bias_buffer)
-            and not [item for item in vetoes if item != "reduced_risk"]
+            and not vetoes
         ):
             action = "LONG" if dominant_side == "long" else "SHORT"
             reason = f"{zone.name.lower().replace(' ', '_')}_{dominant_side}_matrix"

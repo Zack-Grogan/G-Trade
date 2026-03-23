@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from src.config import Config, get_config
+from src.runtime.tenancy import normalize_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class ObservabilityStore:
     def __init__(self, config: Optional[Config] = None):
         root_config = config or get_config()
         self.config = root_config
+        self.tenant_id = normalize_tenant_id(getattr(root_config, "tenant_id", None))
         self.settings = root_config.observability
         self._db_path = self._resolve_db_path(self.settings.sqlite_path)
         self._queue: queue.Queue[dict[str, Any]] = queue.Queue(
@@ -45,11 +47,46 @@ class ObservabilityStore:
         project_root = Path(__file__).resolve().parent.parent.parent
         return project_root / path
 
+    def _open_connection_locked(self) -> bool:
+        try:
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA temp_store=MEMORY")
+            self._conn = conn
+            self._ensure_schema()
+            self._prune_old_records_locked()
+            return True
+        except Exception:
+            logger.exception("Failed to open observability store connection at %s", self._db_path)
+            with self._lock:
+                if self._conn is not None:
+                    try:
+                        self._conn.close()
+                    except Exception:
+                        pass
+                    self._conn = None
+            return False
+
     def _account_mode(self, is_practice: Any) -> Optional[str]:
         practice_value = self._coerce_bool(is_practice)
         if practice_value is None:
             return None
         return "practice" if practice_value else "live"
+
+    def _tenant_value(self) -> str:
+        return self.tenant_id
+
+    def _scope_tenant_rows(self, payload: dict[str, Any]) -> dict[str, Any]:
+        item = dict(payload)
+        item.setdefault("tenant_id", self._tenant_value())
+        return item
+
+    def _apply_tenant_filter(self, clauses: list[str], params: list[Any]) -> None:
+        clauses.append("tenant_id = ?")
+        params.append(self._tenant_value())
 
     def _extract_account_context(self, payload: dict[str, Any]) -> dict[str, Any]:
         account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
@@ -82,15 +119,16 @@ class ObservabilityStore:
         try:
             with self._lock:
                 if self._running:
+                    if self._conn is None and not self._failed:
+                        reopened = self._open_connection_locked()
+                        if not reopened:
+                            self._failed = True
+                            self._running = False
                     return
-                self._db_path.parent.mkdir(parents=True, exist_ok=True)
-                self._conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=5.0)
-                self._conn.row_factory = sqlite3.Row
-                self._conn.execute("PRAGMA journal_mode=WAL")
-                self._conn.execute("PRAGMA synchronous=NORMAL")
-                self._conn.execute("PRAGMA temp_store=MEMORY")
-                self._ensure_schema()
-                self._prune_old_records_locked()
+                if not self._open_connection_locked():
+                    self._failed = True
+                    self._running = False
+                    return
                 self._running = True
                 self._worker = threading.Thread(
                     target=self._worker_loop, name="observability-store", daemon=True
@@ -158,6 +196,7 @@ class ObservabilityStore:
                 "event_timestamp": self._serialize_datetime(event_time or datetime.now(UTC)),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": self._run_id,
+                "tenant_id": self._tenant_value(),
                 "process_id": os.getpid(),
                 "category": str(category),
                 "event_type": str(event_type),
@@ -196,6 +235,7 @@ class ObservabilityStore:
         try:
             self.start()
             payload = self._normalize_value(snapshot or {})
+            payload = self._scope_tenant_rows(payload)
             observability = (
                 payload.get("observability")
                 if isinstance(payload.get("observability"), dict)
@@ -207,6 +247,7 @@ class ObservabilityStore:
                 "captured_at": self._coerce_datetime_value(event_time or datetime.now(UTC)),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
+                "tenant_id": self._tenant_value(),
                 "process_id": int(payload.get("process_id") or os.getpid()),
                 "status": payload.get("status"),
                 "data_mode": payload.get("data_mode"),
@@ -291,6 +332,7 @@ class ObservabilityStore:
         try:
             self.start()
             payload = self._normalize_value(tick or {})
+            payload = self._scope_tenant_rows(payload)
             record = {
                 "record_type": "market_tape",
                 "captured_at": self._coerce_datetime_value(
@@ -301,6 +343,7 @@ class ObservabilityStore:
                 ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
+                "tenant_id": payload.get("tenant_id") or self._tenant_value(),
                 "process_id": int(payload.get("process_id") or os.getpid()),
                 "symbol": payload.get("symbol"),
                 "contract_id": payload.get("contract_id"),
@@ -337,6 +380,7 @@ class ObservabilityStore:
         try:
             self.start()
             payload = self._normalize_value(snapshot or {})
+            payload = self._scope_tenant_rows(payload)
             record = {
                 "record_type": "decision_snapshot",
                 "decided_at": self._coerce_datetime_value(
@@ -344,6 +388,7 @@ class ObservabilityStore:
                 ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
+                "tenant_id": self._tenant_value(),
                 "process_id": int(payload.get("process_id") or os.getpid()),
                 "decision_id": str(
                     payload.get("decision_id")
@@ -398,6 +443,7 @@ class ObservabilityStore:
         try:
             self.start()
             payload = self._normalize_value(lifecycle or {})
+            payload = self._scope_tenant_rows(payload)
             record = {
                 "record_type": "order_lifecycle",
                 "observed_at": self._coerce_datetime_value(
@@ -405,6 +451,7 @@ class ObservabilityStore:
                 ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
+                "tenant_id": self._tenant_value(),
                 "process_id": int(payload.get("process_id") or os.getpid()),
                 "decision_id": payload.get("decision_id"),
                 "attempt_id": payload.get("attempt_id"),
@@ -446,6 +493,7 @@ class ObservabilityStore:
         try:
             self.start()
             payload = self._normalize_value(health or {})
+            payload = self._scope_tenant_rows(payload)
             record = {
                 "record_type": "bridge_health",
                 "observed_at": self._coerce_datetime_value(
@@ -453,6 +501,7 @@ class ObservabilityStore:
                 ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
+                "tenant_id": self._tenant_value(),
                 "bridge_status": payload.get("bridge_status"),
                 "queue_depth": payload.get("queue_depth"),
                 "last_flush_at": self._coerce_optional_datetime_value(payload.get("last_flush_at")),
@@ -477,6 +526,7 @@ class ObservabilityStore:
         try:
             self.start()
             payload = self._normalize_value(entry or {})
+            payload = self._scope_tenant_rows(payload)
             record = {
                 "record_type": "runtime_log",
                 "logged_at": self._coerce_datetime_value(
@@ -484,6 +534,7 @@ class ObservabilityStore:
                 ),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "run_id": str(payload.get("run_id") or self._run_id),
+                "tenant_id": self._tenant_value(),
                 "logger_name": payload.get("logger_name"),
                 "level": payload.get("level") or payload.get("level_name"),
                 "source": payload.get("source"),
@@ -527,6 +578,7 @@ class ObservabilityStore:
                 return []
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if category:
                 clauses.append("category = ?")
                 params.append(category)
@@ -561,7 +613,7 @@ class ObservabilityStore:
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             order_clause = "ORDER BY id ASC" if ascending else "ORDER BY id DESC"
             query = (
-                "SELECT id, event_timestamp, inserted_at, run_id, process_id, category, event_type, source, symbol, zone, action, reason, order_id, risk_state, payload_json "
+                "SELECT id, event_timestamp, inserted_at, run_id, tenant_id, process_id, category, event_type, source, symbol, zone, action, reason, order_id, risk_state, payload_json "
                 f"FROM events {where} {order_clause} LIMIT ?"
             )
             params.append(max(int(limit), 1))
@@ -597,6 +649,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 clauses.append("id > ?")
                 params.append(int(after_id))
@@ -624,7 +677,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, captured_at, inserted_at, run_id, process_id, status, data_mode, symbol, zone, zone_state,
+                    SELECT id, captured_at, inserted_at, run_id, tenant_id, process_id, status, data_mode, symbol, zone, zone_state,
                            zone_semantics_version,
                            position, position_pnl, daily_pnl, risk_state, account_id, account_name, account_mode,
                            account_is_practice, decision_id, attempt_id, position_id, trade_id,
@@ -661,6 +714,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 clauses.append("id > ?")
                 params.append(int(after_id))
@@ -700,7 +754,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, captured_at, inserted_at, run_id, process_id, symbol, contract_id, bid, ask, last,
+                    SELECT id, captured_at, inserted_at, run_id, tenant_id, process_id, symbol, contract_id, bid, ask, last,
                            volume, bid_size, ask_size, last_size, volume_is_cumulative, quote_is_synthetic,
                            trade_side, latency_ms, source, sequence, payload_json
                     FROM market_tape
@@ -733,6 +787,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 clauses.append("id > ?")
                 params.append(int(after_id))
@@ -760,7 +815,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, decided_at, inserted_at, run_id, process_id, decision_id, attempt_id, symbol, zone,
+                    SELECT id, decided_at, inserted_at, run_id, tenant_id, process_id, decision_id, attempt_id, symbol, zone,
                            action, reason, outcome, outcome_reason, long_score, short_score, flat_bias, score_gap,
                            dominant_side, current_price, allow_entries, execution_tradeable, contracts, order_type,
                            limit_price, decision_price, side, stop_loss, take_profit, max_hold_minutes, regime_state,
@@ -797,6 +852,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 clauses.append("id > ?")
                 params.append(int(after_id))
@@ -827,7 +883,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, observed_at, inserted_at, run_id, process_id, decision_id, attempt_id, order_id,
+                    SELECT id, observed_at, inserted_at, run_id, tenant_id, process_id, decision_id, attempt_id, order_id,
                            position_id, trade_id, symbol, event_type, status, side, role, is_protective, order_type,
                            quantity, contracts, limit_price, stop_price, expected_fill_price, filled_price,
                            filled_quantity, remaining_quantity, zone, reason, lifecycle_state, payload_json
@@ -858,6 +914,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 clauses.append("id > ?")
                 params.append(int(after_id))
@@ -874,7 +931,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, observed_at, inserted_at, run_id, bridge_status, queue_depth, last_flush_at,
+                    SELECT id, observed_at, inserted_at, run_id, tenant_id, bridge_status, queue_depth, last_flush_at,
                            last_success_at, last_error, payload_json
                     FROM bridge_health
                     {where}
@@ -906,6 +963,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 operator = ">" if ascending else "<"
                 clauses.append(f"id {operator} ?")
@@ -936,7 +994,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, logged_at, inserted_at, run_id, logger_name, level, source, service_name,
+                    SELECT id, logged_at, inserted_at, run_id, tenant_id, logger_name, level, source, service_name,
                            process_id, line_hash, thread_name, message, exception_text, payload_json
                     FROM runtime_logs
                     {where}
@@ -968,6 +1026,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 clauses.append("id > ?")
                 params.append(int(after_id))
@@ -997,7 +1056,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, run_id, inserted_at, occurred_at, account_id, account_name, account_mode,
+                    SELECT id, run_id, inserted_at, occurred_at, tenant_id, account_id, account_name, account_mode,
                            account_is_practice, broker_trade_id, broker_order_id, contract_id, side, size,
                            price, profit_and_loss, fees, voided, source, payload_json
                     FROM account_trades
@@ -1043,6 +1102,7 @@ class ObservabilityStore:
             record = {
                 "record_type": "account_trade",
                 "run_id": str(run_id or payload.get("run_id") or self._run_id),
+                "tenant_id": self._tenant_value(),
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                 "occurred_at": occurred_at,
                 "account_id": account_context["account_id"]
@@ -1102,6 +1162,7 @@ class ObservabilityStore:
                         run_id,
                         created_at,
                         process_id,
+                        tenant_id,
                         data_mode,
                         symbol,
                         account_id,
@@ -1118,10 +1179,11 @@ class ObservabilityStore:
                         git_available,
                         app_version,
                         payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(run_id) DO UPDATE SET
                         created_at=excluded.created_at,
                         process_id=excluded.process_id,
+                        tenant_id=excluded.tenant_id,
                         data_mode=excluded.data_mode,
                         symbol=excluded.symbol,
                         account_id=excluded.account_id,
@@ -1143,6 +1205,7 @@ class ObservabilityStore:
                         run_id,
                         created_at,
                         process_id,
+                        self._tenant_value(),
                         payload.get("data_mode"),
                         (payload.get("symbols") or [None])[0],
                         account_context["account_id"],
@@ -1175,6 +1238,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if search:
                 pattern = f"%{search}%"
                 clauses.append(
@@ -1186,7 +1250,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT run_id, created_at, process_id, data_mode, symbol, account_id, account_name, account_mode,
+                    SELECT run_id, created_at, process_id, tenant_id, data_mode, symbol, account_id, account_name, account_mode,
                            account_is_practice, config_path, config_hash,
                            log_path, sqlite_path, git_commit, git_branch, git_dirty, git_available,
                            app_version, payload_json
@@ -1211,14 +1275,14 @@ class ObservabilityStore:
                 assert self._conn is not None
                 row = self._conn.execute(
                     """
-                    SELECT run_id, created_at, process_id, data_mode, symbol, account_id, account_name, account_mode,
+                    SELECT run_id, created_at, process_id, tenant_id, data_mode, symbol, account_id, account_name, account_mode,
                            account_is_practice, config_path, config_hash,
                            log_path, sqlite_path, git_commit, git_branch, git_dirty, git_available,
                            app_version, payload_json
                     FROM run_manifests
-                    WHERE run_id = ?
+                    WHERE run_id = ? AND tenant_id = ?
                     """,
-                    (run_id,),
+                    (run_id, self._tenant_value()),
                 ).fetchone()
             return self._decode_run_manifest_row(row) if row is not None else None
         except Exception:
@@ -1234,16 +1298,16 @@ class ObservabilityStore:
             with self._lock:
                 assert self._conn is not None
                 row = self._conn.execute(
-                    "SELECT payload_json FROM run_manifests WHERE run_id = ?",
-                    (run_id,),
+                    "SELECT payload_json FROM run_manifests WHERE run_id = ? AND tenant_id = ?",
+                    (run_id, self._tenant_value()),
                 ).fetchone()
                 if row is None:
                     return
                 payload = json.loads(row["payload_json"] or "{}")
                 payload.update(self._normalize_value(extra))
                 self._conn.execute(
-                    "UPDATE run_manifests SET payload_json = ? WHERE run_id = ?",
-                    (self._json_dumps(payload), run_id),
+                    "UPDATE run_manifests SET payload_json = ? WHERE run_id = ? AND tenant_id = ?",
+                    (self._json_dumps(payload), run_id, self._tenant_value()),
                 )
                 self._conn.commit()
         except Exception:
@@ -1268,6 +1332,7 @@ class ObservabilityStore:
             record = {
                 "run_id": trade_run_id,
                 "inserted_at": self._serialize_datetime(datetime.now(UTC)),
+                "tenant_id": self._tenant_value(),
                 "direction": int(payload.get("direction") or 0),
                 "contracts": int(payload.get("contracts") or 0),
                 "entry_price": float(payload.get("entry_price") or 0.0),
@@ -1333,6 +1398,7 @@ class ObservabilityStore:
             self.start()
             clauses: list[str] = []
             params: list[Any] = []
+            self._apply_tenant_filter(clauses, params)
             if after_id is not None:
                 clauses.append("id > ?")
                 params.append(int(after_id))
@@ -1372,6 +1438,7 @@ class ObservabilityStore:
                         SELECT 1
                         FROM run_manifests rm
                         WHERE rm.run_id = completed_trades.run_id
+                          AND rm.tenant_id = completed_trades.tenant_id
                           AND lower(trim(COALESCE(rm.data_mode, ''))) NOT IN ('', 'live')
                     )
                     """)
@@ -1381,7 +1448,7 @@ class ObservabilityStore:
                 assert self._conn is not None
                 rows = self._conn.execute(
                     f"""
-                    SELECT id, run_id, inserted_at, entry_time, exit_time, direction, contracts, entry_price,
+                    SELECT id, run_id, inserted_at, tenant_id, entry_time, exit_time, direction, contracts, entry_price,
                            exit_price, pnl, zone, strategy, regime, event_tags_json, source, backfilled,
                            trade_id, position_id, decision_id, attempt_id, account_id, account_name, account_mode,
                            account_is_practice, payload_json
@@ -1410,11 +1477,12 @@ class ObservabilityStore:
                 self._flush_locked()
                 assert self._conn is not None
                 query = """
-                    SELECT run_id, event_timestamp, zone, payload_json
+                    SELECT run_id, tenant_id, event_timestamp, zone, payload_json
                     FROM events
                     WHERE event_type = 'trade_recorded'
+                      AND tenant_id = ?
                 """
-                params: list[Any] = []
+                params: list[Any] = [self._tenant_value()]
                 if run_id:
                     query += " AND run_id = ?"
                     params.append(run_id)
@@ -1429,6 +1497,7 @@ class ObservabilityStore:
                     inserted = self._insert_completed_trade_locked(
                         {
                             "run_id": row["run_id"],
+                            "tenant_id": row["tenant_id"],
                             "inserted_at": self._serialize_datetime(datetime.now(UTC)),
                             "entry_time": self._canonicalize_datetime_value(
                                 payload.get("entry_time")
@@ -1531,6 +1600,7 @@ class ObservabilityStore:
                 event_timestamp TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
                 run_id TEXT NOT NULL,
+                tenant_id TEXT,
                 process_id INTEGER NOT NULL,
                 category TEXT NOT NULL,
                 event_type TEXT NOT NULL,
@@ -1554,6 +1624,7 @@ class ObservabilityStore:
                 captured_at TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
                 run_id TEXT NOT NULL,
+                tenant_id TEXT,
                 process_id INTEGER NOT NULL,
                 status TEXT,
                 data_mode TEXT,
@@ -1584,6 +1655,7 @@ class ObservabilityStore:
                 captured_at TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
                 run_id TEXT NOT NULL,
+                tenant_id TEXT,
                 process_id INTEGER NOT NULL,
                 symbol TEXT NOT NULL,
                 contract_id TEXT,
@@ -1611,6 +1683,7 @@ class ObservabilityStore:
                 decided_at TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
                 run_id TEXT NOT NULL,
+                tenant_id TEXT,
                 process_id INTEGER NOT NULL,
                 decision_id TEXT NOT NULL,
                 attempt_id TEXT,
@@ -1656,6 +1729,7 @@ class ObservabilityStore:
                 observed_at TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
                 run_id TEXT NOT NULL,
+                tenant_id TEXT,
                 process_id INTEGER NOT NULL,
                 decision_id TEXT,
                 attempt_id TEXT,
@@ -1691,6 +1765,7 @@ class ObservabilityStore:
                 observed_at TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
                 run_id TEXT,
+                tenant_id TEXT,
                 bridge_status TEXT,
                 queue_depth INTEGER,
                 last_flush_at TEXT,
@@ -1707,6 +1782,7 @@ class ObservabilityStore:
                 logged_at TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
                 run_id TEXT,
+                tenant_id TEXT,
                 logger_name TEXT,
                 level TEXT,
                 source TEXT,
@@ -1727,6 +1803,7 @@ class ObservabilityStore:
                 run_id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
                 process_id INTEGER NOT NULL,
+                tenant_id TEXT,
                 data_mode TEXT,
                 symbol TEXT,
                 account_id TEXT,
@@ -1752,6 +1829,7 @@ class ObservabilityStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id TEXT NOT NULL,
                 inserted_at TEXT NOT NULL,
+                tenant_id TEXT,
                 entry_time TEXT,
                 exit_time TEXT NOT NULL,
                 direction INTEGER NOT NULL,
@@ -1786,6 +1864,7 @@ class ObservabilityStore:
                 run_id TEXT,
                 inserted_at TEXT NOT NULL,
                 occurred_at TEXT NOT NULL,
+                tenant_id TEXT,
                 account_id TEXT NOT NULL,
                 account_name TEXT,
                 account_mode TEXT,
@@ -1814,10 +1893,17 @@ class ObservabilityStore:
         self._ensure_column_locked("state_snapshots", "account_mode", "TEXT")
         self._ensure_column_locked("state_snapshots", "account_is_practice", "INTEGER")
         self._ensure_column_locked("state_snapshots", "zone_semantics_version", "TEXT")
+        self._ensure_column_locked("state_snapshots", "tenant_id", "TEXT")
+        self._ensure_column_locked("events", "tenant_id", "TEXT")
+        self._ensure_column_locked("decision_snapshots", "tenant_id", "TEXT")
+        self._ensure_column_locked("order_lifecycle", "tenant_id", "TEXT")
+        self._ensure_column_locked("bridge_health", "tenant_id", "TEXT")
+        self._ensure_column_locked("runtime_logs", "tenant_id", "TEXT")
         self._ensure_column_locked("run_manifests", "account_id", "TEXT")
         self._ensure_column_locked("run_manifests", "account_name", "TEXT")
         self._ensure_column_locked("run_manifests", "account_mode", "TEXT")
         self._ensure_column_locked("run_manifests", "account_is_practice", "INTEGER")
+        self._ensure_column_locked("run_manifests", "tenant_id", "TEXT")
         self._ensure_column_locked("completed_trades", "trade_id", "TEXT")
         self._ensure_column_locked("completed_trades", "position_id", "TEXT")
         self._ensure_column_locked("completed_trades", "decision_id", "TEXT")
@@ -1826,13 +1912,32 @@ class ObservabilityStore:
         self._ensure_column_locked("completed_trades", "account_name", "TEXT")
         self._ensure_column_locked("completed_trades", "account_mode", "TEXT")
         self._ensure_column_locked("completed_trades", "account_is_practice", "INTEGER")
+        self._ensure_column_locked("completed_trades", "tenant_id", "TEXT")
+        self._ensure_column_locked("account_trades", "tenant_id", "TEXT")
+        self._ensure_column_locked("market_tape", "tenant_id", "TEXT")
         # `completed_trades` existed before account-aware durability landed, so create
         # the new account index only after the ALTER TABLE migration has run.
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_completed_trades_account_id ON completed_trades(account_id, exit_time DESC)"
         )
+        for table_name in (
+            "events",
+            "state_snapshots",
+            "decision_snapshots",
+            "order_lifecycle",
+            "bridge_health",
+            "runtime_logs",
+            "run_manifests",
+            "completed_trades",
+            "account_trades",
+            "market_tape",
+        ):
+            self._conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_tenant_id ON {table_name}(tenant_id)"
+            )
+        self._default_tenant_backfill_locked()
         self._conn.execute(
-            "INSERT INTO metadata(key, value) VALUES('schema_version', '5') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            "INSERT INTO metadata(key, value) VALUES('schema_version', '6') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
         )
         self._conn.commit()
 
@@ -1848,35 +1953,57 @@ class ObservabilityStore:
     def _write_records_locked(self, records: list[dict[str, Any]]) -> None:
         if not records:
             return
-        assert self._conn is not None
+        if self._conn is None:
+            if not self._running or self._failed:
+                return
+            logger.warning("Observability connection missing during flush; reopening")
+            if not self._open_connection_locked():
+                self._failed = True
+                self._running = False
+                return
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for record in records:
             grouped[str(record.get("record_type") or "event")].append(record)
-        try:
-            self._batch_write_active = True
-            self._conn.execute("BEGIN")
-            if grouped.get("event"):
-                self._write_events_locked(grouped["event"])
-            if grouped.get("state_snapshot"):
-                self._write_state_snapshots_locked(grouped["state_snapshot"])
-            if grouped.get("market_tape"):
-                self._write_market_tape_locked(grouped["market_tape"])
-            if grouped.get("decision_snapshot"):
-                self._write_decision_snapshots_locked(grouped["decision_snapshot"])
-            if grouped.get("order_lifecycle"):
-                self._write_order_lifecycle_locked(grouped["order_lifecycle"])
-            if grouped.get("bridge_health"):
-                self._write_bridge_health_locked(grouped["bridge_health"])
-            if grouped.get("runtime_log"):
-                self._write_runtime_logs_locked(grouped["runtime_log"])
-            if grouped.get("account_trade"):
-                self._write_account_trades_locked(grouped["account_trade"])
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
-        finally:
-            self._batch_write_active = False
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                self._batch_write_active = True
+                self._conn.execute("BEGIN")
+                if grouped.get("event"):
+                    self._write_events_locked(grouped["event"])
+                if grouped.get("state_snapshot"):
+                    self._write_state_snapshots_locked(grouped["state_snapshot"])
+                if grouped.get("market_tape"):
+                    self._write_market_tape_locked(grouped["market_tape"])
+                if grouped.get("decision_snapshot"):
+                    self._write_decision_snapshots_locked(grouped["decision_snapshot"])
+                if grouped.get("order_lifecycle"):
+                    self._write_order_lifecycle_locked(grouped["order_lifecycle"])
+                if grouped.get("bridge_health"):
+                    self._write_bridge_health_locked(grouped["bridge_health"])
+                if grouped.get("runtime_log"):
+                    self._write_runtime_logs_locked(grouped["runtime_log"])
+                if grouped.get("account_trade"):
+                    self._write_account_trades_locked(grouped["account_trade"])
+                self._conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                if "database is locked" not in str(exc).lower() or attempt >= max_attempts - 1:
+                    raise
+                time.sleep(min(0.25 * (2**attempt), 2.0))
+                continue
+            except Exception:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+                raise
+            finally:
+                self._batch_write_active = False
 
     def _commit_locked(self) -> None:
         assert self._conn is not None
@@ -1893,6 +2020,7 @@ class ObservabilityStore:
                 event_timestamp,
                 inserted_at,
                 run_id,
+                tenant_id,
                 process_id,
                 category,
                 event_type,
@@ -1904,13 +2032,14 @@ class ObservabilityStore:
                 order_id,
                 risk_state,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     event["event_timestamp"],
                     event["inserted_at"],
                     event["run_id"],
+                    event.get("tenant_id", self._tenant_value()),
                     event["process_id"],
                     event["category"],
                     event["event_type"],
@@ -1938,6 +2067,7 @@ class ObservabilityStore:
                 captured_at,
                 inserted_at,
                 run_id,
+                tenant_id,
                 process_id,
                 status,
                 data_mode,
@@ -1958,13 +2088,14 @@ class ObservabilityStore:
                 position_id,
                 trade_id,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     item["captured_at"],
                     item["inserted_at"],
                     item["run_id"],
+                    item.get("tenant_id", self._tenant_value()),
                     item["process_id"],
                     item["status"],
                     item["data_mode"],
@@ -2001,6 +2132,7 @@ class ObservabilityStore:
                 captured_at,
                 inserted_at,
                 run_id,
+                tenant_id,
                 process_id,
                 symbol,
                 contract_id,
@@ -2018,13 +2150,14 @@ class ObservabilityStore:
                 source,
                 sequence,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     item["captured_at"],
                     item["inserted_at"],
                     item["run_id"],
+                    item.get("tenant_id", self._tenant_value()),
                     item["process_id"],
                     item["symbol"],
                     item["contract_id"],
@@ -2058,6 +2191,7 @@ class ObservabilityStore:
                 decided_at,
                 inserted_at,
                 run_id,
+                tenant_id,
                 process_id,
                 decision_id,
                 attempt_id,
@@ -2093,13 +2227,14 @@ class ObservabilityStore:
                 event_context_json,
                 order_flow_json,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     item["decided_at"],
                     item["inserted_at"],
                     item["run_id"],
+                    item.get("tenant_id", self._tenant_value()),
                     item["process_id"],
                     item["decision_id"],
                     item["attempt_id"],
@@ -2151,6 +2286,7 @@ class ObservabilityStore:
                 observed_at,
                 inserted_at,
                 run_id,
+                tenant_id,
                 process_id,
                 decision_id,
                 attempt_id,
@@ -2176,13 +2312,14 @@ class ObservabilityStore:
                 reason,
                 lifecycle_state,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     item["observed_at"],
                     item["inserted_at"],
                     item["run_id"],
+                    item.get("tenant_id", self._tenant_value()),
                     item["process_id"],
                     item["decision_id"],
                     item["attempt_id"],
@@ -2224,19 +2361,21 @@ class ObservabilityStore:
                 observed_at,
                 inserted_at,
                 run_id,
+                tenant_id,
                 bridge_status,
                 queue_depth,
                 last_flush_at,
                 last_success_at,
                 last_error,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     item["observed_at"],
                     item["inserted_at"],
                     item["run_id"],
+                    item.get("tenant_id", self._tenant_value()),
                     item["bridge_status"],
                     item["queue_depth"],
                     item["last_flush_at"],
@@ -2259,6 +2398,7 @@ class ObservabilityStore:
                 logged_at,
                 inserted_at,
                 run_id,
+                tenant_id,
                 logger_name,
                 level,
                 source,
@@ -2269,13 +2409,14 @@ class ObservabilityStore:
                 message,
                 exception_text,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     item["logged_at"],
                     item["inserted_at"],
                     item["run_id"],
+                    item.get("tenant_id", self._tenant_value()),
                     item["logger_name"],
                     item["level"],
                     item["source"],
@@ -2451,11 +2592,11 @@ class ObservabilityStore:
             """
             SELECT data_mode
             FROM run_manifests
-            WHERE run_id = ?
+            WHERE run_id = ? AND tenant_id = ?
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (run_id,),
+            (run_id, self._tenant_value()),
         ).fetchone()
         if row is None:
             return None
@@ -2488,6 +2629,25 @@ class ObservabilityStore:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
 
+    def _default_tenant_backfill_locked(self) -> None:
+        assert self._conn is not None
+        for table_name in (
+            "events",
+            "state_snapshots",
+            "decision_snapshots",
+            "order_lifecycle",
+            "bridge_health",
+            "runtime_logs",
+            "run_manifests",
+            "completed_trades",
+            "account_trades",
+            "market_tape",
+        ):
+            self._conn.execute(
+                f"UPDATE {table_name} SET tenant_id = ? WHERE tenant_id IS NULL OR tenant_id = ''",
+                (self._tenant_value(),),
+            )
+
     def _decode_account_trade_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["account_is_practice"] = (
@@ -2502,6 +2662,7 @@ class ObservabilityStore:
     def _insert_completed_trade_locked(self, record: dict[str, Any]) -> bool:
         assert self._conn is not None
         normalized = dict(record)
+        normalized["tenant_id"] = normalized.get("tenant_id") or self._tenant_value()
         normalized["entry_time"] = self._canonicalize_datetime_value(normalized.get("entry_time"))
         normalized["exit_time"] = self._canonicalize_datetime_value(
             normalized.get("exit_time")
@@ -2512,6 +2673,7 @@ class ObservabilityStore:
             INSERT OR IGNORE INTO completed_trades (
                 run_id,
                 inserted_at,
+                tenant_id,
                 entry_time,
                 exit_time,
                 direction,
@@ -2534,11 +2696,12 @@ class ObservabilityStore:
                 account_mode,
                 account_is_practice,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized["run_id"],
                 normalized["inserted_at"],
+                normalized.get("tenant_id", self._tenant_value()),
                 normalized["entry_time"],
                 normalized["exit_time"],
                 normalized["direction"],
@@ -2576,6 +2739,7 @@ class ObservabilityStore:
                 run_id,
                 inserted_at,
                 occurred_at,
+                tenant_id,
                 account_id,
                 account_name,
                 account_mode,
@@ -2591,13 +2755,14 @@ class ObservabilityStore:
                 voided,
                 source,
                 payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
                     item["run_id"],
                     item["inserted_at"],
                     item["occurred_at"],
+                    item.get("tenant_id", self._tenant_value()),
                     item["account_id"],
                     item["account_name"],
                     item["account_mode"],

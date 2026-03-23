@@ -154,6 +154,7 @@ class HotZoneScheduler:
             self._bars_in_zone = 0
             self._last_zone_observation = None
             self._zone_end_warning_issued = False
+            logger.debug("zone_detection current_time=%s zone=None (outside all zones)", current_time)
             return None
 
         # Pick zone with latest start time (most specific for overlaps)

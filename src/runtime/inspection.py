@@ -11,16 +11,13 @@ from typing import Any, Optional
 from src.config import Config
 from src.observability import get_observability_store
 from src.runtime.state import get_state
+from src.runtime.tenancy import resolve_tenant_scoped_path
 
 logger = logging.getLogger(__name__)
 
 
 def resolve_log_path(cfg: Config) -> Path:
-    project_root = Path(__file__).resolve().parent.parent.parent
-    log_path = Path(cfg.logging.file)
-    if not log_path.is_absolute():
-        log_path = project_root / log_path
-    return log_path
+    return resolve_tenant_scoped_path(cfg.logging.file, tenant_id=getattr(cfg, "tenant_id", None))
 
 
 def runtime_status_path(cfg: Config, log_path: Optional[Path] = None) -> Path:
@@ -92,6 +89,7 @@ def _minimal_debug_from_runtime_status(status: dict[str, Any]) -> dict[str, Any]
         "run_id": status.get("run_id"),
         "status": status.get("phase") or status.get("status") or "unknown",
         "running": bool(status.get("running")),
+        "tenant_id": status.get("tenant_id"),
         "data_mode": status.get("data_mode") or "unknown",
         "zone": {"name": None, "state": "inactive", "semantics_version": "launch_gate_aware_v1"},
         "account": {},

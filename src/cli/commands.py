@@ -34,6 +34,7 @@ from src.runtime.inspection import (
     fetch_runtime_health_dict,
     health_dict_from_debug,
 )
+from src.runtime.tenancy import resolve_tenant_scoped_path
 from src.runtime.zone_surface import ZONE_SEMANTICS_VERSION, resolve_launch_gate_zone_state
 from src.market import get_client
 from src.execution import get_executor
@@ -180,11 +181,7 @@ def _utc_now() -> datetime:
 
 
 def _resolve_log_path(cfg) -> Path:
-    project_root = Path(__file__).resolve().parent.parent.parent
-    log_path = Path(cfg.logging.file)
-    if not log_path.is_absolute():
-        log_path = project_root / log_path
-    return log_path
+    return resolve_tenant_scoped_path(cfg.logging.file, tenant_id=getattr(cfg, "tenant_id", None))
 
 
 def _configure_logging(cfg) -> Path:
@@ -377,6 +374,7 @@ def _write_runtime_status(
         "status": status or phase,
         "pid": os.getpid(),
         "running": running,
+        "tenant_id": getattr(cfg, "tenant_id", None),
         "data_mode": data_mode,
         "config_path": config_path,
         "log_path": str(log_path),
@@ -813,6 +811,7 @@ def _record_runtime_provenance(
         )
     set_state(
         run_id=manifest["run_id"],
+        tenant_id=getattr(cfg, "tenant_id", None),
         code_version=manifest.get("app_version"),
         git_commit=manifest.get("git_commit"),
         git_branch=manifest.get("git_branch"),
@@ -908,6 +907,11 @@ def _default_research_output(name: str) -> Path:
     return Path(__file__).resolve().parent.parent.parent / "logs" / "research" / name
 
 
+def _apply_account_mode_override(cfg, *, live: bool) -> None:
+    if live:
+        cfg.safety.prac_only = False
+
+
 def _write_text_output(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -969,7 +973,8 @@ def cli():
 
 @cli.command()
 @click.option("--config", type=click.Path(exists=True), help="Config file path")
-def start(config: Optional[str]):
+@click.option("--live", is_flag=True, help="Start on the live account instead of practice")
+def start(config: Optional[str], live: bool):
     """Start the trading engine (live: real Topstep API, practice or funded account)."""
     _print_banner("ES Hot-Zone Trader Starting...")
 
@@ -979,6 +984,7 @@ def start(config: Optional[str]):
         cfg = load_config(config)
     else:
         cfg = get_config()
+    _apply_account_mode_override(cfg, live=live)
     set_config(cfg)
     log_path = _configure_logging(cfg)
     _ensure_runtime_is_not_active(cfg, log_path=log_path)
@@ -1001,10 +1007,18 @@ def start(config: Optional[str]):
         f"Config loaded: ${cfg.account.capital} account, max {cfg.account.max_contracts} contracts",
         fg="green",
     )
+    click.secho(f"Tenant ID: {getattr(cfg, 'tenant_id', 'default')}", fg="green")
+    click.secho(
+        f"safety.prac_only (when True, blocks --live): {cfg.safety.prac_only}",
+        fg="green",
+    )
     click.secho(f"Hot zones: {len(cfg.hot_zones)} configured", fg="green")
     click.secho(f"Alpha matrix: {cfg.alpha.matrix_version}", fg="green")
     click.secho(f"Preferred account match: {cfg.safety.preferred_account_match}", fg="green")
     click.secho(f"Trade outside hot zones: {cfg.strategy.trade_outside_hotzones}", fg="green")
+    click.secho(
+        f"Practice shadow trading: {cfg.strategy.practice_shadow_trading_enabled}", fg="green"
+    )
     click.secho(f"Log file: {log_path}", fg="green")
     click.secho("Live: Topstep API (real market data and orders).", fg="green")
     _mark_runtime_active(
@@ -1034,6 +1048,7 @@ def start(config: Optional[str]):
         running=True,
         status="running",
         start_time=time.time(),
+        tenant_id=getattr(cfg, "tenant_id", None),
         data_mode="live",
         replay_summary=None,
     )
@@ -1282,6 +1297,7 @@ def replay(
     set_state(
         status="replay",
         running=False,
+        tenant_id=getattr(cfg, "tenant_id", None),
         data_mode="replay",
         replay_summary=None,
         start_time=time.time(),
@@ -1455,11 +1471,12 @@ def replay_topstep(
         last_start_requested_at=_utc_now().isoformat(),
     )
     set_state(
-        status="replay",
-        running=False,
+        status="running",
+        running=True,
+        tenant_id=getattr(cfg, "tenant_id", None),
         data_mode="replay",
         replay_summary=None,
-        start_time=time.time(),
+        current_strategy="WEIGHTED_SCORE_MATRIX",
     )
     get_client(force_recreate=True)
     get_executor(force_recreate=True)
@@ -1707,6 +1724,7 @@ def stop(reason: str, timeout_seconds: int):
 @click.option(
     "--config", type=click.Path(exists=True), help="Config file path for the restarted process"
 )
+@click.option("--live", is_flag=True, help="Restart on the live account instead of practice")
 @click.option(
     "--reason",
     default="cli_restart",
@@ -1722,9 +1740,16 @@ def stop(reason: str, timeout_seconds: int):
     help="Seconds to wait for the prior process to exit cleanly",
 )
 @click.pass_context
-def restart(ctx: click.Context, config: Optional[str], reason: str, timeout_seconds: int):
+def restart(
+    ctx: click.Context,
+    config: Optional[str],
+    live: bool,
+    reason: str,
+    timeout_seconds: int,
+):
     """Restart the trading engine (always live)."""
     cfg = load_config(config) if config else get_config()
+    _apply_account_mode_override(cfg, live=live)
     set_config(cfg)
     log_path = _resolve_log_path(cfg)
     active_pid, runtime_status, _ = _request_runtime_action(
@@ -1742,7 +1767,10 @@ def restart(ctx: click.Context, config: Optional[str], reason: str, timeout_seco
         click.echo("Trading engine is not running. Starting a fresh process with restart intent.")
     else:
         click.echo(f"Trading engine stopped for restart (PID {active_pid}, reason={reason}).")
-    ctx.invoke(start, config=restart_config_path)
+    start_kwargs = {"config": restart_config_path}
+    if live:
+        start_kwargs["live"] = True
+    ctx.invoke(start, **start_kwargs)
 
 
 @cli.command()
@@ -1778,6 +1806,7 @@ def status():
         fg="green" if status_value in {"healthy", "running"} else "yellow",
     )
     click.secho(f"Running:   {running_value}", fg="green" if running_value else "yellow")
+    click.secho(f"Tenant:    {remote.get('tenant_id') or getattr(cfg, 'tenant_id', 'default')}", fg="blue")
     click.secho(f"Data Mode: {data_mode}", fg="blue")
     click.secho(f"Zone:      {zone_name} ({zone_state})", fg="cyan")
     if zone_semantics_version == "legacy_or_unknown":
@@ -1813,6 +1842,7 @@ def health():
     health, source = fetch_runtime_health_dict(cfg, log_path=log_path)
 
     click.echo("Health Check:")
+    click.echo(f"  Tenant ID:   {health.get('tenant_id') or getattr(cfg, 'tenant_id', 'default')}")
     click.echo(f"  Status:      {health['status']}")
     click.echo(f"  Data Mode:   {health['data_mode']}")
     click.echo(f"  Zone:        {health['zone']} ({health.get('zone_state', 'inactive')})")
@@ -1838,6 +1868,7 @@ def debug():
         data = get_state().to_dict()
         source = "in_process"
     payload = dict(data)
+    payload.setdefault("tenant_id", getattr(cfg, "tenant_id", None))
     payload["_runtime_state_source"] = source
     click.echo(json.dumps(payload, indent=2, default=str))
 
@@ -2474,6 +2505,7 @@ def config():
     cfg = get_config()
 
     click.echo("Configuration:")
+    click.echo(f"  Tenant ID:          {cfg.tenant_id}")
     click.echo(f"  Account Capital:    ${cfg.account.capital}")
     click.echo(f"  Max Contracts:      {cfg.account.max_contracts}")
     click.echo(f"  Default Contracts:  {cfg.account.default_contracts}")
@@ -2490,6 +2522,7 @@ def config():
     click.echo(f"Min Score Gap:        {cfg.alpha.min_score_gap}")
     click.echo(f"PRAC Only:            {cfg.safety.prac_only}")
     click.echo(f"Preferred Match:      {cfg.safety.preferred_account_match}")
+    click.echo(f"Practice Shadow Trade: {cfg.strategy.practice_shadow_trading_enabled}")
     click.echo("")
     click.echo("Risk Limits:")
     click.echo(f"  Max Daily Loss:      ${cfg.risk.max_daily_loss}")

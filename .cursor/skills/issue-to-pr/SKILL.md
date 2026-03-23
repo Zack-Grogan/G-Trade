@@ -1,6 +1,6 @@
 ---
 name: issue-to-pr
-description: Follows the issue-to-PR flow: read issue and docs, branch with issue ID, implement, test, docs, commit, PR with template. Use when the user is working from a Linear or other issue or asks to implement a ticket.
+description: "Follows the issue-to-PR flow: read issue and docs, branch with issue ID, implement, test, docs, commit, PR with template. Use when the user is working from a Linear or other issue or asks to implement a ticket."
 ---
 
 # Issue-to-PR workflow

@@ -10,7 +10,12 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from src.cli.commands import _fetch_broker_truth, _startup_zone_surface, _sync_account_trade_history, cli
+from src.cli.commands import (
+    _fetch_broker_truth,
+    _startup_zone_surface,
+    _sync_account_trade_history,
+    cli,
+)
 from src.cli.launchd import LAUNCHD_LABEL, render_launchd_plist
 from src.config import get_config, load_config, set_config
 from src.observability import get_observability_store
@@ -58,6 +63,63 @@ class RuntimeOpsTests(unittest.TestCase):
             self.assertEqual(rows[0]["message"], "bridge auth failed")
             self.assertEqual(rows[0]["payload"]["exception_text"], "HTTP 401")
             store.stop()
+
+    def test_observability_store_filters_rows_by_tenant_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            alpha_config = self._build_config(temp_dir)
+            alpha_config.tenant_id = "tenant-alpha"
+            alpha_store = get_observability_store(force_recreate=True, config=alpha_config)
+            alpha_store.start()
+            alpha_store.record_event(
+                category="system",
+                event_type="tenant_scoped_event",
+                source="tests.runtime",
+                payload={"tenant": "alpha"},
+                action="record",
+                reason="tenant_alpha",
+            )
+            alpha_store.force_flush()
+
+            alpha_rows = alpha_store.query_events(
+                limit=10, category="system", event_type="tenant_scoped_event"
+            )
+            self.assertEqual(len(alpha_rows), 1)
+            self.assertEqual(alpha_rows[0]["tenant_id"], "tenant-alpha")
+
+            alpha_store.stop()
+
+            beta_config = self._build_config(temp_dir)
+            beta_config.tenant_id = "tenant-beta"
+            beta_store = get_observability_store(force_recreate=True, config=beta_config)
+            beta_store.start()
+
+            beta_rows = beta_store.query_events(
+                limit=10, category="system", event_type="tenant_scoped_event"
+            )
+
+            self.assertEqual(beta_rows, [])
+            beta_store.stop()
+
+    def test_start_command_help_exposes_live_flag(self) -> None:
+        runner = CliRunner()
+
+        result = runner.invoke(cli, ["start", "--help"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("--live", result.output)
+
+    def test_config_command_reports_tenant_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = self._build_config(temp_dir)
+            config.tenant_id = "tenant-report"
+            set_config(config)
+
+            runner = CliRunner()
+            result = runner.invoke(cli, ["config"])
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("Tenant ID:", result.output)
+            self.assertIn("tenant-report", result.output)
 
     def test_observability_store_recovers_after_flush_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -444,7 +506,9 @@ class RuntimeOpsTests(unittest.TestCase):
 
             rows = store.query_state_snapshots(limit=1)
             self.assertEqual(rows[0]["zone_semantics_version"], "launch_gate_aware_v1")
-            self.assertEqual(rows[0]["payload"]["zone"]["semantics_version"], "launch_gate_aware_v1")
+            self.assertEqual(
+                rows[0]["payload"]["zone"]["semantics_version"], "launch_gate_aware_v1"
+            )
             store.stop()
 
     def test_status_warns_when_zone_semantics_are_legacy_or_unknown(self) -> None:

@@ -64,6 +64,7 @@ class StrategyConfig:
     launch_gate_enabled: bool = False
     live_entry_zones: list[str] = field(default_factory=list)
     shadow_entry_zones: list[str] = field(default_factory=list)
+    practice_shadow_trading_enabled: bool = False
     breakeven_trigger_atr: float = 0.5
     profit_lock_atr: float = 0.5
     trailing_stop_atr: float = 1.0
@@ -271,9 +272,7 @@ class AlphaConfig:
         }
     )
     # Per-side score adjustments
-    side_adjustment: Dict[str, float] = field(
-        default_factory=lambda: {"long": 0.0, "short": 0.0}
-    )
+    side_adjustment: Dict[str, float] = field(default_factory=lambda: {"long": 0.0, "short": 0.0})
     # Regime-based score multipliers
     regime_multipliers: Dict[str, Dict[str, float]] = field(
         default_factory=lambda: {
@@ -501,6 +500,7 @@ class OperatorTtsConfig:
 
 @dataclass
 class Config:
+    tenant_id: str = "default"
     account: AccountConfig = field(default_factory=AccountConfig)
     symbols: list = field(default_factory=lambda: ["ES"])
     hot_zones: list = field(default_factory=list)
@@ -625,6 +625,7 @@ def load_config(config_path: Optional[str] = None) -> Config:
     hot_zones = [HotZoneConfig(**zone) for zone in data.get("hot_zones", [])]
 
     config = Config(
+        tenant_id=str(data.get("tenant_id", "default")),
         account=_dict_to_dataclass(data.get("account", {}), AccountConfig),
         symbols=data.get("symbols", ["ES"]),
         hot_zones=hot_zones,

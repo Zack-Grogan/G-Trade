@@ -843,9 +843,7 @@ class TradingEngine:
             self.bar_aggregator.reset()
             if flattened:
                 return
-            self._evaluate_current_state(
-                allow_entries=not self._watchdog_state.fail_safe_lockout
-            )
+            self._evaluate_current_state(allow_entries=not self._watchdog_state.fail_safe_lockout)
 
     def flush_pending_bar(self) -> None:
         """Flush the in-progress bar and evaluate it."""
@@ -1282,6 +1280,8 @@ class TradingEngine:
                     else:
                         stop_price = entry_price + stop_atr * atr_value
                         take_profit = entry_price - tp_atr * atr_value
+                    stop_price = round(stop_price / tick_size) * tick_size
+                    take_profit = round(take_profit / tick_size) * tick_size
                 else:
                     default_stop_pts = 10
                     default_tp_pts = 20
@@ -1291,6 +1291,9 @@ class TradingEngine:
                     else:
                         stop_price = entry_price + default_stop_pts * tick_size
                         take_profit = entry_price - default_tp_pts * tick_size
+                # Round to tick size for broker compliance
+                stop_price = round(stop_price / tick_size) * tick_size
+                take_profit = round(take_profit / tick_size) * tick_size
                 self._stop_loss = stop_price
                 self._take_profit = take_profit
                 self._last_position = broker_position
@@ -1864,7 +1867,7 @@ class TradingEngine:
 
     def _record_matrix_state(self, decision: MatrixDecision) -> None:
         snapshot = decision.feature_snapshot
-        logger.info(
+        logger.debug(
             "matrix_state zone=%s long=%.4f short=%.4f flat=%.4f vetoes=%s",
             decision.zone_name,
             decision.long_score,
@@ -1953,11 +1956,37 @@ class TradingEngine:
             return False, "outside_all_zones"
         live_zones = set(self.config.strategy.live_entry_zones or [])
         shadow_zones = set(self.config.strategy.shadow_entry_zones or [])
+        
+        # Get practice account status
+        practice_account = get_state().account_is_practice
+        if practice_account is None and self.client is not None:
+            account = getattr(self.client, "_account", None)
+            practice_account = bool(account.is_practice) if account is not None else None
+        
+        logger.debug(
+            "zone_entry_check zone=%s live_zones=%s shadow_zones=%s practice_account=%s practice_shadow=%s",
+            zone_name,
+            live_zones,
+            shadow_zones,
+            practice_account,
+            self.config.strategy.practice_shadow_trading_enabled,
+        )
+        
         if zone_name in live_zones and zone_name in shadow_zones:
             return False, obs.OUTCOME_LAUNCH_GATE_CONFIG_INVALID
         if zone_name in live_zones:
             return True, None
         if zone_name in shadow_zones:
+            if self.config.strategy.practice_shadow_trading_enabled:
+                if practice_account:
+                    return True, None
+                else:
+                    logger.warning(
+                        "zone_entry_blocked zone=%s reason=live_account_in_shadow_zone practice_shadow=%s practice_account=%s",
+                        zone_name,
+                        self.config.strategy.practice_shadow_trading_enabled,
+                        practice_account,
+                    )
             return False, "shadow_only_zone"
         return False, "launch_gate_blocked"
 
@@ -2496,6 +2525,8 @@ class TradingEngine:
             hw = self._position_high_water or price
             candidate = max(candidate, hw - trail_atr * atr_value)
             if candidate > self._stop_loss and candidate <= price:
+                tick_size = 0.25
+                candidate = round(candidate / tick_size) * tick_size
                 self._stop_loss = candidate
                 self._protection_mode = "breakeven" if candidate <= entry else "trailing"
                 self.executor.ensure_protection(
@@ -2527,6 +2558,8 @@ class TradingEngine:
             lw = self._position_low_water or price
             candidate = min(candidate, lw + trail_atr * atr_value)
             if candidate < self._stop_loss and candidate >= price:
+                tick_size = 0.25
+                candidate = round(candidate / tick_size) * tick_size
                 self._stop_loss = candidate
                 self._protection_mode = "breakeven" if candidate >= entry else "trailing"
                 self.executor.ensure_protection(

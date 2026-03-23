@@ -67,7 +67,8 @@ class TestConfigLoaderCompatibility(unittest.TestCase):
         self.assertEqual(config.alpha.regime_multipliers["STRESS"]["long"], 0.3)
         self.assertEqual(config.alpha.zone_weights["Outside"]["long"]["trend_state"], 1.6)
         self.assertEqual(config.alpha.zone_weights["Outside"]["flat"]["regime_stress"], 1.0)
-        self.assertEqual(config.account.max_contracts, 1)
+        self.assertTrue(config.strategy.practice_shadow_trading_enabled)
+        self.assertEqual(config.account.max_contracts, 5)
         self.assertEqual(config.risk.max_trades_per_zone, 3)
         self.assertEqual(config.risk.max_daily_trades, 10)
         self.assertEqual(caught, [])
@@ -127,6 +128,18 @@ class TestConfigLoaderCompatibility(unittest.TestCase):
             config = load_config(str(config_path))
 
         self.assertFalse(config.strategy.launch_gate_enabled)
+
+    def test_load_config_reads_practice_shadow_trading_toggle(self) -> None:
+        config_text = textwrap.dedent("""
+            strategy:
+              practice_shadow_trading_enabled: true
+            """)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text(config_text, encoding="utf-8")
+            config = load_config(str(config_path))
+
+        self.assertTrue(config.strategy.practice_shadow_trading_enabled)
 
     def test_set_config_rejects_overlap_when_launch_gate_enabled(self) -> None:
         config = Config()

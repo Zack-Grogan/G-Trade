@@ -24,7 +24,7 @@ This matches a common institutional pattern: **separate “alpha” (scoring) fr
 It is **not** a high-frequency scalper firing on every micro-tick; it is **not** a single “always trade the trend” bot. It is designed to **trade rarely relative to bar updates** when:
 
 - Scores exceed a **minimum level** and **beat the other side by a gap** (`min_entry_score`, `min_score_gap`, `flat_bias_buffer` in config / [`DecisionMatrixEvaluator.evaluate`](../src/engine/decision_matrix.py)).
-- **Vetoes** are empty (or only non-blocking `reduced_risk` in sizing).
+- **Hard vetoes** are empty; `reduced_risk` is only a sizing posture and does **not** block an otherwise valid entry.
 - **Launch gate** allows live entries only in configured “live” zones (see §4).
 - **Risk limits** and **circuit breakers** permit a new trade.
 - **Market-hours guard** (if enabled) does not block new entries ([`src/engine/market_hours.py`](../src/engine/market_hours.py), [`TradingEngine`](../src/engine/trading_engine.py)).
@@ -32,7 +32,7 @@ It is **not** a high-frequency scalper firing on every micro-tick; it is **not**
 **Why it feels “tight” in Midday:**  
 Midday is weighted toward **mean-reversion** features and adds **strict confirmation** (see §6.3). That is intentional: academically and practically, **mean reversion works best when paired with confirmation filters**; raw “price stretched” signals alone are prone to trend days. See [RSI overbought/oversold caveats](https://www.investopedia.com/articles/active-trading/042114/overbought-or-oversold-use-relative-strength-index-find-out.asp) and [Bollinger band mean-reversion context](https://www.investopedia.com/terms/b/bollingerbands.asp).
 
-**Default position sizing:** risk module caps contracts from account and ATR ([`RiskManager.calculate_position_size`](../src/engine/risk_manager.py)); default config often runs **1 contract** in conservative launch posture (see [`docs/OPERATOR.md`](OPERATOR.md)).
+**Default position sizing:** risk module caps contracts from account and ATR ([`RiskManager.calculate_position_size`](../src/engine/risk_manager.py)); shipped `account.max_contracts` is **5** with `default_contracts: 1` unless sizing scales within that cap (see [`docs/OPERATOR.md`](OPERATOR.md)).
 
 ---
 
@@ -52,7 +52,7 @@ For the **Pre-Open** zone, the engine uses **ETH** session context for VWAP-styl
 Configured via `strategy.launch_gate_enabled`, `live_entry_zones`, `shadow_entry_zones` ([`config/default.yaml`](../config/default.yaml), [`_zone_live_entry_allowed`](../src/engine/trading_engine.py)).
 
 - **Live entry zones:** entries may be submitted when other gates pass.
-- **Shadow zones:** the system may still **score, log, and record decision snapshots** for research, but **blocks live entries** with outcome `shadow_only_zone`.
+- **Shadow zones:** the system may still **score, log, and record decision snapshots** for research, but **blocks live entries** with outcome `shadow_only_zone`. The shipped default keeps `strategy.practice_shadow_trading_enabled` on so the practice account can trade shadow zones for mirror-style research while live remains blocked; you can still turn it off in YAML if you need stricter stand-down behavior.
 - **Default posture:** `Pre-Open` live; `Post-Open`, `Midday`, and `Outside` shadow-only; `Close-Scalp` remains a scheduler-driven `flatten_only` window rather than a separate live edge.
 - **Stand-down posture:** you may keep `launch_gate_enabled: true` with an empty `live_entry_zones` list to force full shadow-mode operation. When `session_exit_enabled` is still on, the morning session policy can still cap any open runtime position during checkpoint / hard-flat windows; “no live zones” is not the same thing as “ignore any existing exposure.”
 
@@ -93,8 +93,8 @@ Vetoes are computed in [`_evaluate_vetoes()`](../src/engine/decision_matrix.py) 
 |------|---------|------|---------------------------|
 | `event_blackout` | Economic/news blackout window active | [`_evaluate_vetoes`](../src/engine/decision_matrix.py) | Event risk is a standard reason to stand down intraday. |
 | `risk_circuit_breaker` | Risk manager in circuit-breaker state | [`evaluate()`](../src/engine/decision_matrix.py) | Circuit breakers are standard risk overlays. |
-| `reduced_risk` | Reduced size / stricter posture | [`evaluate()`](../src/engine/decision_matrix.py) | Position sizing reduced when risk is elevated. |
-| `risk_circuit_breaker` (risk manager) | Separate from matrix veto; can block trading | [`risk_manager.py`](../src/engine/risk_manager.py) | Same idea. |
+| `reduced_risk` | Reduced size / stricter posture | [`risk_manager.py`](../src/engine/risk_manager.py), [`TradingEngine._determine_contracts`](../src/engine/trading_engine.py) | Size down, do not hard-block a valid entry. |
+| `risk_circuit_breaker` (risk manager) | Separate from matrix veto; can block trading | [`risk_manager.py`](../src/engine/risk_manager.py) | Hard stop when the risk manager trips. |
 | `outside_zone` | Not in a tradable zone context | [`evaluate()`](../src/engine/decision_matrix.py) | Time segmentation. |
 
 ### 5.2 Execution quality vetoes

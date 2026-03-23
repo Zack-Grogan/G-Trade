@@ -2,7 +2,7 @@
 
 account:
   capital: 50000
-  max_contracts: 1
+  max_contracts: 5
   default_contracts: 1
   risk_per_contract: 100
   preferred_id_match: "PRAC"
@@ -70,6 +70,7 @@ strategy:
     - "Post-Open"
     - "Midday"
     - "Outside"
+  practice_shadow_trading_enabled: true
   breakeven_trigger_atr: 0.5
   profit_lock_atr: 0.5
   trailing_stop_atr: 1.0

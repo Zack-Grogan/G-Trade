@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Optional
 
-from src.observability import get_observability_store
 from src.runtime.zone_surface import ZONE_SEMANTICS_VERSION
 
 
@@ -15,6 +14,7 @@ class TradingState:
     def __init__(self):
         self.status: str = "stopped"
         self.running: bool = False
+        self.tenant_id: Optional[str] = None
         self.current_zone: Optional[str] = None
         self.zone_state: str = "inactive"
         self.current_strategy: Optional[str] = None
@@ -100,6 +100,7 @@ class TradingState:
             "status": self.effective_status(),
             "process_status": self.status,
             "running": self.running,
+            "tenant_id": self.tenant_id,
             "data_mode": self.data_mode,
             "zone": {
                 "name": self.current_zone,
@@ -170,6 +171,7 @@ class TradingState:
     def to_health_dict(self) -> dict[str, Any]:
         return {
             "status": self.effective_status(),
+            "tenant_id": self.tenant_id,
             "data_mode": self.data_mode,
             "zone": self.current_zone or "inactive",
             "zone_state": self.zone_state,
@@ -198,6 +200,8 @@ def set_state(**kwargs):
 
 
 def record_error(message: str) -> None:
+    from src.observability import get_observability_store
+
     entry = {"timestamp": datetime.now(UTC).isoformat(), "message": str(message)}
     _state.errors.append(entry)
     if len(_state.errors) > 100:

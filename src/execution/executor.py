@@ -113,6 +113,19 @@ class OrderExecutor:
         self._last_protective_fill_reason: Optional[str] = None
         self._recent_fills: List[Dict[str, Any]] = []
         self._mock_fill_rng: Optional[random.Random] = None
+        self._stale_cancel_attempts: Dict[str, tuple[int, datetime]] = {}
+        self._max_stale_cancel_attempts = 3
+        self._stale_cancel_backoff_seconds = 30.0
+
+    def _instrument_tick_size(self, symbol: str) -> float:
+        return float(getattr(self.config.volume_profile, "tick_size", 0.25) or 0.25)
+
+    def _round_to_tick(self, price: Optional[float], symbol: str) -> Optional[float]:
+        """Round price to the configured instrument tick (broker rejects misaligned stops/limits)."""
+        if price is None:
+            return None
+        tick = self._instrument_tick_size(symbol)
+        return round(round(float(price) / tick) * tick, 10)
 
     def _limit_touch_fills_this_tick(self, order: Order, market_data: MarketData) -> bool:
         """Probabilistic gate for mock limit fills when price touches the limit.
@@ -323,6 +336,10 @@ class OrderExecutor:
         """Place an order."""
         if quantity <= 0:
             return None
+
+        if not self._mock_mode:
+            limit_price = self._round_to_tick(limit_price, symbol)
+            stop_price = self._round_to_tick(stop_price, symbol)
 
         created_time = self._current_time(symbol)
         self._last_action_time = created_time
@@ -1021,7 +1038,11 @@ class OrderExecutor:
         return self.client.get_position().entry_price
 
     def reconcile_pending_orders(self) -> int:
-        """Cancel stale pending orders after the configured timeout."""
+        """Cancel stale **non-protective** pending orders after the configured timeout.
+
+        Protective stops and take-profit limits are meant to rest until fill or explicit
+        replacement; age-based stale cancellation applies to entry/flatten orders only.
+        """
         timeout_seconds = int(
             self.watchdog_config.stale_order_seconds or self.exec_config.cancel_timeout_seconds
         )
@@ -1031,14 +1052,29 @@ class OrderExecutor:
             age = (now - order.created_time).total_seconds()
             if age < timeout_seconds or not order.is_active:
                 continue
+            if order.is_protective:
+                continue
+
+            # Check backoff for failed cancel attempts
+            attempts, last_attempt = self._stale_cancel_attempts.get(order_id, (0, None))
+            if attempts >= self._max_stale_cancel_attempts:
+                # Give up after max retries - order will remain until broker updates
+                continue
+            if last_attempt is not None:
+                backoff_elapsed = (now - last_attempt).total_seconds()
+                if backoff_elapsed < self._stale_cancel_backoff_seconds:
+                    continue
+            
             logger.warning(
-                "Cancelling stale %s order %s after %.1fs (symbol=%s role=%s protective=%s)",
+                "Cancelling stale %s order %s after %.1fs (symbol=%s role=%s protective=%s) attempt=%s/%s",
                 order.order_type,
                 order_id,
                 age,
                 order.symbol,
                 order.role,
                 order.is_protective,
+                attempts + 1,
+                self._max_stale_cancel_attempts,
             )
             self._record_event(
                 event_type="stale_order_detected",
@@ -1047,6 +1083,7 @@ class OrderExecutor:
                     "age_seconds": age,
                     "role": order.role,
                     "is_protective": order.is_protective,
+                    "cancel_attempt": attempts + 1,
                 },
                 event_time=now,
                 symbol=order.symbol,
@@ -1056,6 +1093,7 @@ class OrderExecutor:
             )
             if self.cancel_order(order_id):
                 cancelled += 1
+                self._stale_cancel_attempts.pop(order_id, None)
                 self._record_event(
                     event_type="stale_order_cancelled",
                     payload={
@@ -1072,10 +1110,21 @@ class OrderExecutor:
                     order_id=order_id,
                 )
             else:
-                logger.warning(
-                    "Unable to cancel stale order %s; it will remain locally active until broker state updates",
-                    order_id,
-                )
+                self._stale_cancel_attempts[order_id] = (attempts + 1, now)
+                if attempts + 1 >= self._max_stale_cancel_attempts:
+                    logger.warning(
+                        "Giving up on stale order %s after %s failed cancel attempts; order will remain locally active until broker state updates",
+                        order_id,
+                        self._max_stale_cancel_attempts,
+                    )
+                else:
+                    logger.warning(
+                        "Unable to cancel stale order %s (attempt %s/%s); will retry after %.0fs backoff",
+                        order_id,
+                        attempts + 1,
+                        self._max_stale_cancel_attempts,
+                        self._stale_cancel_backoff_seconds,
+                    )
         return cancelled
 
     def ensure_protection(

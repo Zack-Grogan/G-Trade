@@ -11,8 +11,10 @@ Authoritative rules for logging, SQLite durability, and operator debugging. **Do
 | **SQLite `decision_snapshots`** (and related rows) | Full matrix decision snapshot including `feature_snapshot`; optional `latency_ms_market_to_decision` / `latency_ms_decision_to_submit` when `observability.record_decision_latency` is true | `record_decision_snapshot` from `TradingEngine._record_decision_event` |
 | **SQLite `state_snapshots`** | Periodic `TradingState.to_dict()` | Engine `_update_server_state` |
 | **SQLite `order_lifecycle`** | Order/protection lifecycle | Executor + engine |
-| **SQLite `market_tape`** | Tick/bar telemetry | Market client / replay |
+| **SQLite `market_tape`** | Tick/bar telemetry (includes `tenant_id` for query scoping) | Market client / replay |
 | **SQLite `runtime_logs`** | Every root log line (except observability store recursion) | CLI `_ObservabilityLogHandler` |
+
+Tenant-scoped rows in the observability store carry `tenant_id`, and query surfaces default to the active tenant so multiple local lanes can share one SQLite file without mixing operator views.
 
 Canonical string constants live in [`src/observability/taxonomy.py`](../src/observability/taxonomy.py).
 
@@ -57,6 +59,8 @@ Do not assume scheduler `active` means live-tradable; the launch gate is part of
 - `in_process` — same PID as CLI.
 - `sqlite` — latest state snapshot for `run_id` from `runtime_status.json`.
 - `status_file` — control-plane only until SQLite has a snapshot.
+
+Cross-process debug/status payloads include `tenant_id` so operator tooling can identify the active lane when multiple tenants share the same repository.
 
 `fetch_runtime_health_dict` / `TradingState.to_health_dict()` expose a flatter health shape:
 
