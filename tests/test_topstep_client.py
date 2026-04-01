@@ -1133,6 +1133,11 @@ class TopstepClientOrderTests(unittest.TestCase):
 
         self.assertTrue(result)
 
+    def test_cancel_order_invalid_order_id_returns_false(self) -> None:
+        """Non-numeric order_id returns False before any HTTP call."""
+        result = self.client.cancel_order("not-a-number")
+        self.assertFalse(result)
+
 
 class TopstepClientQueryStreamingTests(unittest.TestCase):
     """Tests for broker-truth, query, and SignalR helper paths."""

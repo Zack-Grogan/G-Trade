@@ -22,6 +22,12 @@ coverage.xml
 .playwright-mcp/
 .DS_Store
 
+# Windsurf Cascade (local IDE rules; optional parity with .cursor/)
+.windsurf/
+
+# Claude nested worktrees (separate git repos; do not embed as submodule)
+.claude/worktrees/
+
 # Optional: Cursor debug logs
 .cursor/*.log
 # MCP config may contain tokens

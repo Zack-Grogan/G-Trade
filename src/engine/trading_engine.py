@@ -697,7 +697,9 @@ class TradingEngine:
         tts_key = tts_keys.get(OrderStatus[status])
         if tts_key:
             self._local_tts.speak(tts_key, mock_mode=self._mock_mode)
-        logger.info(
+        terminal_update = status in {"FILLED", "REJECTED", "CANCELLED"}
+        log_fn = logger.info if terminal_update else logger.debug
+        log_fn(
             "broker_order_update order_id=%s status=%s filled_quantity=%s filled_price=%s",
             order_id,
             status.lower(),
@@ -1612,7 +1614,7 @@ class TradingEngine:
             )
             return
         if self.executor.has_active_entry_order(self.symbol):
-            logger.info(
+            logger.debug(
                 "Entry skipped because an active entry order is already working for %s", self.symbol
             )
             self._record_decision_event(
@@ -1637,7 +1639,7 @@ class TradingEngine:
         )
         if not allowed:
             set_state(active_vetoes=decision.active_vetoes + [reason])
-            logger.info("Trade blocked by risk manager: %s", reason)
+            logger.debug("Trade blocked by risk manager: %s", reason)
             self._record_decision_event(
                 decision,
                 zone=zone,

@@ -700,7 +700,7 @@ def _print_banner(title: str, color: str = "cyan") -> None:
 
 
 def _log_startup_summary(cfg, log_path: Path, current_zone: Optional[str], zone_state: str) -> None:
-    logger.info(
+    logger.debug(
         "startup_summary capital=%s max_contracts=%s hot_zones=%s matrix_version=%s preferred_account_match=%s trade_outside_hotzones=%s log_file=%s",
         cfg.account.capital,
         cfg.account.max_contracts,
@@ -710,7 +710,7 @@ def _log_startup_summary(cfg, log_path: Path, current_zone: Optional[str], zone_
         cfg.strategy.trade_outside_hotzones,
         log_path,
     )
-    logger.info(
+    logger.debug(
         "startup_operator_surface=cli+sqlite current_zone=%s zone_state=%s",
         current_zone,
         zone_state,
@@ -2559,6 +2559,25 @@ def balance():
         click.echo(f"  Realized PnL:  ${account.realized_pnl:.2f}")
     else:
         click.echo("Unable to fetch account. Make sure you're authenticated.")
+
+
+@cli.command()
+@click.option("--config", type=click.Path(exists=True), help="Config file path")
+@click.option("--live", is_flag=True, help="Allow live trading account")
+def gui(config: Optional[str], live: bool):
+    """Launch the G-Trade desktop GUI."""
+    try:
+        from src.gui.app import launch_gui
+    except ImportError:
+        click.echo("PySide6 not installed. Run: pip install -e '.[gui]'")
+        return
+    if config:
+        cfg = load_config(config)
+    else:
+        cfg = get_config()
+    _apply_account_mode_override(cfg, live=live)
+    set_config(cfg)
+    launch_gui(cfg, allow_live=live)
 
 
 def main(argv: Optional[list[str]] = None):

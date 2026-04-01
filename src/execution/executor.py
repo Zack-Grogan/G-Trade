@@ -299,6 +299,7 @@ class OrderExecutor:
         self._last_protective_fill_reason = None
         self._recent_fills = []
         self._mock_fill_rng = None
+        self._stale_cancel_attempts = {}
 
     def process_market_data(self, market_data: MarketData) -> bool:
         """Advance mock pending orders against the latest quote."""
@@ -1191,6 +1192,8 @@ class OrderExecutor:
         self._protection_requested_at[symbol] = self._current_time(symbol)
         exit_side = "sell" if direction > 0 else "buy"
         orders: list[str] = []
+        stop_placed = False
+        tp_placed = False
 
         if stop_price is not None:
             stop_order = self.place_order(
@@ -1209,6 +1212,7 @@ class OrderExecutor:
             )
             if stop_order is not None:
                 orders.append(stop_order.order_id)
+                stop_placed = True
 
         if take_profit is not None:
             target_order = self.place_order(
@@ -1227,6 +1231,43 @@ class OrderExecutor:
             )
             if target_order is not None:
                 orders.append(target_order.order_id)
+                tp_placed = True
+
+        need_stop = stop_price is not None
+        need_tp = take_profit is not None
+        protection_complete = (not need_stop or stop_placed) and (not need_tp or tp_placed)
+
+        if orders and not protection_complete:
+            logger.error(
+                "protection_incomplete symbol=%s stop_requested=%s stop_placed=%s "
+                "tp_requested=%s tp_placed=%s cancelling_partial_orders=%s",
+                symbol,
+                need_stop,
+                stop_placed,
+                need_tp,
+                tp_placed,
+                orders,
+            )
+            for oid in list(orders):
+                self.cancel_order(oid)
+            self._lifecycle_state = ExecutionState.ERROR
+            self._record_event(
+                event_type="protection_incomplete",
+                payload={
+                    "direction": direction,
+                    "stop_price": stop_price,
+                    "take_profit": take_profit,
+                    "quantity": quantity,
+                    "stop_placed": stop_placed,
+                    "tp_placed": tp_placed,
+                    "cancelled_order_ids": list(orders),
+                },
+                event_time=self._current_time(symbol),
+                symbol=symbol,
+                action="ensure_protection",
+                reason="protection_partial_cancelled",
+            )
+            return 0
 
         if orders:
             self._protective_orders[symbol] = {

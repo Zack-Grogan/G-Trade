@@ -2484,7 +2484,7 @@ class LoggingBootstrapTests(unittest.TestCase):
     def test_startup_summary_logs_structured_lines(self) -> None:
         config = build_config()
 
-        with self.assertLogs("src.cli.commands", level="INFO") as captured:
+        with self.assertLogs("src.cli.commands", level="DEBUG") as captured:
             _log_startup_summary(config, Path("/tmp/trading.log"), "Post-Open", "active")
 
         joined = "\n".join(captured.output)
@@ -3304,6 +3304,22 @@ class ExecutorProtectionTests(unittest.TestCase):
 
         self.assertEqual(cancelled, 2)
         self.assertFalse(self.executor.is_protected("ES"))
+
+    def test_ensure_protection_partial_leg_failure_cancels_and_returns_zero(self) -> None:
+        """Stop and TP are both required when both prices are set; one leg alone is not PROTECTED."""
+        real_place = self.executor.place_order
+
+        def place_stop_fails_tp_ok(*args, **kwargs):
+            if kwargs.get("order_type") == "stop":
+                return None
+            return real_place(*args, **kwargs)
+
+        with patch.object(self.executor, "place_order", side_effect=place_stop_fails_tp_ok):
+            placed = self.executor.ensure_protection("ES", 1, 1, 5800.0, 6000.0)
+
+        self.assertEqual(placed, 0)
+        self.assertFalse(self.executor.is_protected("ES"))
+        self.assertEqual(self.executor.get_lifecycle_state(), "ERROR")
 
     def test_cancelled_last_protective_order_clears_tracking_without_forcing_flat(self) -> None:
         placed = self.executor.ensure_protection("ES", 1, 1, 5800.0, None)

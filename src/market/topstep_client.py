@@ -2153,10 +2153,21 @@ class TopstepClient:
             return False
 
         try:
+            oid_int = int(order_id)
+        except (TypeError, ValueError) as e:
+            logger.error(
+                "broker_order_cancel_invalid_order_id order_id=%r account_id=%s error=%s",
+                order_id,
+                self._account_id,
+                e,
+            )
+            return False
+
+        try:
             url = f"{self.base_url}/api/Order/cancel"
             response = self._post_with_retry(
                 url,
-                {"orderId": int(order_id), "accountId": self._account_id},
+                {"orderId": oid_int, "accountId": self._account_id},
             )
             data = response.json()
             if not data.get("success"):
@@ -2387,6 +2398,13 @@ class TopstepClient:
             # But we'll accept it if positive (for BBO snapshot scenarios)
             last = cached_last  # Preserve trade-derived last price
 
+            # If we have one side but not the other (first quote, no cache),
+            # infer the missing side from a 1-tick spread (0.25 for ES).
+            if bid == 0.0 and ask > 0.0:
+                bid = ask - 0.25
+            elif ask == 0.0 and bid > 0.0:
+                ask = bid + 0.25
+
             # Reject if no valid information at all
             if bid == 0.0 and ask == 0.0:
                 self._rejected_quote_count += 1
@@ -2466,9 +2484,15 @@ class TopstepClient:
                     )
 
             if self._on_market_data:
-                self._on_market_data(quote)
+                try:
+                    self._on_market_data(quote)
+                except Exception:
+                    logger.exception(
+                        "on_market_data callback failed symbol=%s (stream continues)",
+                        root_symbol,
+                    )
             self._agent_debug_quote_count += 1
-            if self._agent_debug_quote_count % 300 == 0:
+            if self._agent_debug_quote_count % 3000 == 0:
                 # Log cached validated state, not raw message
                 cached = self._lookup_market_snapshot(root_symbol) or quote
                 logger.info(
@@ -2567,7 +2591,13 @@ class TopstepClient:
                 )
 
             if self._on_market_data:
-                self._on_market_data(quote)
+                try:
+                    self._on_market_data(quote)
+                except Exception:
+                    logger.exception(
+                        "on_market_data callback failed symbol=%s (stream continues)",
+                        quote.symbol,
+                    )
 
     def start_market_stream(
         self,
